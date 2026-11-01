@@ -337,6 +337,79 @@ impl App {
     pub(super) fn page_patterns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Patterns");
         ui.small("Drag a box around button text / an icon on the picture, name it, Save. Close pop-ups first.");
+        ui.strong("Checklist - capture these names");
+        let mut pick: Option<(String, bool)> = None;
+        let mine = crate::flows::stage_needs(
+            self.settings.run.mode,
+            &self.settings.run.map,
+            &self.settings.run.act,
+        );
+        if !mine.is_empty() {
+            let have = mine
+                .iter()
+                .filter(|(n, _)| self.lib.get(n).is_some())
+                .count();
+            let col = if have == mine.len() { GOOD } else { WARN };
+            egui::CollapsingHeader::new(egui::RichText::new(format!("Your stage ({})  {}/{}", self.settings.run.mode.label(), have, mine.len())).color(col))
+                .id_salt("your-stage")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.small("Pick the map + act on Home first. Open the Select World list, then capture the world title and the act button.");
+                    for (name, hint) in &mine {
+                        ui.horizontal(|ui| {
+                            let ok = self.lib.get(name).is_some();
+                            ui.colored_label(if ok { GOOD } else { WARN }, if ok { "OK " } else { "missing" });
+                            ui.monospace(name);
+                            ui.small(format!("(text) {hint}"));
+                            if ui.small_button(if ok { "redo" } else { "capture" }).clicked() {
+                                pick = Some((name.clone(), false));
+                            }
+                        });
+                    }
+                });
+        }
+        for flow in FLOWS {
+            let have = flow
+                .needs
+                .iter()
+                .filter(|n| self.lib.get(n.name).is_some())
+                .count();
+            let col = if have == flow.needs.len() { GOOD } else { WARN };
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{}  {}/{}", flow.name, have, flow.needs.len()))
+                    .color(col),
+            )
+            .id_salt(flow.name)
+            .show(ui, |ui| {
+                ui.small(flow.steps);
+                for need in flow.needs {
+                    ui.horizontal(|ui| {
+                        let ok = self.lib.get(need.name).is_some();
+                        ui.colored_label(
+                            if ok { GOOD } else { WARN },
+                            if ok { "OK " } else { "missing" },
+                        );
+                        ui.monospace(need.name);
+                        ui.small(format!("({}) {}", need.kind, need.hint));
+                        if ui
+                            .small_button(if ok { "redo" } else { "capture" })
+                            .clicked()
+                        {
+                            pick = Some((need.name.to_string(), need.kind == "icon"));
+                        }
+                    });
+                }
+            });
+        }
+        if let Some((name, icon)) = pick {
+            self.pat_name = name.clone();
+            self.pat_image = icon;
+            self.say(format!(
+                "name set to '{name}' - drag a box around it on the picture, then Save pattern"
+            ));
+        }
+        ui.separator();
+
         let mut redo_preview = false;
         ui.horizontal(|ui| {
             ui.label("Name:");
@@ -443,49 +516,6 @@ impl App {
         if redo_preview {
             let ctx = ui.ctx().clone();
             self.update_preview(&ctx);
-        }
-        ui.separator();
-        ui.strong("Checklist - capture these names");
-        let mut pick: Option<(&'static str, bool)> = None;
-        for flow in FLOWS {
-            let have = flow
-                .needs
-                .iter()
-                .filter(|n| self.lib.get(n.name).is_some())
-                .count();
-            let col = if have == flow.needs.len() { GOOD } else { WARN };
-            egui::CollapsingHeader::new(
-                egui::RichText::new(format!("{}  {}/{}", flow.name, have, flow.needs.len()))
-                    .color(col),
-            )
-            .id_salt(flow.name)
-            .show(ui, |ui| {
-                ui.small(flow.steps);
-                for need in flow.needs {
-                    ui.horizontal(|ui| {
-                        let ok = self.lib.get(need.name).is_some();
-                        ui.colored_label(
-                            if ok { GOOD } else { WARN },
-                            if ok { "OK " } else { "missing" },
-                        );
-                        ui.monospace(need.name);
-                        ui.small(format!("({}) {}", need.kind, need.hint));
-                        if ui
-                            .small_button(if ok { "redo" } else { "capture" })
-                            .clicked()
-                        {
-                            pick = Some((need.name, need.kind == "icon"));
-                        }
-                    });
-                }
-            });
-        }
-        if let Some((name, icon)) = pick {
-            self.pat_name = name.to_string();
-            self.pat_image = icon;
-            self.say(format!(
-                "name set to '{name}' - drag a box around it on the picture, then Save pattern"
-            ));
         }
         ui.separator();
         ui.strong(format!("Saved ({})", self.lib.len()));

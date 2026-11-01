@@ -470,6 +470,9 @@ impl Library {
     pub fn get(&self, name: &str) -> Option<&Pattern> {
         self.pats.get(&key(name))
     }
+    pub fn patterns(&self) -> impl Iterator<Item = &Pattern> {
+        self.pats.values()
+    }
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.pats.values().map(|p| p.name.as_str())
     }

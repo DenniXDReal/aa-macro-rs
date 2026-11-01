@@ -1,56 +1,117 @@
 {
- "map": "Lobby > Legend",
- "source": "old AHK StoryMovement (same pad)",
+ "map": "Lobby > Legend Stages",
+ "source": "DenniXD: same as Story, then the orange Legend Stages button swaps the world list",
  "steps": [
   {
-   "type": "click",
-   "x": 86,
-   "y": 310,
-   "button": "left"
+   "type": "click_pattern",
+   "pattern": "areas_button",
+   "timeout_ms": 5000,
+   "fallback": [
+    764,
+    487
+   ]
   },
   {
    "type": "wait",
-   "ms": 1000
+   "ms": 700
   },
   {
-   "type": "key_down",
-   "key": "w"
-  },
-  {
-   "type": "wait",
-   "ms": 300
-  },
-  {
-   "type": "key_up",
-   "key": "w"
+   "type": "click_pattern",
+   "pattern": "play_area_button",
+   "timeout_ms": 4000
   },
   {
    "type": "wait",
-   "ms": 300
+   "ms": 1500
   },
   {
-   "type": "key_down",
-   "key": "d"
-  },
-  {
-   "type": "key_down",
-   "key": "w"
-  },
-  {
-   "type": "wait",
-   "ms": 4500
-  },
-  {
-   "type": "key_up",
-   "key": "d"
-  },
-  {
-   "type": "key_up",
-   "key": "w"
+   "type": "hold_until",
+   "keys": [
+    "w",
+    "d"
+   ],
+   "patterns": [
+    "select_world"
+   ],
+   "timeout_ms": 12000
   },
   {
    "type": "wait",
    "ms": 500
+  },
+  {
+   "type": "if_image",
+   "patterns": [
+    "legend_stages_toggle"
+   ],
+   "then": [
+    {
+     "type": "click_pattern",
+     "pattern": "legend_stages_toggle",
+     "timeout_ms": 5000
+    },
+    {
+     "type": "wait",
+     "ms": 700
+    }
+   ]
+  },
+  {
+   "type": "scroll",
+   "x": 560,
+   "y": 330,
+   "notches": 20,
+   "anchor": "select_world",
+   "offset": [
+    0,
+    150
+   ]
+  },
+  {
+   "type": "wait",
+   "ms": 300
+  },
+  {
+   "type": "scroll_until",
+   "pattern": "world_{map}",
+   "x": 560,
+   "y": 330,
+   "anchor": "select_world",
+   "offset": [
+    0,
+    150
+   ],
+   "max": 30
+  },
+  {
+   "type": "click_pattern",
+   "pattern": "world_{map}",
+   "timeout_ms": 5000
+  },
+  {
+   "type": "wait",
+   "ms": 800
+  },
+  {
+   "type": "click_pattern",
+   "pattern": "act_{act}",
+   "timeout_ms": 4000
+  },
+  {
+   "type": "wait",
+   "ms": 400
+  },
+  {
+   "type": "click_pattern",
+   "pattern": "select_button",
+   "timeout_ms": 5000
+  },
+  {
+   "type": "wait_for",
+   "patterns": [
+    "join_matchmaking"
+   ],
+   "timeout_ms": 6000
   }
  ]
 }

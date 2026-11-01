@@ -6,8 +6,8 @@
 //! Built-in routes are baked into the exe; your own edits in `routes/` next to
 //! the exe win over them.
 
-use crate::geom::Point;
-use crate::input::{Action, Batch, Priority};
+use crate::geom::{Point, Rect};
+use crate::input::{Action, Batch, Priority, Probe};
 use crate::keys::Key;
 use crate::platform::MouseButton;
 use anyhow::{anyhow, Context, Result};
@@ -42,10 +42,62 @@ pub enum Step {
         #[serde(default = "left")]
         button: String,
     },
-    /// Branch on a pattern being visible in `region` [x1, y1, x2, y2].
+    /// Wait for a pattern, then click it (or `fallback` [x, y] when it never shows).
+    ClickPattern {
+        pattern: String,
+        #[serde(default)]
+        fallback: Option<[i32; 2]>,
+        #[serde(default = "d_timeout")]
+        timeout_ms: u64,
+        #[serde(default = "left")]
+        button: String,
+    },
+    /// Wait until one of `patterns` is on screen.
+    WaitFor {
+        patterns: Vec<String>,
+        #[serde(default = "d_timeout")]
+        timeout_ms: u64,
+        #[serde(default = "yes")]
+        required: bool,
+    },
+    /// Hold `keys` until one of `patterns` shows up (e.g. walk until 'Select World').
+    HoldUntil {
+        keys: Vec<String>,
+        patterns: Vec<String>,
+        #[serde(default = "d_long")]
+        timeout_ms: u64,
+    },
+    /// Wheel at (x, y) - or at `anchor` pattern + `offset` - positive notches = up.
+    Scroll {
+        x: i32,
+        y: i32,
+        notches: i32,
+        #[serde(default)]
+        anchor: Option<String>,
+        #[serde(default)]
+        offset: [i32; 2],
+    },
+    /// Hover (x, y) - or `anchor` + `offset` - and scroll one notch at a time
+    /// until `pattern` is visible.
+    ScrollUntil {
+        pattern: String,
+        x: i32,
+        y: i32,
+        #[serde(default)]
+        up: bool,
+        #[serde(default = "d_max")]
+        max: u32,
+        #[serde(default)]
+        anchor: Option<String>,
+        #[serde(default)]
+        offset: [i32; 2],
+    },
+    /// Branch on a pattern being visible right now (optionally only in
+    /// `region` [x1, y1, x2, y2]).
     IfImage {
         patterns: Vec<String>,
-        region: [i32; 4],
+        #[serde(default)]
+        region: Option<[i32; 4]>,
         #[serde(default)]
         err1: f32,
         #[serde(default)]
@@ -59,6 +111,39 @@ pub enum Step {
 
 fn left() -> String {
     "left".into()
+}
+fn d_timeout() -> u64 {
+    5000
+}
+fn d_long() -> u64 {
+    12000
+}
+fn d_max() -> u32 {
+    25
+}
+fn yes() -> bool {
+    true
+}
+
+/// Looks at the live client for the route's pattern steps.
+pub trait RouteEnv {
+    /// A probe that finds any of `patterns` (inside `region` when given).
+    fn probe(&self, patterns: &[String], region: Option<Rect>) -> Probe;
+}
+
+/// Values for `{map}` / `{act}` in pattern names (filled as pattern keys:
+/// "Space Center" -> world_space_center).
+#[derive(Clone, Debug, Default)]
+pub struct Vars {
+    pub map: String,
+    pub act: String,
+}
+
+impl Vars {
+    pub fn fill(&self, name: &str) -> String {
+        name.replace("{map}", &crate::vision::key(&self.map))
+            .replace("{act}", &crate::vision::key(&self.act))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -75,13 +160,13 @@ impl Route {
         serde_json::from_str(json).context("bad route json")
     }
 
-    /// Total time the route takes (taking the `then` branch of conditions).
+    /// Fixed time the route takes (waits + holds; pattern waits not counted).
     pub fn duration_ms(&self) -> u64 {
         fn d(s: &[Step]) -> u64 {
             s.iter()
                 .map(|x| match x {
                     Step::Wait { ms } | Step::Hold { ms, .. } => *ms,
-                    Step::Click { .. } => 100,
+                    Step::Click { .. } | Step::ClickPattern { .. } => 100,
                     Step::IfImage { then, .. } => d(then),
                     _ => 0,
                 })
@@ -90,24 +175,61 @@ impl Route {
         d(&self.steps)
     }
 
-    /// Flatten to arbiter actions. `pick` decides an `if_image` branch.
-    pub fn to_actions(
-        &self,
-        pick: &mut dyn FnMut(&[String], [i32; 4]) -> bool,
-    ) -> Result<Vec<Action>> {
+    /// Every pattern name the route looks for (after `{map}`/`{act}`).
+    pub fn patterns(&self, vars: &Vars) -> Vec<String> {
+        fn walk(s: &[Step], v: &Vars, out: &mut Vec<String>) {
+            for x in s {
+                match x {
+                    Step::ClickPattern { pattern, .. } => out.push(v.fill(pattern)),
+                    Step::ScrollUntil {
+                        pattern, anchor, ..
+                    } => {
+                        out.push(v.fill(pattern));
+                        out.extend(anchor.iter().map(|a| v.fill(a)));
+                    }
+                    Step::Scroll {
+                        anchor: Some(a), ..
+                    } => out.push(v.fill(a)),
+                    Step::WaitFor { patterns, .. } | Step::HoldUntil { patterns, .. } => {
+                        out.extend(patterns.iter().map(|p| v.fill(p)))
+                    }
+                    Step::IfImage {
+                        patterns,
+                        then,
+                        otherwise,
+                        ..
+                    } => {
+                        out.extend(patterns.iter().map(|p| v.fill(p)));
+                        walk(then, v, out);
+                        walk(otherwise, v, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut out = vec![];
-        flatten(&self.steps, pick, &mut out)?;
+        walk(&self.steps, vars, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    pub fn to_actions(&self, env: &dyn RouteEnv, vars: &Vars) -> Result<Vec<Action>> {
+        let mut out = vec![];
+        flatten(&self.steps, env, vars, &mut out)?;
         Ok(out)
     }
 
-    /// One input batch for `window` (movement must hold focus for its whole length).
+    /// One input batch for `window` (movement holds focus for its whole length).
     pub fn to_batch(
         &self,
         window: crate::geom::Hwnd,
-        pick: &mut dyn FnMut(&[String], [i32; 4]) -> bool,
+        env: &dyn RouteEnv,
+        vars: &Vars,
     ) -> Result<Batch> {
         let mut b = Batch::new(window, format!("move: {}", self.map)).priority(Priority::Normal);
-        b.actions = self.to_actions(pick)?;
+        b.long = true;
+        b.actions = self.to_actions(env, vars)?;
         Ok(b)
     }
 }
@@ -116,11 +238,15 @@ fn key(name: &str) -> Result<Key> {
     Key::parse(name).ok_or_else(|| anyhow!("unknown key '{name}' in route"))
 }
 
-fn flatten(
-    steps: &[Step],
-    pick: &mut dyn FnMut(&[String], [i32; 4]) -> bool,
-    out: &mut Vec<Action>,
-) -> Result<()> {
+fn button(b: &str) -> MouseButton {
+    if b.eq_ignore_ascii_case("right") {
+        MouseButton::Right
+    } else {
+        MouseButton::Left
+    }
+}
+
+fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) -> Result<()> {
     for s in steps {
         match s {
             Step::KeyDown { key: k } => out.push(Action::KeyDown(key(k)?)),
@@ -132,13 +258,81 @@ fn flatten(
                 out.push(Action::Wait(*ms));
                 out.extend(ks.iter().map(|k| Action::KeyUp(*k)));
             }
-            Step::Click { x, y, button } => out.push(Action::Click {
+            Step::Click { x, y, button: b } => out.push(Action::Click {
                 at: Point::new(*x, *y),
-                button: if button.eq_ignore_ascii_case("right") {
-                    MouseButton::Right
-                } else {
-                    MouseButton::Left
-                },
+                button: button(b),
+            }),
+            Step::ClickPattern {
+                pattern,
+                fallback,
+                timeout_ms,
+                button: b,
+            } => out.push(Action::ClickWhen {
+                probe: env.probe(&[v.fill(pattern)], None),
+                timeout_ms: *timeout_ms,
+                fallback: fallback.map(|[x, y]| Point::new(x, y)),
+                button: button(b),
+            }),
+            Step::WaitFor {
+                patterns,
+                timeout_ms,
+                required,
+            } => out.push(Action::WaitFor {
+                probe: env.probe(
+                    &patterns.iter().map(|p| v.fill(p)).collect::<Vec<_>>(),
+                    None,
+                ),
+                timeout_ms: *timeout_ms,
+                required: *required,
+            }),
+            Step::HoldUntil {
+                keys,
+                patterns,
+                timeout_ms,
+            } => {
+                let ks = keys.iter().map(|k| key(k)).collect::<Result<Vec<_>>>()?;
+                out.extend(ks.iter().map(|k| Action::KeyDown(*k)));
+                out.push(Action::WaitFor {
+                    probe: env.probe(
+                        &patterns.iter().map(|p| v.fill(p)).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    timeout_ms: *timeout_ms,
+                    required: true,
+                });
+                out.extend(ks.iter().map(|k| Action::KeyUp(*k)));
+            }
+            Step::Scroll {
+                x,
+                y,
+                notches,
+                anchor,
+                offset,
+            } => out.push(Action::ScrollUntil {
+                probe: Probe::new("scroll", || None),
+                at: Point::new(*x, *y),
+                anchor: anchor.as_ref().map(|a| env.probe(&[v.fill(a)], None)),
+                offset: Point::new(offset[0], offset[1]),
+                up: *notches > 0,
+                max: notches.unsigned_abs(),
+                max_ok: true,
+            }),
+            Step::ScrollUntil {
+                pattern,
+                x,
+                y,
+                up,
+                max,
+                anchor,
+                offset,
+            } => out.push(Action::ScrollUntil {
+                probe: env.probe(&[v.fill(pattern)], None),
+                at: Point::new(*x, *y),
+                anchor: anchor.as_ref().map(|a| env.probe(&[v.fill(a)], None)),
+                offset: Point::new(offset[0], offset[1]),
+                up: *up,
+                max: *max,
+                max_ok: false,
             }),
             Step::IfImage {
                 patterns,
@@ -147,12 +341,19 @@ fn flatten(
                 otherwise,
                 ..
             } => {
-                let branch = if pick(patterns, *region) {
-                    then
-                } else {
-                    otherwise
-                };
-                flatten(branch, pick, out)?;
+                let mut t = vec![];
+                let mut o = vec![];
+                flatten(then, env, v, &mut t)?;
+                flatten(otherwise, env, v, &mut o)?;
+                let region = region.map(|r| Rect::new(r[0], r[1], r[2] - r[0], r[3] - r[1]));
+                out.push(Action::Branch {
+                    probe: env.probe(
+                        &patterns.iter().map(|p| v.fill(p)).collect::<Vec<_>>(),
+                        region,
+                    ),
+                    then: t,
+                    otherwise: o,
+                });
             }
         }
     }
@@ -239,9 +440,6 @@ impl Routes {
 #[derive(Clone, Debug, Deserialize)]
 pub struct StagePick {
     pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub scrolls: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -271,12 +469,14 @@ mod tests {
         assert!(r.maps.len() >= 30, "only {} routes", r.maps.len());
         assert!(!r.maps.contains_key("Contracts"));
         assert!(r.maps.contains_key("Space Center") && r.maps.contains_key("Adventurer Town"));
-        for (name, route) in &r.maps {
+        let env = FakeEnv(vec![]);
+        let v = Vars {
+            map: "Space Center".into(),
+            act: "Act 1".into(),
+        };
+        for (name, route) in r.maps.iter().chain(r.lobby.iter()) {
             route
-                .to_actions(&mut |_, _| true)
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
-            route
-                .to_actions(&mut |_, _| false)
+                .to_actions(&env, &v)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         for m in ["summer", "story", "legend", "raid", "castle", "challenge"] {
@@ -292,11 +492,19 @@ mod tests {
             {"type":"click","x":5,"y":6}]}"#,
         )
         .unwrap();
-        let a = r.to_actions(&mut |_, _| false).unwrap();
+        let a = r.to_actions(&FakeEnv(vec![]), &Vars::default()).unwrap();
         let w = Key::parse("w").unwrap();
         assert_eq!(a[0], Action::KeyDown(w));
         assert_eq!(a[2], Action::Wait(100));
-        assert_eq!(a[5], Action::Wait(2));
+        match &a[5] {
+            Action::Branch {
+                then, otherwise, ..
+            } => {
+                assert_eq!(then, &vec![Action::Wait(1)]);
+                assert_eq!(otherwise, &vec![Action::Wait(2)]);
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(
             a[6],
             Action::Click {
@@ -305,6 +513,46 @@ mod tests {
             }
         ));
         assert_eq!(r.duration_ms(), 100 + 1 + 100);
+    }
+
+    struct FakeEnv(Vec<&'static str>);
+    impl RouteEnv for FakeEnv {
+        fn probe(&self, patterns: &[String], _r: Option<Rect>) -> Probe {
+            let hit = patterns.iter().any(|p| self.0.contains(&p.as_str()));
+            Probe::new(patterns.join("|"), move || hit.then_some(Point::new(1, 1)))
+        }
+    }
+
+    #[test]
+    fn placeholders_and_pattern_steps() {
+        let r = Route::parse(
+            r#"{"map":"Lobby > Story","steps":[
+              {"type":"click_pattern","pattern":"areas_button","fallback":[764,487]},
+              {"type":"hold_until","keys":["w","d"],"patterns":["select_world"]},
+              {"type":"scroll_until","pattern":"world_{map}","x":520,"y":330},
+              {"type":"click_pattern","pattern":"act_{act}"}]}"#,
+        )
+        .unwrap();
+        let v = Vars {
+            map: "Ruined City (Midnight)".into(),
+            act: "Legend Stage 3".into(),
+        };
+        assert_eq!(
+            r.patterns(&v),
+            vec![
+                "act_legend_stage_3",
+                "areas_button",
+                "select_world",
+                "world_ruined_city_midnight"
+            ]
+        );
+        let a = r.to_actions(&FakeEnv(vec!["select_world"]), &v).unwrap();
+        let w = Key::parse("w").unwrap();
+        // hold_until: keys down, wait, keys up
+        assert_eq!(a[1], Action::KeyDown(w));
+        assert!(matches!(&a[3], Action::WaitFor { required: true, .. }));
+        assert_eq!(a[4], Action::KeyUp(w));
+        assert!(matches!(&a[6], Action::ScrollUntil { up: false, .. }));
     }
 
     #[test]

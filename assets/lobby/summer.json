@@ -1,40 +1,30 @@
 {
  "map": "Lobby > Summer Event",
- "source": "user: Play, then walk straight holding Shift (timing to tune)",
+ "source": "DenniXD: Play, then walk straight holding Shift until the Join Matchmaking dialog",
  "steps": [
   {
-   "type": "click",
-   "x": 86,
-   "y": 310,
-   "button": "left"
+   "type": "click_pattern",
+   "pattern": "play_button",
+   "timeout_ms": 5000,
+   "fallback": [
+    86,
+    310
+   ]
   },
   {
    "type": "wait",
    "ms": 1200
   },
   {
-   "type": "key_down",
-   "key": "shift"
-  },
-  {
-   "type": "key_down",
-   "key": "w"
-  },
-  {
-   "type": "wait",
-   "ms": 4000
-  },
-  {
-   "type": "key_up",
-   "key": "w"
-  },
-  {
-   "type": "key_up",
-   "key": "shift"
-  },
-  {
-   "type": "wait",
-   "ms": 800
+   "type": "hold_until",
+   "keys": [
+    "shift",
+    "w"
+   ],
+   "patterns": [
+    "join_matchmaking"
+   ],
+   "timeout_ms": 9000
   }
  ]
 }

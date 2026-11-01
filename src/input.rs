@@ -25,6 +25,38 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// A live look at the screen: where a pattern is right now (client coords),
+/// or `None`. Built by the game code; the arbiter only calls it.
+#[derive(Clone)]
+pub struct Probe {
+    pub label: String,
+    pub find: Arc<dyn Fn() -> Option<Point> + Send + Sync>,
+}
+
+impl Probe {
+    pub fn new(
+        label: impl Into<String>,
+        f: impl Fn() -> Option<Point> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            find: Arc::new(f),
+        }
+    }
+}
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Probe({})", self.label)
+    }
+}
+
+impl PartialEq for Probe {
+    fn eq(&self, o: &Self) -> bool {
+        self.label == o.label
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// Press and release, holding `hold_ms`.
@@ -60,6 +92,38 @@ pub enum Action {
         steps: u32,
     },
     Wait(u64),
+    /// Wait until `probe` sees something. `required`: error when it never shows.
+    WaitFor {
+        probe: Probe,
+        timeout_ms: u64,
+        required: bool,
+    },
+    /// Wait for `probe`, then click where it is (or `fallback` after the timeout).
+    ClickWhen {
+        probe: Probe,
+        timeout_ms: u64,
+        fallback: Option<Point>,
+        button: MouseButton,
+    },
+    /// Hover `at` and wheel one notch at a time until `probe` sees something,
+    /// at most `max` notches.
+    ScrollUntil {
+        probe: Probe,
+        at: Point,
+        /// Scroll where this pattern is (+ `offset`) instead of `at`, when it's visible.
+        anchor: Option<Probe>,
+        offset: Point,
+        up: bool,
+        max: u32,
+        /// Reaching `max` is fine (plain "scroll N notches here").
+        max_ok: bool,
+    },
+    /// Run `then` when `probe` sees something right now, else `otherwise`.
+    Branch {
+        probe: Probe,
+        then: Vec<Action>,
+        otherwise: Vec<Action>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,6 +140,8 @@ pub struct Batch {
     pub priority: Priority,
     pub label: String,
     pub actions: Vec<Action>,
+    /// Movement / navigation: holds focus for seconds on purpose (no warning).
+    pub long: bool,
 }
 
 impl Batch {
@@ -85,6 +151,7 @@ impl Batch {
             priority: Priority::Normal,
             label: label.into(),
             actions: vec![],
+            long: false,
         }
     }
     pub fn priority(mut self, p: Priority) -> Self {
@@ -124,6 +191,8 @@ pub enum InputError {
     OutsideClient(Point),
     Platform(String),
     Shutdown,
+    /// A pattern the batch waited for never showed up.
+    NotSeen(String),
 }
 
 impl std::fmt::Display for InputError {
@@ -137,6 +206,7 @@ impl std::fmt::Display for InputError {
             }
             InputError::Platform(e) => write!(f, "input failed: {e}"),
             InputError::Shutdown => f.write_str("input arbiter shut down"),
+            InputError::NotSeen(p) => write!(f, "'{p}' never showed up"),
         }
     }
 }
@@ -301,7 +371,7 @@ fn arbiter_loop(
         let res = runner.run(&q.batch);
         runner.release_all();
         let held = t.elapsed();
-        if held > Duration::from_millis(opts.max_lease_ms) {
+        if held > Duration::from_millis(opts.max_lease_ms) && !q.batch.long {
             log::warn!(
                 "batch '{}' held focus {} ms (> {} ms): split it so other clients don't wait",
                 q.batch.label,
@@ -330,15 +400,32 @@ impl Runner<'_> {
         self.ctl.checkpoint().map_err(|_| InputError::Stopped)?;
         let geo = self.p.geometry(b.window).ok_or(InputError::WindowGone)?;
         // Validate every point before taking focus.
-        for a in &b.actions {
-            if let Action::MoveTo(p) | Action::Click { at: p, .. } | Action::Scroll { at: p, .. } =
-                a
-            {
-                if !geo.in_client(*p) {
-                    return Err(InputError::OutsideClient(*p));
+        fn check(geo: &Geometry, acts: &[Action]) -> Result<(), InputError> {
+            for a in acts {
+                match a {
+                    Action::MoveTo(p)
+                    | Action::Click { at: p, .. }
+                    | Action::Scroll { at: p, .. }
+                    | Action::ScrollUntil { at: p, .. }
+                    | Action::ClickWhen {
+                        fallback: Some(p), ..
+                    } => {
+                        if !geo.in_client(*p) {
+                            return Err(InputError::OutsideClient(*p));
+                        }
+                    }
+                    Action::Branch {
+                        then, otherwise, ..
+                    } => {
+                        check(geo, then)?;
+                        check(geo, otherwise)?;
+                    }
+                    _ => {}
                 }
             }
+            Ok(())
         }
+        check(&geo, &b.actions)?;
         self.focus(b.window)?;
         for a in &b.actions {
             if self.ctl.is_stopped() {
@@ -461,8 +548,105 @@ impl Runner<'_> {
                 self.button(*button, false)?;
             }
             Action::Wait(ms) => self.sleep(*ms, w)?,
+            Action::WaitFor {
+                probe,
+                timeout_ms,
+                required,
+            } => {
+                if self.wait_probe(probe, *timeout_ms, w)?.is_none() && *required {
+                    return Err(InputError::NotSeen(probe.label.clone()));
+                }
+            }
+            Action::ClickWhen {
+                probe,
+                timeout_ms,
+                fallback,
+                button,
+            } => {
+                let at = match self.wait_probe(probe, *timeout_ms, w)? {
+                    Some(p) => p,
+                    None => fallback.ok_or_else(|| InputError::NotSeen(probe.label.clone()))?,
+                };
+                if !geo.in_client(at) {
+                    return Err(InputError::OutsideClient(at));
+                }
+                self.act(
+                    geo,
+                    w,
+                    &Action::Click {
+                        at,
+                        button: *button,
+                    },
+                )?;
+            }
+            Action::ScrollUntil {
+                probe,
+                at,
+                anchor,
+                offset,
+                up,
+                max,
+                max_ok,
+            } => {
+                let at = anchor
+                    .as_ref()
+                    .and_then(|a| (a.find)())
+                    .map(|p| Point::new(p.x + offset.x, p.y + offset.y))
+                    .filter(|p| geo.in_client(*p))
+                    .unwrap_or(*at);
+                self.hover(geo, at)?;
+                let mut n = 0;
+                while (probe.find)().is_none() {
+                    if n >= *max {
+                        if *max_ok {
+                            break;
+                        }
+                        return Err(InputError::NotSeen(probe.label.clone()));
+                    }
+                    self.hover(geo, at)?;
+                    self.p.wheel(if *up { 1 } else { -1 }).map_err(perr)?;
+                    self.sleep(220, w)?;
+                    n += 1;
+                }
+            }
+            Action::Branch {
+                probe,
+                then,
+                otherwise,
+            } => {
+                let branch = if (probe.find)().is_some() {
+                    then
+                } else {
+                    otherwise
+                };
+                for a in branch {
+                    if self.ctl.is_stopped() {
+                        return Err(InputError::Stopped);
+                    }
+                    self.act(geo, w, a)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Poll `probe` every ~80 ms for up to `timeout_ms` (pause-aware).
+    fn wait_probe(
+        &mut self,
+        probe: &Probe,
+        timeout_ms: u64,
+        w: Hwnd,
+    ) -> Result<Option<Point>, InputError> {
+        let mut dl = self.ctl.deadline(timeout_ms as f64 / 1000.0);
+        loop {
+            if let Some(p) = (probe.find)() {
+                return Ok(Some(p));
+            }
+            if dl.expired() {
+                return Ok(None);
+            }
+            self.sleep(80, w)?;
+        }
     }
 
     fn release_all(&mut self) {
@@ -618,6 +802,88 @@ mod tests {
                 _ => (x, y),
             });
         assert_eq!((sx, sy), (100, -37));
+    }
+
+    #[test]
+    fn click_when_waits_for_the_probe() {
+        let (mock, _c, arb) = setup(1);
+        let t0 = Instant::now();
+        let probe = Probe::new("btn", move || {
+            (t0.elapsed() > Duration::from_millis(150)).then_some(Point::new(50, 60))
+        });
+        arb.run(Batch::new(Hwnd(100), "x").then(Action::ClickWhen {
+            probe,
+            timeout_ms: 2000,
+            fallback: None,
+            button: MouseButton::Left,
+        }))
+        .unwrap();
+        assert!(mock.take_calls().contains(&Call::MoveAbs(58, 91)));
+    }
+
+    #[test]
+    fn missing_pattern_is_reported_and_fallback_used() {
+        let (mock, _c, arb) = setup(1);
+        let never = Probe::new("ghost", || None);
+        let e = arb
+            .run(Batch::new(Hwnd(100), "x").then(Action::WaitFor {
+                probe: never.clone(),
+                timeout_ms: 100,
+                required: true,
+            }))
+            .unwrap_err();
+        assert_eq!(e, InputError::NotSeen("ghost".into()));
+        arb.run(Batch::new(Hwnd(100), "x").then(Action::ClickWhen {
+            probe: never,
+            timeout_ms: 50,
+            fallback: Some(Point::new(1, 2)),
+            button: MouseButton::Left,
+        }))
+        .unwrap();
+        assert!(mock.take_calls().contains(&Call::MoveAbs(9, 33)));
+    }
+
+    #[test]
+    fn scroll_until_and_branch() {
+        let (mock, _c, arb) = setup(1);
+        let hits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let h2 = hits.clone();
+        let probe = Probe::new("world", move || {
+            (h2.fetch_add(1, Ordering::SeqCst) >= 3).then_some(Point::new(5, 5))
+        });
+        let w = Key::parse("w").unwrap();
+        arb.run(
+            Batch::new(Hwnd(100), "x")
+                .then(Action::ScrollUntil {
+                    probe,
+                    at: Point::new(10, 10),
+                    anchor: None,
+                    offset: Point::default(),
+                    up: false,
+                    max: 10,
+                    max_ok: false,
+                })
+                .then(Action::Branch {
+                    probe: Probe::new("no", || None),
+                    then: vec![],
+                    otherwise: vec![Action::KeyDown(w)],
+                }),
+        )
+        .unwrap();
+        let calls = mock.take_calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::Wheel(-1)))
+                .count(),
+            3
+        );
+        assert!(calls.contains(&Call::Key(w, true)));
+        assert_eq!(
+            calls.last(),
+            Some(&Call::Key(w, false)),
+            "held key released at the end"
+        );
     }
 
     #[test]

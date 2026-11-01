@@ -1,54 +1,119 @@
 {
  "map": "Lobby > Raid",
- "source": "old AHK RaidMovement",
+ "source": "DenniXD: Areas > Raids > A+W 4 s, then hold W until Select World",
  "steps": [
   {
-   "type": "click",
-   "x": 764,
-   "y": 487,
-   "button": "left"
+   "type": "click_pattern",
+   "pattern": "areas_button",
+   "timeout_ms": 5000,
+   "fallback": [
+    764,
+    487
+   ]
+  },
+  {
+   "type": "wait",
+   "ms": 700
+  },
+  {
+   "type": "click_pattern",
+   "pattern": "raids_button",
+   "timeout_ms": 4000
+  },
+  {
+   "type": "wait",
+   "ms": 1500
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 4000
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "hold_until",
+   "keys": [
+    "w"
+   ],
+   "patterns": [
+    "select_world"
+   ],
+   "timeout_ms": 12000
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "scroll",
+   "x": 560,
+   "y": 330,
+   "notches": 20,
+   "anchor": "select_world",
+   "offset": [
+    0,
+    150
+   ]
   },
   {
    "type": "wait",
    "ms": 300
   },
   {
-   "type": "click",
-   "x": 495,
-   "y": 410,
-   "button": "left"
+   "type": "scroll_until",
+   "pattern": "world_{map}",
+   "x": 560,
+   "y": 330,
+   "anchor": "select_world",
+   "offset": [
+    0,
+    150
+   ],
+   "max": 30
+  },
+  {
+   "type": "click_pattern",
+   "pattern": "world_{map}",
+   "timeout_ms": 5000
   },
   {
    "type": "wait",
-   "ms": 500
+   "ms": 800
   },
   {
-   "type": "key_down",
-   "key": "a"
+   "type": "click_pattern",
+   "pattern": "act_{act}",
+   "timeout_ms": 4000
   },
   {
    "type": "wait",
    "ms": 400
   },
   {
-   "type": "key_up",
-   "key": "a"
+   "type": "click_pattern",
+   "pattern": "select_button",
+   "timeout_ms": 5000
   },
   {
-   "type": "wait",
-   "ms": 500
-  },
-  {
-   "type": "key_down",
-   "key": "w"
-  },
-  {
-   "type": "wait",
-   "ms": 5000
-  },
-  {
-   "type": "key_up",
-   "key": "w"
+   "type": "wait_for",
+   "patterns": [
+    "join_matchmaking"
+   ],
+   "timeout_ms": 6000
   }
  ]
 }

@@ -28,6 +28,19 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
     Flow {
+        name: "Stages (Story / Legend / Infinite / Raid)",
+        steps: "Areas > Play Area (or Raids) > walk into the room until 'Select World' > Main/Legend toggle > scroll to your world > act > Select > Join Matchmaking > Play Here > Start. Your own world + act names are under 'Your stage'.",
+        needs: &[
+            n("play_area_button", "text", "Areas pop-up: the 'Play Area' tile title"),
+            n("raids_button", "text", "Areas pop-up: the 'Raids' tile title"),
+            n("select_world", "text", "World list title 'Select World'"),
+            n("legend_stages_toggle", "text", "Orange 'Legend Stages' button above the list (shows on the Main list)"),
+            n("main_stages_toggle", "text", "Blue 'Main Stages' button above the list (shows on the Legend list)"),
+            n("select_button", "text", "Green 'Select' after picking an act"),
+            n("find_match", "text", "'Find Match' under the magnifier (only if you use Find Match)"),
+        ],
+    },
+    Flow {
         name: "Party (alts)",
         steps: "All clients join your private server > main clicks the party + (top right) > Invite next to each alt > each alt clicks Accept on the Party Invite pop-up.",
         needs: &[
@@ -95,4 +108,22 @@ mod tests {
             assert_eq!(crate::vision::key(n), n, "{n} isn't a normalised key");
         }
     }
+}
+
+/// Patterns for the world + act chosen on Home (Story / Legend / Raid).
+pub fn stage_needs(mode: crate::config::Mode, map: &str, act: &str) -> Vec<(String, String)> {
+    use crate::config::Mode;
+    if !matches!(mode, Mode::Story | Mode::Legend | Mode::Raid) {
+        return vec![];
+    }
+    vec![
+        (
+            format!("world_{}", crate::vision::key(map)),
+            format!("World title '{map}' in the Select World list"),
+        ),
+        (
+            format!("act_{}", crate::vision::key(act)),
+            format!("Act button '{act}'"),
+        ),
+    ]
 }

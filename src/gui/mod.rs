@@ -642,6 +642,24 @@ impl App {
                                 }
                             });
                     });
+                    // Switching modes: keep map/act valid for the new list.
+                    if !ms.maps.iter().any(|m| m.name == r.map) {
+                        if let Some(m) = ms.maps.first() {
+                            r.map = m.name.clone();
+                            changed = true;
+                        }
+                    }
+                    if !ms.acts.iter().any(|a| a.name == r.act) {
+                        if let Some(a) = ms
+                            .acts
+                            .iter()
+                            .find(|a| a.name != "Infinite")
+                            .or(ms.acts.first())
+                        {
+                            r.act = a.name.clone();
+                            changed = true;
+                        }
+                    }
                     if r.mode == Mode::Story {
                         changed |= toggle(ui, &mut r.next_level, "Next level after a win");
                     }
@@ -1219,6 +1237,14 @@ impl App {
         });
     }
 
+    /// `{map}` / `{act}` for routes, from the Home page.
+    fn vars(&self) -> crate::movement::Vars {
+        crate::movement::Vars {
+            map: self.settings.run.map.clone(),
+            act: self.settings.run.act.clone(),
+        }
+    }
+
     fn parse_route_text(&self) -> Result<Route, String> {
         let steps = serde_json::from_str(&self.route_text)
             .map_err(|e| format!("not valid steps JSON: {e}"))?;
@@ -1227,7 +1253,8 @@ impl App {
             source: "user".into(),
             steps,
         };
-        r.to_actions(&mut |_, _| true).map_err(|e| e.to_string())?;
+        r.to_actions(&crate::game::Blind, &self.vars())
+            .map_err(|e| e.to_string())?;
         Ok(r)
     }
 
@@ -1268,17 +1295,16 @@ impl App {
                 return;
             }
         };
-        let lib_hits: Vec<String> = self.lib.names().map(String::from).collect();
-        let frame = self.platform.capture_client(info.hwnd).ok();
-        let lib = &self.lib;
-        let batch = r.to_batch(info.hwnd, &mut |pats: &[String], reg: [i32; 4]| {
-            let area = Rect::new(reg[0], reg[1], reg[2] - reg[0], reg[3] - reg[1]);
-            frame.as_ref().is_some_and(|f| {
-                pats.iter()
-                    .any(|p| lib.get(p).and_then(|x| x.find_in(f, Some(area))).is_some())
-            })
-        });
-        let _ = lib_hits;
+        let screen = crate::game::LiveScreen::new(self.platform.clone(), info.hwnd, &self.lib);
+        let vars = self.vars();
+        let missing = screen.missing(&r.patterns(&vars));
+        if !missing.is_empty() {
+            self.say(format!(
+                "route needs patterns you haven't captured yet: {} (Patterns page)",
+                missing.join(", ")
+            ));
+        }
+        let batch = r.to_batch(info.hwnd, &screen, &vars);
         match batch {
             Ok(b) => {
                 let arb = self.arbiter();

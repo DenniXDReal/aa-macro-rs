@@ -15,6 +15,7 @@ pub mod capture;
 pub mod config;
 pub mod control;
 pub mod flows;
+pub mod game;
 pub mod geom;
 pub mod gui;
 pub mod input;
