@@ -30,6 +30,9 @@ pub struct Settings {
     /// What the main client farms (Home page).
     pub run: RunSettings,
     pub keybinds: Keybinds,
+    pub webhook: crate::webhook::WebhookSettings,
+    /// Dock the main client into the app's preview box; alts stack behind it.
+    pub dock: bool,
     /// Roblox Account Manager web server port.
     pub ram_port: u16,
     /// RAM accounts: one main + alts, launch order = main first.
@@ -242,6 +245,8 @@ impl Default for Settings {
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),
             keybinds: Keybinds::default(),
+            webhook: crate::webhook::WebhookSettings::default(),
+            dock: true,
             ram_port: 7963,
             accounts: vec![],
             update_repo: "DenniXDReal/aa-macro-rs".into(),

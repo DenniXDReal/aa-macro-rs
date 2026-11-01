@@ -16,6 +16,14 @@ GitHub → **Actions** → latest green **build** run → **Artifacts** → `aa-
 
 Keybinds (Settings): units **1–6**, upgrade **R**, cancel/close panel **Q**.
 
+### Docking (default on)
+
+The main client is moved and resized so its 800×599 viewport sits exactly inside the box on Home. It's kept in front of the app without taking focus. **Alts are stacked at the same spot but sent behind**. They keep rendering, so capture and the alt thumbnails still work. When an alt needs input, the input controller brings it forward for its turn, then the main goes back on top. On other pages the main is moved behind the app. **Undock** in the top bar tiles the clients instead. F1 re-docks.
+
+### Discord webhook
+
+Settings → Discord webhook. Paste the URL (Server Settings → Integrations → Webhooks → Copy URL), then **Save** and **Test**. It's stored encrypted. Options: win/loss with a screenshot, disconnects, start/stop. Add your Discord user ID to get pinged. Messages go straight to Discord from a background thread.
+
 ### Accounts: Roblox Account Manager (ic3w0lf22)
 
 The macro asks RAM to launch your main + alts straight into your private server. Cookies never leave RAM.

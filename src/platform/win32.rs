@@ -280,6 +280,65 @@ impl Platform for Win32Platform {
         }
     }
 
+    fn own_window(&self) -> Option<Hwnd> {
+        use windows::Win32::System::Threading::GetCurrentProcessId;
+        let me = unsafe { GetCurrentProcessId() };
+        let mut all: Vec<HWND> = vec![];
+        unsafe {
+            let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut Vec<HWND> as isize));
+        }
+        all.into_iter()
+            .filter(|h| unsafe {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(*h, Some(&mut pid));
+                pid == me
+                    && IsWindowVisible(*h).as_bool()
+                    && !GetWindow(*h, GW_OWNER)
+                        .map(|o| !o.0.is_null())
+                        .unwrap_or(false)
+            })
+            .max_by_key(|h| {
+                let mut r = RECT::default();
+                unsafe {
+                    let _ = GetWindowRect(*h, &mut r);
+                }
+                (r.right - r.left) * (r.bottom - r.top)
+            })
+            .map(w)
+    }
+
+    fn raise(&self, hwnd: Hwnd) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_TOP, SWP_NOMOVE, SWP_NOSIZE};
+        unsafe {
+            SetWindowPos(
+                h(hwnd),
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
+        .context("raise")
+    }
+
+    fn lower(&self, hwnd: Hwnd) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE};
+        unsafe {
+            SetWindowPos(
+                h(hwnd),
+                Some(HWND_BOTTOM),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
+        .context("lower")
+    }
+
     fn is_minimized(&self, hwnd: Hwnd) -> bool {
         unsafe { IsIconic(h(hwnd)).as_bool() }
     }

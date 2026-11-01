@@ -24,7 +24,6 @@ pub const FLOWS: &[Flow] = &[
         needs: &[
             n("play_button", "icon", "Left menu: the Play button (controller icon + 'Play')"),
             n("areas_button", "icon", "Right menu: the Areas button"),
-            n("unit_hotbar", "text", "Bottom: the 'Lv.' text of the first unit card (proves you're in lobby or stage)"),
         ],
     },
     Flow {
@@ -70,12 +69,9 @@ pub const FLOWS: &[Flow] = &[
     },
     Flow {
         name: "In stage",
-        steps: "Loaded in > place units on your spots > upgrade by priority > watch for the end screen.",
+        steps: "Loaded in > place units with hotbar keys 1-6 on your spots > upgrade with R by priority > watch for the end screen.",
         needs: &[
-            n("wave_label", "text", "Top left: the word 'Wave' (not the number)"),
             n("vote_start", "text", "Vote / skip button at stage start, if the mode shows one"),
-            n("unit_upgrade", "text", "Open unit panel: the 'Upgrade' button text"),
-            n("unit_sell", "text", "Open unit panel: 'Sell' text (proves a placement worked)"),
         ],
     },
     Flow {

@@ -39,8 +39,51 @@ pub fn tile(n: usize, work: Rect, outer_w: i32, outer_h: i32) -> Vec<Rect> {
         .collect()
 }
 
+/// Where Roblox's OUTER window must go so its client (viewport) lands at
+/// `client_at` (screen px) with size `cw x ch`, given its current borders.
+pub fn outer_for_client_at(
+    geo: &crate::geom::Geometry,
+    client_at: crate::geom::Point,
+    cw: i32,
+    ch: i32,
+) -> Rect {
+    let (bx, by) = geo.border();
+    let (ow, oh) = geo.outer_for_client(cw, ch);
+    Rect::new(client_at.x - bx, client_at.y - by, ow, oh)
+}
+
+/// Screen px of a point given in the app's UI points (egui) at `ppp`
+/// pixels-per-point, relative to the app window's client origin.
+pub fn ui_to_screen(
+    app_client_origin: crate::geom::Point,
+    ui_x: f32,
+    ui_y: f32,
+    ppp: f32,
+) -> crate::geom::Point {
+    crate::geom::Point::new(
+        app_client_origin.x + (ui_x * ppp).round() as i32,
+        app_client_origin.y + (ui_y * ppp).round() as i32,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn docking_math() {
+        use crate::geom::{Geometry, Hwnd, Point};
+        let g = Geometry {
+            hwnd: Hwnd(1),
+            outer: Rect::new(500, 400, 816, 638),
+            client: Rect::new(508, 431, 800, 599),
+        };
+        let target = ui_to_screen(Point::new(100, 50), 90.0, 120.0, 1.25);
+        assert_eq!(target, Point::new(213, 200));
+        let r = outer_for_client_at(&g, target, 800, 599);
+        assert_eq!(r, Rect::new(205, 169, 816, 638));
+    }
+
     use super::*;
 
     #[test]

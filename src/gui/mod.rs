@@ -140,6 +140,16 @@ pub struct App {
     ram_rx: Receiver<RamMsg>,
     ram_tx: Sender<RamMsg>,
 
+    // docking
+    dock_rect: Option<egui::Rect>,
+    own_hwnd: Option<crate::geom::Hwnd>,
+    last_dock: Instant,
+    docked_ok: bool,
+
+    // webhook
+    notifier: crate::webhook::Notifier,
+    hook_input: String,
+
     // run state (game loop arrives with your patterns)
     running: bool,
     paused: bool,
@@ -233,6 +243,12 @@ impl App {
             ps_input: String::new(),
             ram_rx,
             ram_tx,
+            dock_rect: None,
+            own_hwnd: None,
+            last_dock: Instant::now() - Duration::from_secs(10),
+            docked_ok: false,
+            notifier: crate::webhook::Notifier::start(),
+            hook_input: String::new(),
             running: false,
             paused: false,
             started: None,
@@ -275,6 +291,16 @@ impl App {
         self.running = true;
         self.paused = false;
         self.started.get_or_insert(Instant::now());
+        self.hook(
+            crate::webhook::Kind::Info,
+            "Started",
+            &format!(
+                "{} on {}",
+                self.settings.run.mode.label(),
+                client_name(self.main, &self.settings)
+            ),
+            false,
+        );
         self.say(format!(
             "Start: {} on client #{} - the game loop is switched on once your patterns are captured (Patterns page)",
             self.settings.run.mode.label(),
@@ -286,6 +312,13 @@ impl App {
         self.control.stop();
         if self.running {
             self.say("Stopped");
+            let (w, l) = (self.wins, self.losses);
+            self.hook(
+                crate::webhook::Kind::Info,
+                "Stopped",
+                &format!("{w} win(s), {l} loss(es) this session"),
+                false,
+            );
         }
         self.running = false;
         self.paused = false;
@@ -305,12 +338,100 @@ impl App {
 
     fn hotkey(&mut self, n: u8) {
         match n {
-            1 => self.tile(),
+            1 => {
+                if self.settings.dock {
+                    self.last_dock = Instant::now() - Duration::from_secs(10);
+                } else {
+                    self.tile();
+                }
+            }
             2 => self.start(),
             3 => self.stop(),
             4 => self.toggle_pause(),
             _ => {}
         }
+    }
+
+    /// Queue a Discord message if the webhook is set up.
+    fn hook(&self, kind: crate::webhook::Kind, title: &str, body: &str, ping: bool) {
+        let w = &self.settings.webhook;
+        if !w.enabled || (kind == crate::webhook::Kind::Info && !w.on_start_stop) {
+            return;
+        }
+        let Some(url) = self.secrets.get(crate::webhook::URL_KEY) else {
+            return;
+        };
+        let shot = (w.screenshot && kind != crate::webhook::Kind::Info)
+            .then(|| {
+                self.main_hwnd()
+                    .and_then(|c| self.platform.capture_client(c.hwnd).ok())
+            })
+            .flatten();
+        self.notifier.notify(
+            &url,
+            &w.ping_user,
+            crate::webhook::Message {
+                kind,
+                title: title.into(),
+                body: body.into(),
+                screenshot: shot,
+                ping,
+            },
+        );
+    }
+
+    /// Keep the main client inside the Home box, alts stacked behind it.
+    fn dock_tick(&mut self, ppp: f32) {
+        if !self.settings.dock || self.last_dock.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        self.last_dock = Instant::now();
+        let p = self.platform.clone();
+        if self.own_hwnd.is_none() {
+            self.own_hwnd = p.own_window();
+        }
+        let (Some(own), Some(main)) = (self.own_hwnd, self.main_hwnd()) else {
+            self.docked_ok = false;
+            return;
+        };
+        let Some(app) = p.geometry(own) else { return };
+        let fg = p.foreground();
+        let ours = fg == Some(own) || self.clients.iter().any(|c| Some(c.hwnd) == fg);
+        if self.page != Page::Home || p.is_minimized(own) {
+            // Box not on screen: keep Roblox out of the way of the other pages.
+            if ours && fg != Some(main.hwnd) {
+                let _ = p.lower(main.hwnd);
+            }
+            return;
+        }
+        let Some(rect) = self.dock_rect else { return };
+        let target = crate::layout::ui_to_screen(
+            Point::new(app.client.x, app.client.y),
+            rect.min.x,
+            rect.min.y,
+            ppp,
+        );
+        let (cw, ch) = (self.settings.client_w, self.settings.client_h);
+        for (i, c) in self.clients.clone().iter().enumerate() {
+            let Some(g) = p.geometry(c.hwnd) else {
+                continue;
+            };
+            if (g.client.x, g.client.y, g.client.w, g.client.h) != (target.x, target.y, cw, ch) {
+                let _ = p.move_resize(
+                    c.hwnd,
+                    crate::layout::outer_for_client_at(&g, target, cw, ch),
+                );
+            }
+            if i != self.main && ours && fg != Some(c.hwnd) {
+                let _ = p.lower(c.hwnd);
+            }
+        }
+        if ours {
+            let _ = p.raise(main.hwnd);
+        }
+        self.docked_ok = p
+            .geometry(main.hwnd)
+            .is_some_and(|g| (g.client.x, g.client.y) == (target.x, target.y));
     }
 
     fn main_hwnd(&self) -> Option<WinInfo> {
@@ -355,6 +476,37 @@ impl App {
                 .clicked()
             {
                 self.doctor();
+            }
+            if self.settings.dock {
+                chip(
+                    ui,
+                    if self.docked_ok {
+                        "Roblox docked"
+                    } else {
+                        "docking…"
+                    },
+                    TEXT,
+                    Some(if self.docked_ok { GOOD } else { WARN }),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Undock").color(Color32::WHITE))
+                            .fill(PURPLE_DIM),
+                    )
+                    .clicked()
+                {
+                    self.settings.dock = false;
+                    self.docked_ok = false;
+                    self.dirty();
+                    self.tile();
+                }
+            } else if ui
+                .button("Dock")
+                .on_hover_text("put the main client inside the Home preview box")
+                .clicked()
+            {
+                self.settings.dock = true;
+                self.dirty();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.vertical(|ui| {
@@ -423,7 +575,14 @@ impl App {
 
     fn page_home(&mut self, ui: &mut egui::Ui) {
         let avail = ui.available_width();
-        let left_w = (avail * 0.58).max(420.0);
+        let ppp = ui.ctx().pixels_per_point();
+        let left_w = if self.settings.dock {
+            (self.settings.client_w as f32 / ppp + 26.0)
+                .min(avail - 380.0)
+                .max(420.0)
+        } else {
+            (avail * 0.58).max(420.0)
+        };
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(left_w, 0.0),
@@ -497,7 +656,34 @@ impl App {
                 toggle(ui, &mut self.live, "live");
             });
             self.sel = self.main;
-            if let Some(tex) = &self.tex {
+            if self.settings.dock {
+                let ppp = ui.ctx().pixels_per_point();
+                let size = Vec2::new(
+                    self.settings.client_w as f32 / ppp,
+                    self.settings.client_h as f32 / ppp,
+                );
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, BG);
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(1.0, PURPLE_DIM),
+                    egui::StrokeKind::Outside,
+                );
+                let msg = if self.clients.is_empty() {
+                    "No Roblox client - open Roblox (windowed) and press Refresh"
+                } else {
+                    "Roblox is docked here"
+                };
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    msg,
+                    egui::FontId::proportional(14.0),
+                    MUTED,
+                );
+                self.dock_rect = Some(rect);
+            } else if let Some(tex) = &self.tex {
                 let size = tex.size_vec2();
                 let scale = (ui.available_width() / size.x).min(1.0);
                 let (rect, _) = ui.allocate_exact_size(size * scale, Sense::hover());
@@ -1410,6 +1596,8 @@ impl App {
             self.dirty();
         }
         ui.add_space(8.0);
+        card(ui, |ui| self.webhook_section(ui));
+        ui.add_space(8.0);
         card(ui, |ui| self.updates_section(ui));
         ui.add_space(8.0);
         ui.label(
@@ -1430,6 +1618,80 @@ impl App {
             .size(11.0)
             .color(MUTED),
         );
+    }
+
+    fn webhook_section(&mut self, ui: &mut egui::Ui) {
+        use crate::webhook;
+        ui.label(RichText::new("DISCORD WEBHOOK").size(11.0).color(MUTED));
+        let mut changed = false;
+        changed |= toggle(
+            ui,
+            &mut self.settings.webhook.enabled,
+            "Send notifications to Discord",
+        );
+        let has = self.secrets.has(webhook::URL_KEY);
+        ui.horizontal(|ui| {
+            ui.label("Webhook URL");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.hook_input)
+                    .password(true)
+                    .desired_width(330.0)
+                    .hint_text(if has { "saved (encrypted)" } else { "https://discord.com/api/webhooks/…" }),
+            );
+            if ui.button("Save").clicked() {
+                let u = self.hook_input.trim().to_string();
+                if !u.is_empty() && !webhook::valid_url(&u) {
+                    self.say("that isn't a Discord webhook URL (Server Settings > Integrations > Webhooks > Copy URL)");
+                } else if self.secrets.set(webhook::URL_KEY, &u).is_ok() {
+                    self.hook_input.clear();
+                    self.say(if u.is_empty() { "webhook removed" } else { "webhook saved (encrypted)" });
+                }
+            }
+            if ui.add_enabled(has, egui::Button::new("Test")).clicked() {
+                let url = self.secrets.get(webhook::URL_KEY).unwrap_or_default();
+                let ping = self.settings.webhook.ping_user.clone();
+                let shot = self.main_hwnd().and_then(|c| self.platform.capture_client(c.hwnd).ok());
+                let tx = self.log_tx.clone();
+                std::thread::spawn(move || {
+                    let m = webhook::Message {
+                        kind: webhook::Kind::Info,
+                        title: "Webhook works".into(),
+                        body: "Notifications from Anime Adventure Macro will arrive here.".into(),
+                        screenshot: shot,
+                        ping: true,
+                    };
+                    let _ = tx.send(match webhook::send(&url, &ping, &m) {
+                        Ok(()) => "webhook test sent - check Discord".into(),
+                        Err(e) => format!("webhook test failed: {e}"),
+                    });
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Ping my Discord user ID");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.settings.webhook.ping_user)
+                        .desired_width(170.0)
+                        .hint_text("digits, optional"),
+                )
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            let w = &mut self.settings.webhook;
+            changed |= toggle(ui, &mut w.on_result, "Win / loss");
+            changed |= toggle(ui, &mut w.screenshot, "with screenshot");
+            changed |= toggle(ui, &mut w.on_disconnect, "Disconnects");
+            changed |= toggle(ui, &mut w.on_start_stop, "Start / stop");
+        });
+        ui.label(
+            RichText::new("The URL is stored encrypted and never shown again. User ID: Discord > Settings > Advanced > Developer Mode, then right-click your name > Copy User ID.")
+                .size(11.0)
+                .color(MUTED),
+        );
+        if changed {
+            self.dirty();
+        }
     }
 
     fn updates_section(&mut self, ui: &mut egui::Ui) {
@@ -1904,6 +2166,7 @@ impl eframe::App for App {
             .show(ui, |ui| {
                 self.rail(ui);
             });
+        let ppp = ctx.pixels_per_point();
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12))
             .show(ui, |ui| {
@@ -1920,6 +2183,7 @@ impl eframe::App for App {
                         Page::Settings => self.page_settings(ui),
                     });
             });
+        self.dock_tick(ppp);
     }
 }
 
@@ -1933,7 +2197,7 @@ pub fn run(
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title(title.clone())
-            .with_inner_size([1320.0, 860.0])
+            .with_inner_size([1460.0, 940.0])
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
     };

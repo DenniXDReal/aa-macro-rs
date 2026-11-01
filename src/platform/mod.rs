@@ -50,6 +50,19 @@ pub trait Platform: Send + Sync {
     /// Client-area picture of the window, also when covered by other windows.
     fn capture_client(&self, hwnd: Hwnd) -> Result<Frame>;
 
+    /// This app's own main window (for docking Roblox into it).
+    fn own_window(&self) -> Option<Hwnd> {
+        None
+    }
+    /// Put `hwnd` on top of the normal windows without activating it.
+    fn raise(&self, _hwnd: Hwnd) -> Result<()> {
+        Ok(())
+    }
+    /// Send `hwnd` behind every other window (stays rendered, still capturable).
+    fn lower(&self, _hwnd: Hwnd) -> Result<()> {
+        Ok(())
+    }
+
     // ---- input (arbiter only) ----
     fn key(&self, key: Key, down: bool) -> Result<()>;
     /// Absolute cursor move to screen (x, y): real move event + exact position.
