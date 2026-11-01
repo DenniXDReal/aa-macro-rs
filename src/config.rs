@@ -27,6 +27,13 @@ pub struct Settings {
     pub instances: Vec<InstanceProfile>,
     /// Hotbar slots 1-6 (shared by every instance for now).
     pub units: Vec<UnitSlot>,
+    /// What the main client farms (Home page).
+    pub run: RunSettings,
+    pub keybinds: Keybinds,
+    /// Roblox Account Manager web server port.
+    pub ram_port: u16,
+    /// RAM accounts: one main + alts, launch order = main first.
+    pub accounts: Vec<crate::accounts::AccountSlot>,
     /// GitHub repo the updater reads releases from.
     pub update_repo: String,
     /// Check for a new build when the app opens.
@@ -48,13 +55,13 @@ pub enum Mode {
 
 impl Mode {
     pub const ALL: [Mode; 7] = [
+        Mode::SummerHunt,
         Mode::Story,
         Mode::Legend,
         Mode::Raid,
-        Mode::Dungeon,
         Mode::InfinityCastle,
+        Mode::Dungeon,
         Mode::Challenge,
-        Mode::SummerHunt,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -64,7 +71,80 @@ impl Mode {
             Mode::Dungeon => "Dungeon",
             Mode::InfinityCastle => "Infinity Castle",
             Mode::Challenge => "Challenge",
-            Mode::SummerHunt => "Summer Hunt",
+            Mode::SummerHunt => "Summer Event",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayChoice {
+    /// Your own portal / lobby (no captcha).
+    PlayHere,
+    /// Public matchmaking: shows a captcha you type yourself; the macro waits.
+    FindMatch,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunSettings {
+    pub mode: Mode,
+    pub play: PlayChoice,
+    /// Alts join the main's portal / party; only the main places units.
+    pub own_team: bool,
+    pub return_to_lobby: bool,
+    pub stop_after_defeat: bool,
+    /// Story / Legend / Raid: map + act.
+    pub map: String,
+    pub act: String,
+    /// Story acts: Next Level after a win (else Replay).
+    pub next_level: bool,
+    // Quick toggles
+    pub priority_upgrade: bool,
+    pub one_at_a_time: bool,
+    pub auto_ability: bool,
+    pub challenge_every_30: bool,
+    /// Host invites alts through the in-game Party (+ > Invite).
+    pub party_invite: bool,
+}
+
+impl Default for RunSettings {
+    fn default() -> Self {
+        Self {
+            mode: Mode::SummerHunt,
+            play: PlayChoice::PlayHere,
+            own_team: false,
+            return_to_lobby: false,
+            stop_after_defeat: false,
+            map: "Planet Greenie".into(),
+            act: "Act 1".into(),
+            next_level: true,
+            priority_upgrade: true,
+            one_at_a_time: false,
+            auto_ability: true,
+            challenge_every_30: false,
+            party_invite: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keybinds {
+    /// Hotbar keys for slots 1-6.
+    pub units: Vec<String>,
+    /// Upgrade the open unit.
+    pub upgrade: String,
+    /// Close the open unit panel / cancel placement.
+    pub cancel: String,
+}
+
+impl Default for Keybinds {
+    fn default() -> Self {
+        Self {
+            units: (1..=6).map(|i| i.to_string()).collect(),
+            upgrade: "r".into(),
+            cancel: "q".into(),
         }
     }
 }
@@ -93,6 +173,10 @@ pub struct UnitSlot {
     pub priority: u8,
     /// Buff unit: turn Auto ability on one copy at a time.
     pub buff: bool,
+    /// Farm unit (money maker): placed first, upgraded early.
+    pub farm: bool,
+    /// Alternate this slot's upgrades with placement instead of waiting.
+    pub upg_immediately: bool,
 }
 
 impl Default for UnitSlot {
@@ -104,6 +188,8 @@ impl Default for UnitSlot {
             upgrade: Upgrade::Max,
             priority: 1,
             buff: false,
+            farm: false,
+            upg_immediately: false,
         }
     }
 }
@@ -154,6 +240,10 @@ impl Default for Settings {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
+            run: RunSettings::default(),
+            keybinds: Keybinds::default(),
+            ram_port: 7963,
+            accounts: vec![],
             update_repo: "DenniXDReal/aa-macro-rs".into(),
             auto_update_check: true,
             instances: (1..=3)

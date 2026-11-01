@@ -1,0 +1,82 @@
+{
+ "map": "Sand Village",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 700
+  },
+  {
+   "type": "key_up",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 2700
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 2400
+  },
+  {
+   "type": "key_up",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 2400
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 1800
+  },
+  {
+   "type": "key_up",
+   "key": "s"
+  }
+ ]
+}

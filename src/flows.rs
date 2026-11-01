@@ -28,6 +28,17 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
     Flow {
+        name: "Party (alts)",
+        steps: "All clients join your private server > main clicks the party + (top right) > Invite next to each alt > each alt clicks Accept on the Party Invite pop-up.",
+        needs: &[
+            n("party_plus", "icon", "Main: the green + under '@you's Party' (top right)"),
+            n("party_invite", "text", "Main: yellow 'Invite' next to an alt's name"),
+            n("party_invited", "text", "Main: grey 'Invited' (invite already sent)"),
+            n("party_invite_popup", "text", "Alt: 'Party Invite' title of the pop-up"),
+            n("party_accept", "text", "Alt: green 'Accept'"),
+        ],
+    },
+    Flow {
         name: "Summer Hunt",
         steps: "Play > hold Shift+W into the Summer Hunt entrance > Play Here > Open (or Open (Friends Only) for a party host) > Start. Find Match is never used (it shows a captcha).",
         needs: &[
@@ -40,6 +51,8 @@ pub const FLOWS: &[Flow] = &[
             n("start_button", "text", "Portal lobby: green 'Start'"),
             n("portal_join_e", "text", "Follower: the 'Join' prompt with the E key at the portal"),
             n("captcha", "text", "Captcha dialog title - the macro pauses and pings you, it never solves it"),
+            n("choose_card", "text", "Card pick pop-up title ('Choose a card...')"),
+            n("card_confirm", "text", "'Confirm' under the cards after picking one"),
         ],
     },
     Flow {

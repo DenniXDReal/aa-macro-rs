@@ -1,0 +1,34 @@
+{
+ "map": "Lobby > Challenge",
+ "source": "old AHK ChallengeMovement",
+ "steps": [
+  {
+   "type": "click",
+   "x": 764,
+   "y": 487,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "click",
+   "x": 300,
+   "y": 415,
+   "button": "left"
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 7000
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  }
+ ]
+}

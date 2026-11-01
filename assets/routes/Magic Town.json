@@ -1,0 +1,62 @@
+{
+ "map": "Magic Town",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 3000
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 1200
+  },
+  {
+   "type": "key_up",
+   "key": "s"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 3200
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  }
+ ]
+}

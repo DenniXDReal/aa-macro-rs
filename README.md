@@ -1,4 +1,6 @@
-# aa-macro-rs
+# Anime Adventure Macro By DenniXD
+
+(repo: aa-macro-rs)
 
 Anime Adventures macro in Rust. It's a clean-room rewrite built to run **up to 4 Roblox clients at once**, either as independent farms or as a host plus followers in one party, and it only talks to servers you own.
 
@@ -10,7 +12,25 @@ GitHub → **Actions** → latest green **build** run → **Artifacts** → `aa-
 
 ## The app
 
-**Double-click `aa-macro.exe`** to open the app window:
+**Double-click `aa-macro.exe`** to open the app window. The layout: a live view of the main client on the left, and Mode, alts and unit cards on the right. The top bar has **Start / Pause / Stop**, and the hotkeys work while Roblox has focus: **F1** fit Roblox, **F2** start, **F3** stop, **F4** pause. The icon rail on the left switches pages: Home, Accounts, Movement, Placement, Patterns, Settings.
+
+Keybinds (Settings): units **1–6**, upgrade **R**, cancel/close panel **Q**.
+
+### Accounts: Roblox Account Manager (ic3w0lf22)
+
+The macro asks RAM to launch your main + alts straight into your private server. Cookies never leave RAM.
+
+1. In RAM: ⚙ Settings → **Developer → Enable Web Server**. Under **Web Server**, tick **Allow LaunchAccount** and **Allow GetAccounts**, and set a **password (6+ chars)**. Under **General**, tick **Multi Roblox** (with Roblox closed).
+2. In the macro: Accounts → port `7963` → the same password → **Save** → **Test & load accounts**.
+3. Paste your private server link → **Save**. It's stored encrypted.
+4. **+ Add** your accounts (the first one is the main), then **Launch all**. It launches the main first, then each alt 8 s apart.
+5. Party: the main clicks **+** (top right) → **Invite** on each alt, and each alt presses **Accept**. This needs the party patterns in the Patterns checklist.
+
+### Movement
+
+Built-in per-map walks (32 maps, imported from AA Spiral v10's default routes) and lobby walks to each mode (Summer Event, Story, Legend, Raid, Infinity Castle, Challenge). Edit the steps on the Movement page and **Save as my route**. Your version goes in `routes/` and wins over the built-in one. **Test on main** walks it right away.
+
+### Pages (detail)
 
 | Page | What it's for |
 | --- | --- |

@@ -449,3 +449,26 @@ pub fn cursor() -> Option<Point> {
     unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) }.ok()?;
     Some(Point::new(p.x, p.y))
 }
+
+/// F1..F4 as global hotkeys (work while Roblox has focus). Each press sends
+/// its number (1-4) down `tx`. The thread lives for the whole app.
+pub fn spawn_hotkeys(tx: std::sync::mpsc::Sender<u8>) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT, VK_F1};
+    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+    std::thread::Builder::new()
+        .name("hotkeys".into())
+        .spawn(move || unsafe {
+            for i in 0..4u32 {
+                if RegisterHotKey(None, (i + 1) as i32, MOD_NOREPEAT, VK_F1.0 as u32 + i).is_err() {
+                    log::warn!("F{} is used by another app - hotkey not available", i + 1);
+                }
+            }
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if msg.message == WM_HOTKEY && tx.send(msg.wParam.0 as u8).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok();
+}

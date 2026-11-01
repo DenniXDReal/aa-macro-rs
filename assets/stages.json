@@ -1,0 +1,371 @@
+{
+ "note": "[x, y, scroll notches] in client coords; from the old AHK framework, verify in game",
+ "modes": {
+  "story": {
+   "maps": [
+    {
+     "name": "Planet Greenie",
+     "x": 630,
+     "y": 250,
+     "scrolls": 0
+    },
+    {
+     "name": "Walled City",
+     "x": 630,
+     "y": 300,
+     "scrolls": 0
+    },
+    {
+     "name": "Snowy Town",
+     "x": 630,
+     "y": 350,
+     "scrolls": 0
+    },
+    {
+     "name": "Sand Village",
+     "x": 630,
+     "y": 400,
+     "scrolls": 0
+    },
+    {
+     "name": "Navy Bay",
+     "x": 630,
+     "y": 375,
+     "scrolls": 1
+    },
+    {
+     "name": "Fiend City",
+     "x": 630,
+     "y": 425,
+     "scrolls": 1
+    },
+    {
+     "name": "Spirit World",
+     "x": 630,
+     "y": 370,
+     "scrolls": 2
+    },
+    {
+     "name": "Ant Kingdom",
+     "x": 630,
+     "y": 420,
+     "scrolls": 2
+    },
+    {
+     "name": "Magic Town",
+     "x": 630,
+     "y": 375,
+     "scrolls": 3
+    },
+    {
+     "name": "Haunted Academy",
+     "x": 630,
+     "y": 420,
+     "scrolls": 3
+    },
+    {
+     "name": "Magic Hills",
+     "x": 630,
+     "y": 370,
+     "scrolls": 4
+    },
+    {
+     "name": "Space Center",
+     "x": 630,
+     "y": 420,
+     "scrolls": 4
+    },
+    {
+     "name": "Alien Spaceship",
+     "x": 630,
+     "y": 375,
+     "scrolls": 5
+    },
+    {
+     "name": "Fabled Kingdom",
+     "x": 630,
+     "y": 425,
+     "scrolls": 5
+    },
+    {
+     "name": "Ruined City",
+     "x": 630,
+     "y": 380,
+     "scrolls": 6
+    },
+    {
+     "name": "Puppet Island",
+     "x": 630,
+     "y": 435,
+     "scrolls": 6
+    },
+    {
+     "name": "Virtual Dungeon",
+     "x": 630,
+     "y": 315,
+     "scrolls": 8
+    },
+    {
+     "name": "Snowy Kingdom",
+     "x": 630,
+     "y": 365,
+     "scrolls": 8
+    },
+    {
+     "name": "Dungeon Throne",
+     "x": 630,
+     "y": 400,
+     "scrolls": 8
+    },
+    {
+     "name": "Mountain Temple",
+     "x": 630,
+     "y": 290,
+     "scrolls": 10
+    },
+    {
+     "name": "Rain Village",
+     "x": 630,
+     "y": 335,
+     "scrolls": 10
+    },
+    {
+     "name": "Shibuya District",
+     "x": 630,
+     "y": 385,
+     "scrolls": 10
+    }
+   ],
+   "acts": [
+    {
+     "name": "Infinite",
+     "x": 285,
+     "y": 235,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 1",
+     "x": 285,
+     "y": 270,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 2",
+     "x": 285,
+     "y": 305,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 3",
+     "x": 285,
+     "y": 340,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 4",
+     "x": 285,
+     "y": 385,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 5",
+     "x": 300,
+     "y": 350,
+     "scrolls": 1
+    },
+    {
+     "name": "Act 6",
+     "x": 300,
+     "y": 385,
+     "scrolls": 1
+    }
+   ]
+  },
+  "legend": {
+   "maps": [
+    {
+     "name": "Magic Hills",
+     "x": 630,
+     "y": 240,
+     "scrolls": 0
+    },
+    {
+     "name": "Spirit Invasion",
+     "x": 630,
+     "y": 290,
+     "scrolls": 0
+    },
+    {
+     "name": "Space Center",
+     "x": 630,
+     "y": 340,
+     "scrolls": 0
+    },
+    {
+     "name": "Fabled Kingdom",
+     "x": 630,
+     "y": 390,
+     "scrolls": 0
+    },
+    {
+     "name": "Ruined City",
+     "x": 630,
+     "y": 350,
+     "scrolls": 1
+    },
+    {
+     "name": "Virtual Dungeon",
+     "x": 630,
+     "y": 405,
+     "scrolls": 1
+    },
+    {
+     "name": "Dungeon Throne",
+     "x": 630,
+     "y": 440,
+     "scrolls": 1
+    },
+    {
+     "name": "Rain Village",
+     "x": 630,
+     "y": 405,
+     "scrolls": 2
+    }
+   ],
+   "acts": [
+    {
+     "name": "Act 1",
+     "x": 285,
+     "y": 235,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 2",
+     "x": 285,
+     "y": 270,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 3",
+     "x": 285,
+     "y": 305,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 4",
+     "x": 285,
+     "y": 340,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 5",
+     "x": 285,
+     "y": 375,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 6",
+     "x": 285,
+     "y": 395,
+     "scrolls": 0
+    }
+   ]
+  },
+  "raid": {
+   "maps": [
+    {
+     "name": "Ant Kingdom",
+     "x": 630,
+     "y": 250,
+     "scrolls": 0
+    },
+    {
+     "name": "Sacred Planet",
+     "x": 630,
+     "y": 300,
+     "scrolls": 0
+    },
+    {
+     "name": "Strange Town",
+     "x": 630,
+     "y": 350,
+     "scrolls": 0
+    },
+    {
+     "name": "Ruined City",
+     "x": 630,
+     "y": 400,
+     "scrolls": 0
+    },
+    {
+     "name": "Cursed Festival",
+     "x": 630,
+     "y": 325,
+     "scrolls": 1
+    },
+    {
+     "name": "Future City (Tyrant)",
+     "x": 630,
+     "y": 400,
+     "scrolls": 1
+    },
+    {
+     "name": "Storm Hideout",
+     "x": 630,
+     "y": 350,
+     "scrolls": 2
+    },
+    {
+     "name": "Future City",
+     "x": 630,
+     "y": 400,
+     "scrolls": 2
+    },
+    {
+     "name": "Nightmare Train",
+     "x": 630,
+     "y": 350,
+     "scrolls": 3
+    },
+    {
+     "name": "Sand Village",
+     "x": 630,
+     "y": 400,
+     "scrolls": 3
+    }
+   ],
+   "acts": [
+    {
+     "name": "Act 1",
+     "x": 285,
+     "y": 235,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 2",
+     "x": 285,
+     "y": 270,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 3",
+     "x": 285,
+     "y": 305,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 4",
+     "x": 285,
+     "y": 340,
+     "scrolls": 0
+    },
+    {
+     "name": "Act 5",
+     "x": 285,
+     "y": 375,
+     "scrolls": 0
+    }
+   ]
+  }
+ }
+}

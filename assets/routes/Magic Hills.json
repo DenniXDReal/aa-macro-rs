@@ -1,0 +1,281 @@
+{
+ "map": "Magic Hills",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "if_image",
+   "patterns": [
+    "MagicHillsBench",
+    "MagicHillLegendStageBench"
+   ],
+   "region": [
+    518,
+    334,
+    566,
+    404
+   ],
+   "err1": 0.2,
+   "err0": 0.2,
+   "then": [
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 2600
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 4000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 4000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 2500
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 2800
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1500
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    }
+   ],
+   "else": [
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 7000
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1400
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 3500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 2800
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 3500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1100
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    }
+   ]
+  }
+ ]
+}

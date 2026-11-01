@@ -10,6 +10,7 @@
 //!       -> platform::Platform (Win32 on Windows, Null elsewhere, Mock in tests)
 //! ```
 
+pub mod accounts;
 pub mod capture;
 pub mod config;
 pub mod control;
@@ -19,6 +20,7 @@ pub mod gui;
 pub mod input;
 pub mod keys;
 pub mod layout;
+pub mod movement;
 pub mod placement;
 pub mod platform;
 pub mod secrets;

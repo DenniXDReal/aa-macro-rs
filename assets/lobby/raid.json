@@ -1,0 +1,54 @@
+{
+ "map": "Lobby > Raid",
+ "source": "old AHK RaidMovement",
+ "steps": [
+  {
+   "type": "click",
+   "x": 764,
+   "y": 487,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 300
+  },
+  {
+   "type": "click",
+   "x": 495,
+   "y": 410,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 400
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 5000
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  }
+ ]
+}

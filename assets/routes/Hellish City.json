@@ -1,0 +1,96 @@
+{
+ "map": "Hellish City",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "if_image",
+   "patterns": [
+    "HellishAngle"
+   ],
+   "region": [
+    370,
+    210,
+    465,
+    265
+   ],
+   "err1": 0.15,
+   "err0": 0.15,
+   "then": [
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 1200
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    }
+   ],
+   "else": [
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 800
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 800
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_down",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 2400
+    },
+    {
+     "type": "key_up",
+     "key": "d"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 600
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    }
+   ]
+  }
+ ]
+}

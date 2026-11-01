@@ -1,0 +1,392 @@
+{
+ "map": "Ant Kingdom",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "if_image",
+   "patterns": [
+    "AntKingdomAngle"
+   ],
+   "region": [
+    531,
+    205,
+    582,
+    251
+   ],
+   "err1": 0.15,
+   "err0": 0.15,
+   "then": [
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 900
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 300
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 4000
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 3000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    }
+   ],
+   "else": [
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1400
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 800
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 3000
+    },
+    {
+     "type": "key_up",
+     "key": "s"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 2800
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1500
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 2000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 500
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_up",
+     "key": "w"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    },
+    {
+     "type": "key_down",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 800
+    },
+    {
+     "type": "key_up",
+     "key": "a"
+    },
+    {
+     "type": "wait",
+     "ms": 1000
+    }
+   ]
+  }
+ ]
+}

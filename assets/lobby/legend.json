@@ -1,0 +1,56 @@
+{
+ "map": "Lobby > Legend",
+ "source": "old AHK StoryMovement (same pad)",
+ "steps": [
+  {
+   "type": "click",
+   "x": 86,
+   "y": 310,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 300
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 300
+  },
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 4500
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "map": "Cursed Festival",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "wait",
+   "ms": 3110
+  },
+  {
+   "type": "hold",
+   "keys": [
+    "d"
+   ],
+   "ms": 1577
+  }
+ ]
+}

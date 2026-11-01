@@ -1,0 +1,18 @@
+{
+ "map": "Nightmare Train",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 1800
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  }
+ ]
+}

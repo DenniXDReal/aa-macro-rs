@@ -1,0 +1,18 @@
+{
+ "map": "Haunted Academy",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 4700
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  }
+ ]
+}

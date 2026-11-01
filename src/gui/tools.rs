@@ -1,167 +1,16 @@
-//! The app window: Home (clients), Units, Placement designer, Patterns, Settings.
+//! Tools carried over from the first UI: capture, tiling, doctor, updates,
+//! placement designer and the pattern tool.
 
-use crate::capture::Frame;
-use crate::config::{Mode, Role, Settings, Upgrade};
-use crate::control::Control;
+use super::*;
 use crate::flows::FLOWS;
 use crate::geom::{Point, Rect};
-use crate::input::{Arbiter, ArbiterHandle, ArbiterOptions, Batch};
+use crate::input::{ArbiterHandle, ArbiterOptions, Batch};
 use crate::layout;
-use crate::placement::Placements;
-use crate::platform::{Platform, WinInfo};
-use crate::secrets::Secrets;
-use crate::update::{self, Available};
-use crate::vision::{self, Hit, Library, Pattern};
-use eframe::egui::{
-    self, Align2, Color32, ColorImage, ComboBox, DragValue, FontId, Pos2, Sense, Slider, Stroke,
-    StrokeKind, TextureHandle, TextureOptions, Vec2,
-};
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Page {
-    Home,
-    Units,
-    Placement,
-    Patterns,
-    Settings,
-}
-
-const ACCENT: Color32 = Color32::from_rgb(120, 170, 255);
-const GOOD: Color32 = Color32::from_rgb(90, 200, 120);
-const WARN: Color32 = Color32::from_rgb(240, 170, 60);
-
-pub struct App {
-    settings: Settings,
-    settings_path: PathBuf,
-    dirty_at: Option<Instant>,
-    lib: Library,
-    placements: Placements,
-    placements_path: PathBuf,
-    platform: Arc<dyn Platform>,
-    control: Control,
-    arbiter: Option<Arbiter>,
-    clients: Vec<WinInfo>,
-    sel: usize,
-    page: Page,
-
-    // live picture of the selected client
-    frame: Option<Frame>,
-    tex: Option<TextureHandle>,
-    live: bool,
-    last_cap: Instant,
-
-    // pattern tool
-    drag_from: Option<Point>,
-    crop: Option<Rect>,
-    pat_name: String,
-    pat_image: bool,
-    pat_auto: bool,
-    pat_thr: u8,
-    pat_margin: i32,
-    pat_preview: Option<TextureHandle>,
-    hits: Vec<(String, Rect, Option<Hit>)>,
-
-    // placement
-    map: String,
-    new_map: String,
-    place_slot: u8,
-
-    log: Vec<String>,
-    log_tx: Sender<String>,
-    log_rx: Receiver<String>,
-
-    // updates
-    secrets: Secrets,
-    token_input: String,
-    upd: Upd,
-    upd_tx: Sender<Upd>,
-    upd_rx: Receiver<Upd>,
-}
-
-#[derive(Clone)]
-enum Upd {
-    Idle,
-    Checking,
-    UpToDate,
-    Available(Available),
-    Installing,
-    Installed(PathBuf),
-    Failed(String),
-}
+use crate::vision::{self, Pattern};
+use eframe::egui::{Align2, DragValue, FontId, Pos2, Slider, StrokeKind};
 
 impl App {
-    pub fn new(platform: Arc<dyn Platform>, settings: Settings, settings_path: PathBuf) -> Self {
-        let lib = Library::load(&Library::default_dir()).unwrap_or_default();
-        let placements_path = Placements::default_path();
-        let placements = Placements::load(&placements_path).unwrap_or_default();
-        let map = placements
-            .maps
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| "Summer Hunt".into());
-        let (log_tx, log_rx) = mpsc::channel();
-        let (upd_tx, upd_rx) = mpsc::channel();
-        let mut app = Self {
-            settings,
-            settings_path,
-            dirty_at: None,
-            lib,
-            placements,
-            placements_path,
-            platform,
-            control: Control::new(),
-            arbiter: None,
-            clients: vec![],
-            sel: 0,
-            page: Page::Home,
-            frame: None,
-            tex: None,
-            live: false,
-            last_cap: Instant::now() - Duration::from_secs(10),
-            drag_from: None,
-            crop: None,
-            pat_name: String::new(),
-            pat_image: false,
-            pat_auto: true,
-            pat_thr: 128,
-            pat_margin: 40,
-            pat_preview: None,
-            hits: vec![],
-            map,
-            new_map: String::new(),
-            place_slot: 0,
-            log: vec![],
-            log_tx,
-            log_rx,
-            secrets: Secrets::load(&Secrets::default_path()),
-            token_input: String::new(),
-            upd: Upd::Idle,
-            upd_tx,
-            upd_rx,
-        };
-        if app.settings.auto_update_check && app.secrets.has(update::TOKEN_KEY) {
-            app.check_update();
-        }
-        app.refresh_clients();
-        app.page = match std::env::var("AA_START_PAGE").as_deref() {
-            Ok("units") => Page::Units,
-            Ok("placement") => Page::Placement,
-            Ok("patterns") => Page::Patterns,
-            Ok("settings") => Page::Settings,
-            _ => Page::Home,
-        };
-        if app.page == Page::Placement || app.page == Page::Patterns {
-            app.live = true; // shows the picture straight away
-        }
-        app
-    }
-
-    fn say(&mut self, s: impl Into<String>) {
+    pub(super) fn say(&mut self, s: impl Into<String>) {
         let s = s.into();
         log::info!("{s}");
         self.log.push(s);
@@ -170,7 +19,7 @@ impl App {
         }
     }
 
-    fn check_update(&mut self) {
+    pub(super) fn check_update(&mut self) {
         let Some(tok) = self.secrets.get(update::TOKEN_KEY) else {
             self.upd = Upd::Failed("add a GitHub token first (Settings > Updates)".into());
             return;
@@ -187,7 +36,7 @@ impl App {
         });
     }
 
-    fn install_update(&mut self, a: Available) {
+    pub(super) fn install_update(&mut self, a: Available) {
         let Some(tok) = self.secrets.get(update::TOKEN_KEY) else {
             return;
         };
@@ -202,7 +51,7 @@ impl App {
         });
     }
 
-    fn update_banner(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn update_banner(&mut self, ui: &mut egui::Ui) {
         let mut act: Option<Upd> = None;
         match &self.upd {
             Upd::Available(a) => {
@@ -244,11 +93,11 @@ impl App {
         }
     }
 
-    fn dirty(&mut self) {
+    pub(super) fn dirty(&mut self) {
         self.dirty_at = Some(Instant::now());
     }
 
-    fn refresh_clients(&mut self) {
+    pub(super) fn refresh_clients(&mut self) {
         let mut w = self.platform.list_windows(&self.settings.process_name);
         w.truncate(self.settings.max_instances);
         self.settings
@@ -261,7 +110,7 @@ impl App {
         self.say(format!("found {n} Roblox client(s)"));
     }
 
-    fn arbiter(&mut self) -> ArbiterHandle {
+    pub(super) fn arbiter(&mut self) -> ArbiterHandle {
         if self.arbiter.is_none() {
             let s = &self.settings;
             self.arbiter = Some(Arbiter::start(
@@ -277,7 +126,7 @@ impl App {
         self.arbiter.as_ref().unwrap().handle()
     }
 
-    fn capture(&mut self, ctx: &egui::Context) {
+    pub(super) fn capture(&mut self, ctx: &egui::Context) {
         self.last_cap = Instant::now();
         let Some(info) = self.clients.get(self.sel).cloned() else {
             return;
@@ -304,7 +153,7 @@ impl App {
         }
     }
 
-    fn tile(&mut self) {
+    pub(super) fn tile(&mut self) {
         let p = self.platform.clone();
         let Some(first) = self.clients.first().and_then(|c| p.geometry(c.hwnd)) else {
             self.say("no clients to tile");
@@ -326,7 +175,7 @@ impl App {
         self.say(format!("tiled {} client(s)", self.clients.len()));
     }
 
-    fn doctor(&mut self) {
+    pub(super) fn doctor(&mut self) {
         let p = self.platform.clone();
         for (i, c) in self.clients.clone().iter().enumerate() {
             let n = i + 1;
@@ -355,162 +204,7 @@ impl App {
 
     // ---------- pages ----------
 
-    fn page_home(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Clients");
-        ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.refresh_clients();
-            }
-            if ui
-                .button("Tile")
-                .on_hover_text("800x599 viewport each, laid out on the main screen")
-                .clicked()
-            {
-                self.tile();
-            }
-            if ui
-                .button("Doctor")
-                .on_hover_text("check scaling, size and capture")
-                .clicked()
-            {
-                self.doctor();
-            }
-        });
-        ui.add_space(6.0);
-        if self.clients.is_empty() {
-            ui.colored_label(
-                WARN,
-                "No Roblox clients found. Open Roblox (windowed) and press Refresh.",
-            );
-        }
-        let mut changed = false;
-        egui::Grid::new("clients")
-            .striped(true)
-            .spacing([14.0, 8.0])
-            .show(ui, |ui| {
-                for h in ["#", "Name", "Role", "Mode", "Map / act", "On"] {
-                    ui.strong(h);
-                }
-                ui.end_row();
-                for i in 0..self.clients.len() {
-                    let prof = &mut self.settings.instances[i];
-                    ui.label(format!("{}", i + 1));
-                    changed |= ui
-                        .add_sized([120.0, 22.0], egui::TextEdit::singleline(&mut prof.label))
-                        .changed();
-                    ComboBox::from_id_salt(("role", i))
-                        .width(110.0)
-                        .selected_text(role_label(&prof.role))
-                        .show_ui(ui, |ui| {
-                            for r in [Role::Independent, Role::Host, Role::Follower] {
-                                let l = role_label(&r);
-                                changed |= ui.selectable_value(&mut prof.role, r, l).changed();
-                            }
-                        });
-                    ComboBox::from_id_salt(("mode", i))
-                        .width(130.0)
-                        .selected_text(prof.mode.label())
-                        .show_ui(ui, |ui| {
-                            for m in Mode::ALL {
-                                changed |=
-                                    ui.selectable_value(&mut prof.mode, m, m.label()).changed();
-                            }
-                        });
-                    changed |= ui
-                        .add_sized(
-                            [170.0, 22.0],
-                            egui::TextEdit::singleline(&mut prof.map)
-                                .hint_text("e.g. Planet Greenie"),
-                        )
-                        .changed();
-                    changed |= ui.checkbox(&mut prof.enabled, "").changed();
-                    ui.end_row();
-                }
-            });
-        if changed {
-            self.dirty();
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("▶ Start all"))
-                .on_disabled_hover_text("The game loop arrives in Phase 3");
-            ui.add_enabled(false, egui::Button::new("■ Stop"));
-        });
-        ui.small("Independent = farms on its own. Host = runs the stage, waits for followers. Follower = only joins the host's lobby.");
-    }
-
-    fn page_units(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Units (hotbar slots 1-6)");
-        ui.small(
-            "Shared by every client for now. Spots for each map are set on the Placement page.",
-        );
-        ui.add_space(6.0);
-        let mut changed = false;
-        egui::Grid::new("units")
-            .striped(true)
-            .spacing([14.0, 8.0])
-            .show(ui, |ui| {
-                for h in ["Slot", "On", "Name", "Place", "Upgrade", "Priority", "Buff"] {
-                    ui.strong(h);
-                }
-                ui.end_row();
-                for (i, u) in self.settings.units.iter_mut().enumerate().take(6) {
-                    ui.label(format!("{}", i + 1));
-                    changed |= ui.checkbox(&mut u.enabled, "").changed();
-                    changed |= ui
-                        .add_sized(
-                            [130.0, 22.0],
-                            egui::TextEdit::singleline(&mut u.name).hint_text("e.g. Erwin"),
-                        )
-                        .changed();
-                    changed |= ui.add(DragValue::new(&mut u.place).range(0..=10)).changed();
-                    let cur = match u.upgrade {
-                        Upgrade::None => "None".to_string(),
-                        Upgrade::Max => "Max".to_string(),
-                        Upgrade::Level(n) => format!("Level {n}"),
-                    };
-                    ui.horizontal(|ui| {
-                        ComboBox::from_id_salt(("upg", i))
-                            .width(80.0)
-                            .selected_text(cur)
-                            .show_ui(ui, |ui| {
-                                changed |= ui
-                                    .selectable_value(&mut u.upgrade, Upgrade::None, "None")
-                                    .changed();
-                                changed |= ui
-                                    .selectable_value(&mut u.upgrade, Upgrade::Max, "Max")
-                                    .changed();
-                                if ui
-                                    .selectable_label(
-                                        matches!(u.upgrade, Upgrade::Level(_)),
-                                        "Level…",
-                                    )
-                                    .clicked()
-                                {
-                                    u.upgrade = Upgrade::Level(5);
-                                    changed = true;
-                                }
-                            });
-                        if let Upgrade::Level(n) = &mut u.upgrade {
-                            changed |= ui.add(DragValue::new(n).range(1..=20)).changed();
-                        }
-                    });
-                    changed |= ui
-                        .add(DragValue::new(&mut u.priority).range(1..=6))
-                        .changed();
-                    changed |= ui
-                        .checkbox(&mut u.buff, "")
-                        .on_hover_text("Turn Auto ability on one copy at a time")
-                        .changed();
-                    ui.end_row();
-                }
-            });
-        if changed {
-            self.dirty();
-        }
-    }
-
-    fn page_placement(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn page_placement(&mut self, ui: &mut egui::Ui) {
         ui.heading("Placement designer");
         ui.horizontal(|ui| {
             ui.label("Map:");
@@ -612,13 +306,13 @@ impl App {
         ui.label(format!("{n} spot(s) on {}", self.map));
     }
 
-    fn save_placements(&mut self) {
+    pub(super) fn save_placements(&mut self) {
         if let Err(e) = self.placements.save(&self.placements_path) {
             self.say(format!("saving placements failed: {e}"));
         }
     }
 
-    fn hover_test(&mut self) {
+    pub(super) fn hover_test(&mut self) {
         let Some(info) = self.clients.get(self.sel).cloned() else {
             self.say("no client selected");
             return;
@@ -640,7 +334,7 @@ impl App {
         });
     }
 
-    fn page_patterns(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn page_patterns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Patterns");
         ui.small("Drag a box around button text / an icon on the picture, name it, Save. Close pop-ups first.");
         let mut redo_preview = false;
@@ -822,7 +516,7 @@ impl App {
         }
     }
 
-    fn update_preview(&mut self, ctx: &egui::Context) {
+    pub(super) fn update_preview(&mut self, ctx: &egui::Context) {
         self.pat_preview = None;
         let (Some(f), Some(c)) = (&self.frame, self.crop) else {
             return;
@@ -856,7 +550,7 @@ impl App {
         }
     }
 
-    fn save_pattern(&mut self) {
+    pub(super) fn save_pattern(&mut self) {
         let (Some(f), Some(c)) = (self.frame.clone(), self.crop) else {
             return;
         };
@@ -884,7 +578,7 @@ impl App {
         }
     }
 
-    fn test_patterns(&mut self, only: Option<&str>) {
+    pub(super) fn test_patterns(&mut self, only: Option<&str>) {
         let Some(f) = self.frame.clone() else {
             self.say("capture a client first");
             return;
@@ -914,135 +608,16 @@ impl App {
         }
     }
 
-    fn page_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        let s = &mut self.settings;
-        let mut changed = false;
-        egui::Grid::new("settings")
-            .spacing([14.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Roblox process");
-                changed |= ui.text_edit_singleline(&mut s.process_name).changed();
-                ui.end_row();
-                ui.label("Max clients");
-                changed |= ui
-                    .add(DragValue::new(&mut s.max_instances).range(1..=4))
-                    .changed();
-                ui.end_row();
-                ui.label("Client size");
-                ui.label(format!(
-                    "{} x {} (patterns are captured at this size)",
-                    s.client_w, s.client_h
-                ));
-                ui.end_row();
-                ui.label("Mouse settle (ms)");
-                changed |= ui
-                    .add(DragValue::new(&mut s.mouse_settle_ms).range(0..=500))
-                    .changed();
-                ui.end_row();
-                ui.label("Click hold (ms)");
-                changed |= ui
-                    .add(DragValue::new(&mut s.click_hold_ms).range(10..=500))
-                    .changed();
-                ui.end_row();
-                ui.label("Max input turn (ms)");
-                changed |= ui
-                    .add(DragValue::new(&mut s.max_lease_ms).range(100..=2000))
-                    .changed();
-                ui.end_row();
-            });
-        if changed {
-            self.dirty();
-        }
-        ui.add_space(14.0);
-        ui.heading("Updates");
-        ui.label(format!("This build: {}", update::version_label()));
-        let has_tok = self.secrets.has(update::TOKEN_KEY);
-        ui.horizontal(|ui| {
-            ui.label("GitHub token");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.token_input)
-                    .password(true)
-                    .desired_width(260.0)
-                    .hint_text(if has_tok {
-                        "saved (encrypted)"
-                    } else {
-                        "github_pat_…"
-                    }),
-            );
-            if ui.button("Save token").clicked() {
-                let t = self.token_input.clone();
-                match self.secrets.set(update::TOKEN_KEY, &t) {
-                    Ok(()) => {
-                        self.token_input.clear();
-                        self.say(if t.trim().is_empty() {
-                            "token removed"
-                        } else {
-                            "token saved (encrypted)"
-                        });
-                    }
-                    Err(e) => self.say(format!("saving token failed: {e}")),
-                }
-            }
-        });
-        if ui
-            .checkbox(
-                &mut self.settings.auto_update_check,
-                "Check for updates when the app opens",
-            )
-            .changed()
-        {
-            self.dirty();
-        }
-        ui.horizontal(|ui| {
-            let busy = matches!(self.upd, Upd::Checking | Upd::Installing);
-            if ui
-                .add_enabled(!busy, egui::Button::new("Check now"))
-                .clicked()
-            {
-                self.check_update();
-            }
-            match &self.upd {
-                Upd::Idle => {}
-                Upd::Checking => {
-                    ui.spinner();
-                }
-                Upd::UpToDate => {
-                    ui.colored_label(GOOD, "Up to date");
-                }
-                Upd::Available(a) => {
-                    ui.colored_label(
-                        GOOD,
-                        format!("Build {} available - see the banner at the top", a.build),
-                    );
-                }
-                Upd::Installing => {
-                    ui.label("Installing…");
-                }
-                Upd::Installed(_) => {
-                    ui.colored_label(GOOD, "Installed - restart from the banner");
-                }
-                Upd::Failed(e) => {
-                    ui.colored_label(WARN, e);
-                }
-            }
-        });
-        ui.small("Token: GitHub > Settings > Developer settings > Fine-grained tokens > Generate. Repository access: only aa-macro-rs. Permissions: Contents = Read-only.");
-        ui.add_space(8.0);
-        ui.small(format!("Settings: {}", self.settings_path.display()));
-        ui.small(format!("Patterns: {}", self.lib.dir.display()));
-        ui.small(format!("Placements: {}", self.placements_path.display()));
-    }
-
-    /// The selected client's picture at 1:1 (or scaled to fit). Returns the
-    /// response, the screen rect of the picture and the scale.
-    fn client_view(&mut self, ui: &mut egui::Ui) -> Option<(egui::Response, egui::Rect, f32)> {
+    pub(super) fn client_view(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> Option<(egui::Response, egui::Rect, f32)> {
         ui.horizontal(|ui| {
             let labels: Vec<String> = self
                 .clients
                 .iter()
                 .enumerate()
-                .map(|(i, c)| client_label(i, c, &self.settings))
+                .map(|(i, _c)| client_name(i, &self.settings))
                 .collect();
             if !labels.is_empty() {
                 ComboBox::from_id_salt("viewsel")
@@ -1092,26 +667,13 @@ fn to_client(p: Pos2, rect: egui::Rect, scale: f32) -> Point {
     Point::new(v.x.round() as i32, v.y.round() as i32)
 }
 
-fn rgba(f: &Frame) -> Vec<u8> {
+pub(super) fn rgba(f: &Frame) -> Vec<u8> {
     let mut v = f.bgra.clone();
     for p in v.chunks_exact_mut(4) {
         p.swap(0, 2);
         p[3] = 255;
     }
     v
-}
-
-fn role_label(r: &Role) -> &'static str {
-    match r {
-        Role::Independent => "Independent",
-        Role::Host => "Party host",
-        Role::Follower => "Party follower",
-    }
-}
-
-fn client_label(i: usize, _c: &WinInfo, s: &Settings) -> String {
-    let name = s.instances.get(i).map(|p| p.label.as_str()).unwrap_or("");
-    format!("#{} {}", i + 1, name)
 }
 
 fn slot_color(slot: u8) -> Color32 {
@@ -1123,103 +685,4 @@ fn slot_color(slot: u8) -> Color32 {
         5 => Color32::from_rgb(80, 200, 220),
         _ => Color32::from_rgb(190, 120, 240),
     }
-}
-
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        while let Ok(m) = self.log_rx.try_recv() {
-            self.say(m);
-        }
-        while let Ok(u) = self.upd_rx.try_recv() {
-            if let Upd::Failed(e) = &u {
-                self.say(format!("update: {e}"));
-            }
-            self.upd = u;
-        }
-        if matches!(self.upd, Upd::Checking | Upd::Installing) {
-            ctx.request_repaint_after(Duration::from_millis(250));
-        }
-        if self.live && self.last_cap.elapsed() > Duration::from_millis(300) {
-            self.capture(&ctx);
-        }
-        if self.live {
-            ctx.request_repaint_after(Duration::from_millis(300));
-        }
-        if let Some(t) = self.dirty_at {
-            if t.elapsed() > Duration::from_millis(600) {
-                self.dirty_at = None;
-                if let Err(e) = self.settings.save(&self.settings_path) {
-                    self.say(format!("saving settings failed: {e}"));
-                }
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(650));
-            }
-        }
-
-        egui::Panel::left("nav").exact_size(150.0).show(ui, |ui| {
-            ui.add_space(8.0);
-            ui.heading("AA Macro");
-            ui.small(update::version_label());
-            ui.add_space(10.0);
-            for (p, l) in [
-                (Page::Home, "Home"),
-                (Page::Units, "Units"),
-                (Page::Placement, "Placement"),
-                (Page::Patterns, "Patterns"),
-                (Page::Settings, "Settings"),
-            ] {
-                if ui.selectable_label(self.page == p, l).clicked() {
-                    self.page = p;
-                }
-            }
-            ui.add_space(12.0);
-            ui.separator();
-            let n = self.clients.len();
-            ui.colored_label(if n > 0 { GOOD } else { WARN }, format!("{n} client(s)"));
-        });
-        egui::Panel::bottom("log")
-            .resizable(true)
-            .default_size(110.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for l in &self.log {
-                            ui.monospace(l);
-                        }
-                    });
-            });
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            self.update_banner(ui);
-            egui::ScrollArea::vertical().show(ui, |ui| match self.page {
-                Page::Home => self.page_home(ui),
-                Page::Units => self.page_units(ui),
-                Page::Placement => self.page_placement(ui),
-                Page::Patterns => self.page_patterns(ui),
-                Page::Settings => self.page_settings(ui),
-            });
-        });
-    }
-}
-
-pub fn run(
-    platform: Arc<dyn Platform>,
-    settings: Settings,
-    settings_path: PathBuf,
-) -> anyhow::Result<()> {
-    let opts = eframe::NativeOptions {
-        renderer: eframe::Renderer::Glow,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("AA Macro")
-            .with_inner_size([1060.0, 820.0])
-            .with_min_inner_size([820.0, 560.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "AA Macro",
-        opts,
-        Box::new(move |_cc| Ok(Box::new(App::new(platform, settings, settings_path)))),
-    )
-    .map_err(|e| anyhow::anyhow!("window failed: {e}"))
 }

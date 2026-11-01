@@ -1,0 +1,58 @@
+{
+ "map": "Lobby > Infinity Castle",
+ "source": "old AHK InfCastleMovement",
+ "steps": [
+  {
+   "type": "click",
+   "x": 764,
+   "y": 487,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 300
+  },
+  {
+   "type": "click",
+   "x": 370,
+   "y": 330,
+   "button": "left"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 4000
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  }
+ ]
+}

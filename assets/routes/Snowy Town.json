@@ -1,0 +1,38 @@
+{
+ "map": "Snowy Town",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 3000
+  },
+  {
+   "type": "key_up",
+   "key": "d"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 1000
+  }
+ ]
+}

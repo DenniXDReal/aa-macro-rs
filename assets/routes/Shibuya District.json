@@ -1,0 +1,42 @@
+{
+ "map": "Shibuya District",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 600
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "wait",
+   "ms": 500
+  },
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 1500
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  }
+ ]
+}

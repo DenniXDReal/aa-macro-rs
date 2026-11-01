@@ -1,0 +1,26 @@
+{
+ "map": "Navy Bay",
+ "source": "imported from AA Spiral v10 default routes",
+ "steps": [
+  {
+   "type": "key_down",
+   "key": "a"
+  },
+  {
+   "type": "key_down",
+   "key": "w"
+  },
+  {
+   "type": "wait",
+   "ms": 1700
+  },
+  {
+   "type": "key_up",
+   "key": "a"
+  },
+  {
+   "type": "key_up",
+   "key": "w"
+  }
+ ]
+}
