@@ -112,6 +112,25 @@ impl Ram {
         }
         self.call("LaunchAccount", &p)
     }
+
+    /// Launch `account` into whatever server `username` is playing in
+    /// (RAM's Follow / Join User). Their Roblox privacy must let it join.
+    pub fn follow(&self, account: &str, username: &str) -> Result<String> {
+        self.call(
+            "FollowUser",
+            &[("Account", account), ("Username", username)],
+        )
+    }
+}
+
+/// How alts get into the main's server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AltJoin {
+    /// Everyone uses the private server link.
+    #[default]
+    PrivateServer,
+    /// The main joins (link or public), alts follow the main.
+    FollowMain,
 }
 
 fn explain(msg: &str) -> String {
@@ -193,6 +212,22 @@ mod tests {
         assert!(seen[1].contains("PlaceId=8304191830"));
         assert!(seen[1].contains("JoinVIP=true"));
         assert!(seen[1].contains("JobId=https%3A%2F%2Fwww.roblox.com%2Fshare%3Fcode%3Dabc"));
+    }
+
+    #[test]
+    fn alt_follows_main() {
+        let (port, h) = fake_ram(vec![
+            r#"{"Success":true,"Message":"Joining MainAcc's game on Alt1"}"#,
+        ]);
+        let r = Ram::new(port, "secret1").follow("Alt1", "MainAcc").unwrap();
+        assert!(r.contains("Joining"));
+        let seen = h.join().unwrap();
+        assert!(
+            seen[0].starts_with("GET /v2/FollowUser?Password=secret1"),
+            "{}",
+            seen[0]
+        );
+        assert!(seen[0].contains("Account=Alt1") && seen[0].contains("Username=MainAcc"));
     }
 
     #[test]

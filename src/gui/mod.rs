@@ -1644,6 +1644,7 @@ impl App {
         ui.add_space(8.0);
         let mut changed = false;
         let mut launch: Option<Vec<String>> = None;
+        let mut follow: Option<String> = None;
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("ACCOUNTS").size(11.0).color(MUTED));
@@ -1682,6 +1683,34 @@ impl App {
                     }
                 });
             });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Alts join").color(MUTED));
+                changed |= segmented(
+                    ui,
+                    &mut self.settings.alt_join,
+                    &[
+                        (accounts::AltJoin::PrivateServer, "Private server link"),
+                        (accounts::AltJoin::FollowMain, "Follow the main"),
+                    ],
+                );
+                if self.settings.alt_join == accounts::AltJoin::FollowMain {
+                    ui.label("after");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.settings.follow_delay_s)
+                                .range(5..=180)
+                                .suffix(" s"),
+                        )
+                        .changed();
+                }
+            });
+            if self.settings.alt_join == accounts::AltJoin::FollowMain {
+                ui.label(
+                    RichText::new("The main launches first (private server link if set), then each alt joins the main's server through RAM's Follow. In RAM tick Web Server > Allow LaunchAccount. In Roblox the main's privacy 'Who can join me' must allow the alts (friends), and alts must be allowed into that private server.")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            }
             let names = self.ram_list.clone();
             let mut remove = None;
             egui::Grid::new("accounts")
@@ -1729,6 +1758,15 @@ impl App {
                             if ui.small_button("Launch").clicked() && !a.username.is_empty() {
                                 launch = Some(vec![a.username.clone()]);
                             }
+                            if a.role == AccountRole::Alt
+                                && !a.username.is_empty()
+                                && ui
+                                    .small_button("Join main")
+                                    .on_hover_text("open this alt straight into the main's current server (RAM Follow)")
+                                    .clicked()
+                            {
+                                follow = Some(a.username.clone());
+                            }
                             if ui.small_button("Remove").clicked() {
                                 remove = Some(i);
                             }
@@ -1765,7 +1803,10 @@ impl App {
             self.dirty();
         }
         if let Some(list) = launch {
-            self.ram_launch(list);
+            self.ram_launch(list, false);
+        }
+        if let Some(alt) = follow {
+            self.ram_launch(vec![alt], true);
         }
     }
 
@@ -1796,7 +1837,9 @@ impl App {
         });
     }
 
-    fn ram_launch(&mut self, names: Vec<String>) {
+    /// Launch accounts through RAM. `follow_only`: these alts join the
+    /// main's current server instead of using the link.
+    fn ram_launch(&mut self, names: Vec<String>, follow_only: bool) {
         let ram = self.ram();
         let link = self.secrets.get(accounts::PRIVATE_SERVER_KEY);
         let tx = self.ram_tx.clone();
@@ -1805,6 +1848,19 @@ impl App {
         let lock_names = self.settings.singleton_names.clone();
         let want_multi = self.settings.multi_roblox;
         let have_lock = self.multi.is_some();
+        let main = self
+            .settings
+            .accounts
+            .iter()
+            .find(|a| a.role == AccountRole::Main && a.enabled)
+            .map(|a| a.username.clone());
+        let follow = follow_only || self.settings.alt_join == accounts::AltJoin::FollowMain;
+        let delay = Duration::from_secs(self.settings.follow_delay_s);
+        let main_in_batch = main.as_ref().is_some_and(|m| names.contains(m));
+        if follow && main.is_none() {
+            self.say("follow: mark one account as Main first");
+            return;
+        }
         self.say(format!("launching {} account(s) through RAM…", names.len()));
         std::thread::spawn(move || {
             let log = |s: String| {
@@ -1826,10 +1882,27 @@ impl App {
                     .map(|w| w.pid)
                     .collect()
             };
+            let mut waited = false;
+            let mut launch = |n: &str| -> anyhow::Result<String> {
+                let is_main = main.as_deref() == Some(n);
+                if follow && !is_main {
+                    let m = main.as_deref().unwrap_or_default();
+                    if main_in_batch && !waited {
+                        log(format!(
+                            "waiting {}s for {m} to load in before alts follow",
+                            delay.as_secs()
+                        ));
+                        std::thread::sleep(delay);
+                        waited = true;
+                    }
+                    return ram.follow(n, m).map(|r| format!("{r} (following {m})"));
+                }
+                ram.launch(n, link.as_deref())
+            };
             crate::multi::launch_each(
                 &names,
                 &pids,
-                &mut |n| ram.launch(n, link.as_deref()),
+                &mut launch,
                 &mut |pid, n| {
                     let _ = tx.send(RamMsg::Pid(pid, n.to_string()));
                 },
@@ -1837,7 +1910,7 @@ impl App {
                 Duration::from_secs(60),
                 Duration::from_millis(500),
             );
-            log("launch done - the clients join your private server".into());
+            log("launch done".into());
             let _ = tx.send(RamMsg::LaunchDone);
         });
     }

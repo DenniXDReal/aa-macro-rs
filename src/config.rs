@@ -56,6 +56,10 @@ pub struct Settings {
     pub ram_port: u16,
     /// RAM accounts: one main + alts, launch order = main first.
     pub accounts: Vec<crate::accounts::AccountSlot>,
+    /// Alts: private server link, or follow the main into its server.
+    pub alt_join: crate::accounts::AltJoin,
+    /// Seconds to let the main load in before alts follow it.
+    pub follow_delay_s: u64,
     /// GitHub repo the updater reads releases from.
     pub update_repo: String,
     /// Check for a new build when the app opens.
@@ -357,6 +361,8 @@ impl Default for Settings {
             multi_roblox: true,
             ram_port: 7963,
             accounts: vec![],
+            alt_join: Default::default(),
+            follow_delay_s: 30,
             update_repo: "DenniXDReal/aa-macro-rs".into(),
             auto_update_check: true,
             instances: (1..=3)
