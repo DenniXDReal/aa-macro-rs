@@ -199,7 +199,8 @@ enum RamMsg {
 
 impl App {
     pub fn new(platform: Arc<dyn Platform>, settings: Settings, settings_path: PathBuf) -> Self {
-        let lib = Library::load(&Library::default_dir()).unwrap_or_default();
+        let (lib, defaults) = Library::load_with_defaults(&Library::default_dir())
+            .unwrap_or_else(|_| (Library::default(), 0));
         let placements_path = Placements::default_path();
         let placements = Placements::load(&placements_path).unwrap_or_default();
         let map = placements
@@ -296,6 +297,11 @@ impl App {
         };
         app.settings.ensure(0);
         app.settings.fix_teams();
+        if defaults > 0 {
+            app.say(format!(
+                "{defaults} built-in pattern(s) loaded (your own captures win)"
+            ));
+        }
         app.refresh_clients();
         if app.settings.multi_roblox && app.clients.is_empty() {
             // nothing open yet: take Roblox's lock now so every client can open

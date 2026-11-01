@@ -63,7 +63,7 @@ pub const FLOWS: &[Flow] = &[
             n("start_button", "text", "Portal lobby: green 'Start'"),
             n("portal_join_e", "text", "Follower: the 'Join' prompt with the E key at the portal"),
             n("captcha", "text", "Captcha dialog title - the macro pauses and pings you, it never solves it"),
-            n("choose_card", "text", "Card pick pop-up title ('Choose a card...')"),
+            n("choose_card", "text", "Card pick pop-up title ('Choose a card...') - the macro takes the green card, else the middle one"),
             n("card_confirm", "text", "'Confirm' under the cards after picking one"),
         ],
     },

@@ -586,7 +586,23 @@ impl App {
             };
         });
         ui.add_space(6.0);
-        ui.strong("Checklist - capture these names");
+        ui.horizontal(|ui| {
+            ui.strong("Checklist - capture these names");
+            if ui
+                .small_button("Export patterns (zip)")
+                .on_hover_text("patterns-export.zip next to the exe - send it to bake your captures into the next build")
+                .clicked()
+            {
+                let to = Library::default_dir()
+                    .parent()
+                    .map(|d| d.join("patterns-export.zip"))
+                    .unwrap_or_else(|| "patterns-export.zip".into());
+                match self.lib.export_zip(&to) {
+                    Ok(n) => self.say(format!("exported {n} pattern(s) to {}", to.display())),
+                    Err(e) => self.say(format!("export failed: {e:#}")),
+                }
+            }
+        });
         let mut pick: Option<(String, bool)> = None;
         let mine = crate::flows::stage_needs(
             self.settings.run.mode,

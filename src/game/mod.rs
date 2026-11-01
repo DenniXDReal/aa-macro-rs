@@ -1,6 +1,7 @@
 //! Live game context: what a client's screen shows right now, as probes the
 //! input arbiter can wait on. Shared by the Movement tester and the game loop.
 
+pub mod cards;
 pub mod placing;
 pub mod run;
 #[cfg(test)]
@@ -41,6 +42,11 @@ impl LiveScreen {
                 .and_then(|p| p.find_in(&frame, region))
                 .map(|h| h.center())
         })
+    }
+
+    /// The client's picture right now.
+    pub fn frame(&self) -> Option<crate::capture::Frame> {
+        self.platform.capture_client(self.hwnd).ok()
     }
 
     /// Captured pattern names (normalised) starting with `prefix`.

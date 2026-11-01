@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-mod gen {
+pub(crate) mod gen {
     include!(concat!(env!("OUT_DIR"), "/assets_gen.rs"));
 }
 

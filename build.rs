@@ -1,4 +1,4 @@
-//! Bakes assets/routes/*.json, assets/lobby/*.json and assets/stages.json
+//! Bakes assets/routes/*.json, assets/lobby/*.json, assets/patterns/* and assets/stages.json
 //! into the exe so the single .exe carries every default.
 
 use std::fs;
@@ -34,6 +34,20 @@ fn main() {
         }
         out.push_str("];\n");
     }
+    // your captured patterns, shipped as defaults (user copies win)
+    out.push_str("pub const PATTERNS: &[(&str, &str, Option<&[u8]>)] = &[\n");
+    for (stem, abs) in list("assets/patterns") {
+        let png = format!("assets/patterns/{stem}.png");
+        let png = if Path::new(&png).exists() {
+            format!("Some(include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{png}\")))")
+        } else {
+            "None".into()
+        };
+        out.push_str(&format!(
+            "    ({stem:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {abs:?})), {png}),\n"
+        ));
+    }
+    out.push_str("];\n");
     out.push_str("pub const STAGES: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/stages.json\"));\n");
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("assets_gen.rs");
     fs::write(dest, out).unwrap();

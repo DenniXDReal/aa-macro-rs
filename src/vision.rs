@@ -553,6 +553,61 @@ impl Library {
         Ok(lib)
     }
 
+    /// Your folder plus the patterns built into the exe for anything you
+    /// haven't captured yourself. Returns how many defaults were used.
+    pub fn load_with_defaults(dir: &Path) -> Result<(Self, usize)> {
+        let mut lib = Self::load(dir)?;
+        let mut n = 0;
+        for (_stem, json, png) in crate::movement::gen::PATTERNS {
+            let Ok(mut pat) = serde_json::from_str::<Pattern>(json) else {
+                continue;
+            };
+            if lib.pats.contains_key(&key(&pat.name)) || pat.compile().is_err() {
+                continue;
+            }
+            if pat.kind == Kind::Image {
+                match png.map(Frame::from_png_bytes) {
+                    Some(Ok(f)) => pat.template = Some(f),
+                    _ => continue,
+                }
+            }
+            lib.pats.insert(key(&pat.name), pat);
+            n += 1;
+        }
+        Ok((lib, n))
+    }
+
+    /// Zip every captured pattern (json + png) so it can be shared / built in.
+    pub fn export_zip(&self, to: &Path) -> Result<usize> {
+        use std::io::Write;
+        let f = std::fs::File::create(to)?;
+        let mut z = zip::ZipWriter::new(f);
+        let opt = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut n = 0;
+        if self.dir.exists() {
+            for e in std::fs::read_dir(&self.dir)? {
+                let p = e?.path();
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if name.ends_with(".preview.png")
+                    || !(name.ends_with(".json") || name.ends_with(".png"))
+                {
+                    continue;
+                }
+                z.start_file(name.as_str(), opt)?;
+                z.write_all(&std::fs::read(&p)?)?;
+                if name.ends_with(".json") {
+                    n += 1;
+                }
+            }
+        }
+        z.finish()?;
+        Ok(n)
+    }
+
     pub fn save(&mut self, pat: Pattern) -> Result<PathBuf> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!("{}.json", key(&pat.name)));
@@ -758,6 +813,17 @@ mod tests {
             .is_some());
         assert!(lib2.get("icon").unwrap().find_in(&src, None).is_some());
         assert!(dir.join("vote_start.preview.png").exists());
+        // export -> zip with json + png, no previews
+        let zp = dir.with_extension("zip");
+        assert_eq!(lib2.export_zip(&zp).unwrap(), 2);
+        let mut names: Vec<String> = zip::ZipArchive::new(std::fs::File::open(&zp).unwrap())
+            .unwrap()
+            .file_names()
+            .map(|s| s.unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["icon.json", "icon.png", "vote_start.json"]);
+        std::fs::remove_file(&zp).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

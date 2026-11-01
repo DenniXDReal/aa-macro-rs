@@ -85,6 +85,13 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         optional,
     };
     let mut out = vec![];
+    if s.run.own_team && s.run.party_invite {
+        out.push(step(
+            "Party: main + > Invite each alt, alts Accept",
+            &["party_plus", "party_invite", "party_accept"],
+            true,
+        ));
+    }
     let lobby = lobby_route(mode);
     match routes.lobby.get(lobby) {
         Some(r) => out.push(PlanStep {
@@ -165,7 +172,11 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         &["unit_placed"],
         true,
     ));
-    out.push(step("Upgrade by priority (R) until the end", &[], true));
+    out.push(step(
+        "Upgrade by priority (R) until the end; card screen = green card, else the middle one",
+        &["choose_card", "card_confirm"],
+        true,
+    ));
     out.push(step(
         "End: VICTORY / DEFEAT > Next",
         &["victory", "defeat", "next_button"],
@@ -355,6 +366,85 @@ impl RunCtx {
             b.long = true;
             self.arb.run(b).map_err(|e| format!("alt join: {e}"))?;
         }
+        Ok(())
+    }
+
+    /// Card pick screen open on `h`? Take the green card, else the middle
+    /// one, then Confirm. Returns true when it picked.
+    pub fn handle_cards(&self, h: Hwnd) -> R<bool> {
+        let scr = self.screen(h);
+        if !scr.has("choose_card") || scr.find(&Self::names(&["choose_card"]), None).is_none() {
+            return Ok(false);
+        }
+        let Some(f) = scr.frame() else {
+            return Ok(false);
+        };
+        let (p, green) = super::cards::pick(&f);
+        self.log(if green {
+            "card: green one"
+        } else {
+            "card: no green - middle one"
+        });
+        self.click(h, p, "card")?;
+        self.sleep(500)?;
+        match self.wait_any(
+            h,
+            &["card_confirm"],
+            if scr.has("card_confirm") { 2500 } else { 0 },
+        )? {
+            Some((_, c)) => self.click(h, c, "confirm card")?,
+            // no confirm pattern: the button sits under the card
+            None => self.click(h, Point::new(p.x, (p.y + 120).min(580)), "confirm card")?,
+        }
+        let mut dl = self.control.deadline(self.secs(3.0));
+        while scr.find(&Self::names(&["choose_card"]), None).is_some() && !dl.expired() {
+            self.sleep(300)?;
+        }
+        Ok(true)
+    }
+
+    /// Main invites every alt into its party, each alt accepts.
+    pub fn party_up(&self) -> R<()> {
+        let alts: Vec<Hwnd> = self
+            .clients
+            .iter()
+            .map(|c| c.0)
+            .filter(|h| *h != self.main)
+            .collect();
+        if alts.is_empty() {
+            return Ok(());
+        }
+        let main = self.screen(self.main);
+        if !main.has("party_plus") || !main.has("party_invite") {
+            self.log("party: capture party_plus + party_invite first - skipping");
+            return Ok(());
+        }
+        self.log(format!("party: inviting {} alt(s)", alts.len()));
+        self.click_when(self.main, "party_plus", 5000)?;
+        self.sleep(800)?;
+        let mut sent = 0;
+        for _ in 0..alts.len() {
+            match self.wait_any(self.main, &["party_invite"], 2000)? {
+                Some((_, p)) => {
+                    self.click(self.main, p, "invite")?;
+                    sent += 1;
+                    self.sleep(600)?;
+                }
+                None => break,
+            }
+        }
+        for h in &alts {
+            match self.wait_any(*h, &["party_accept"], 8000)? {
+                Some((_, p)) => self.click(*h, p, "accept party")?,
+                None => self.log("party: an alt never got the invite"),
+            }
+            self.sleep(400)?;
+        }
+        // close the party list again
+        if let Some((_, p)) = self.wait_any(self.main, &["party_plus"], 500)? {
+            self.click(self.main, p, "close party")?;
+        }
+        self.log(format!("party: {sent} invite(s) sent"));
         Ok(())
     }
 
@@ -581,6 +671,9 @@ impl RunCtx {
             if let Some(won) = self.end_screen(&end)? {
                 return Ok(won);
             }
+            for h in self.movers() {
+                self.handle_cards(h)?;
+            }
             if dl.expired() {
                 return Err("no end screen after 40 min".into());
             }
@@ -642,12 +735,21 @@ impl RunCtx {
         let res = (|| -> R<()> {
             let mut in_lobby = true;
             let mut map = String::new();
+            if self.settings.run.own_team
+                && self.settings.run.party_invite
+                && self.clients.len() > 1
+            {
+                self.party_up()?;
+            }
             loop {
                 if in_lobby {
                     self.enter_stage()?;
                     map.clear();
                 }
                 map = self.stage_setup(&map)?;
+                for h in self.movers() {
+                    self.handle_cards(h)?;
+                }
                 let started = Instant::now();
                 let placed = self.place_all(&map)?;
                 self.log(format!(

@@ -65,6 +65,16 @@ impl Frame {
         Frame::new(w, h, out)
     }
 
+    pub fn from_png_bytes(bytes: &[u8]) -> Result<Frame> {
+        let img = image::load_from_memory(bytes)?.to_rgba8();
+        let (w, h) = img.dimensions();
+        let mut bgra = img.into_raw();
+        for p in bgra.chunks_exact_mut(4) {
+            p.swap(0, 2);
+        }
+        Ok(Frame::new(w, h, bgra))
+    }
+
     pub fn load_png(path: &Path) -> Result<Frame> {
         let img = image::open(path)
             .with_context(|| format!("opening {}", path.display()))?
