@@ -978,6 +978,7 @@ pub fn run(
     settings_path: PathBuf,
 ) -> anyhow::Result<()> {
     let opts = eframe::NativeOptions {
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title("AA Macro")
             .with_inner_size([1060.0, 820.0])
