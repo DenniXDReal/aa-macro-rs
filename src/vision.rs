@@ -458,6 +458,15 @@ impl Library {
         Ok(path)
     }
 
+    pub fn remove(&mut self, name: &str) -> Result<()> {
+        let k = key(name);
+        self.pats.remove(&k);
+        for ext in ["json", "png", "preview.png"] {
+            let _ = std::fs::remove_file(self.dir.join(format!("{k}.{ext}")));
+        }
+        Ok(())
+    }
+
     pub fn get(&self, name: &str) -> Option<&Pattern> {
         self.pats.get(&key(name))
     }

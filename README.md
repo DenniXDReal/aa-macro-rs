@@ -8,6 +8,26 @@ Anime Adventures macro in Rust. It's a clean-room rewrite built to run **up to 4
 
 GitHub → **Actions** → latest green **build** run → **Artifacts** → `aa-macro-windows` (zip with `aa-macro.exe`).
 
+## The app
+
+**Double-click `aa-macro.exe`** to open the app window:
+
+| Page | What it's for |
+| --- | --- |
+| Home | Your clients (up to 3 by default). Set each one's name, role (Independent / Party host / Party follower), mode (Story, Legend, Raid, Dungeon, Infinity Castle, Challenge, Summer Hunt) and map. **Tile** and **Doctor** buttons. Start/Stop arrive in Phase 3. |
+| Units | Hotbar slots 1–6: on/off, name, how many to place, upgrade (None / Max / Level N), upgrade priority, buff unit. |
+| Placement | Live picture of a client. **Left-click to drop a unit spot, right-click to remove one.** Spots are saved per map and can be reserved for one slot. **Hover test** moves the mouse over each spot (no clicks). |
+| Patterns | Live picture: **drag a box** around button text or an icon, name it, then Save. A black/white preview shows what it will look for. **Test all** draws green boxes where patterns are found. |
+| Settings | Process name, max clients, mouse timings. |
+
+Settings, patterns and placements are saved next to the exe (`aa-macro.json`, `patterns/`, `placements.json`).
+
+Testing without Roblox: `set AA_FAKE_CLIENTS=a.png;b.png` and then `aa-macro` uses screenshots as fake clients.
+
+## Command-line tools
+
+All the CLI commands below still work from a terminal.
+
 ## Phase 1 tools (multi-instance plumbing)
 
 Run these from a terminal in the folder with `aa-macro.exe`:
@@ -69,5 +89,7 @@ All coordinates are **client space** (800×599 viewport, (0,0) top-left).
 3. Story / Legend / Raid loop, placement, upgrades
 4. Dungeon, Infinity Castle, Challenge
 5. Independent + Party (host/follower) multi modes
+
+UI: ✅ app window with Home, Units, Placement designer, Patterns tool and Settings
 6. Discord webhook (direct) + own API (Cloudflare Worker on `api.dennixd.org/aa/*`)
 7. Summer event mode (needs screenshots)

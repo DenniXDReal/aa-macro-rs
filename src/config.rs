@@ -25,6 +25,83 @@ pub struct Settings {
     /// Multi-instance unlock object names (held while `unlock` runs).
     pub singleton_names: Vec<String>,
     pub instances: Vec<InstanceProfile>,
+    /// Hotbar slots 1-6 (shared by every instance for now).
+    pub units: Vec<UnitSlot>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Mode {
+    Story,
+    Legend,
+    Raid,
+    Dungeon,
+    #[serde(rename = "Infinity Castle")]
+    InfinityCastle,
+    Challenge,
+    #[serde(rename = "Summer Hunt")]
+    SummerHunt,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 7] = [
+        Mode::Story,
+        Mode::Legend,
+        Mode::Raid,
+        Mode::Dungeon,
+        Mode::InfinityCastle,
+        Mode::Challenge,
+        Mode::SummerHunt,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Story => "Story",
+            Mode::Legend => "Legend",
+            Mode::Raid => "Raid",
+            Mode::Dungeon => "Dungeon",
+            Mode::InfinityCastle => "Infinity Castle",
+            Mode::Challenge => "Challenge",
+            Mode::SummerHunt => "Summer Hunt",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+pub enum Upgrade {
+    /// Don't upgrade.
+    None,
+    /// Upgrade until MAX shows.
+    Max,
+    /// Stop at this upgrade level.
+    Level(u8),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UnitSlot {
+    pub enabled: bool,
+    /// Your own note, e.g. "Erwin".
+    pub name: String,
+    /// How many copies to place.
+    pub place: u8,
+    pub upgrade: Upgrade,
+    /// Lower = upgraded first.
+    pub priority: u8,
+    /// Buff unit: turn Auto ability on one copy at a time.
+    pub buff: bool,
+}
+
+impl Default for UnitSlot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: String::new(),
+            place: 1,
+            upgrade: Upgrade::Max,
+            priority: 1,
+            buff: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +121,9 @@ pub struct InstanceProfile {
     pub label: String,
     pub role: Role,
     pub enabled: bool,
+    pub mode: Mode,
+    /// Map / act name as shown in game, e.g. "Planet Greenie".
+    pub map: String,
 }
 
 impl Default for InstanceProfile {
@@ -52,6 +132,8 @@ impl Default for InstanceProfile {
             label: String::new(),
             role: Role::Independent,
             enabled: true,
+            mode: Mode::Story,
+            map: String::new(),
         }
     }
 }
@@ -62,15 +144,21 @@ impl Default for Settings {
             process_name: "RobloxPlayerBeta.exe".into(),
             client_w: 800,
             client_h: 599,
-            max_instances: 4,
+            max_instances: 3,
             max_lease_ms: 400,
             focus_timeout_ms: 600,
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
-            instances: (1..=4)
+            instances: (1..=3)
                 .map(|i| InstanceProfile {
-                    label: format!("Instance {i}"),
+                    label: format!("Client {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            units: (1..=6)
+                .map(|i| UnitSlot {
+                    priority: i,
                     ..Default::default()
                 })
                 .collect(),
@@ -79,6 +167,24 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Make sure there is a profile for client `i` (0-based) and 6 unit slots.
+    pub fn ensure(&mut self, clients: usize) {
+        while self.instances.len() < clients {
+            let n = self.instances.len() + 1;
+            self.instances.push(InstanceProfile {
+                label: format!("Client {n}"),
+                ..Default::default()
+            });
+        }
+        while self.units.len() < 6 {
+            let n = self.units.len() as u8 + 1;
+            self.units.push(UnitSlot {
+                priority: n,
+                ..Default::default()
+            });
+        }
+    }
+
     pub fn default_path() -> PathBuf {
         std::env::current_exe()
             .ok()
@@ -115,7 +221,27 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"max_instances": 2}"#).unwrap();
         assert_eq!(s.max_instances, 2);
         assert_eq!(s.client_w, 800);
-        assert_eq!(s.instances.len(), 4);
+        assert_eq!(s.instances.len(), 3);
+        assert_eq!(s.units.len(), 6);
+    }
+
+    #[test]
+    fn modes_and_upgrades_serialise() {
+        let mut s = Settings::default();
+        s.instances[0].mode = Mode::SummerHunt;
+        s.units[0].upgrade = Upgrade::Level(5);
+        let j = serde_json::to_string(&s).unwrap();
+        assert!(j.contains("\"Summer Hunt\""));
+        let back: Settings = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.instances[0].mode, Mode::SummerHunt);
+        assert_eq!(back.units[0].upgrade, Upgrade::Level(5));
+        let mut short = Settings {
+            instances: vec![],
+            units: vec![],
+            ..Default::default()
+        };
+        short.ensure(3);
+        assert_eq!((short.instances.len(), short.units.len()), (3, 6));
     }
 
     #[test]

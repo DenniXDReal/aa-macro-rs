@@ -13,6 +13,7 @@ use crate::geom::{Geometry, Hwnd, Rect};
 use crate::keys::Key;
 use anyhow::Result;
 
+pub mod file;
 pub mod mock;
 pub mod null;
 #[cfg(windows)]
@@ -60,8 +61,15 @@ pub trait Platform: Send + Sync {
     fn wheel(&self, notches: i32) -> Result<()>;
 }
 
-/// The real platform for this OS.
+/// The real platform for this OS, or PNG-backed fake clients when
+/// `AA_FAKE_CLIENTS=a.png;b.png` is set (testing without Roblox).
 pub fn native() -> Box<dyn Platform> {
+    if let Ok(list) = std::env::var("AA_FAKE_CLIENTS") {
+        match file::FilePlatform::from_env_list(&list) {
+            Ok(p) => return Box::new(p),
+            Err(e) => log::error!("AA_FAKE_CLIENTS: {e}"),
+        }
+    }
     #[cfg(windows)]
     {
         Box::new(win32::Win32Platform::new())

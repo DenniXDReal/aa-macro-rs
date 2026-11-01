@@ -24,8 +24,9 @@ struct Cli {
     /// Settings file (default: aa-macro.json next to the exe).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// No command = open the app window.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -104,7 +105,10 @@ fn main() -> Result<()> {
     let settings = Settings::load_or_create(&path)?;
     let p: Arc<dyn Platform> = Arc::from(platform::native());
 
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        return aa_macro::gui::run(p, settings, path);
+    };
+    match cmd {
         Cmd::List => list(p.as_ref(), &settings),
         Cmd::Doctor => doctor(p.as_ref(), &settings),
         Cmd::Tile => tile(p.as_ref(), &settings),
