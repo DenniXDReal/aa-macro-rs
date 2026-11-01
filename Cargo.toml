@@ -22,7 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "wayland", "x11"] }
-ureq = "3"
+ureq = { version = "3", features = ["platform-verifier"] }
 zip = { version = "9.2.1", default-features = false, features = ["deflate"] }
 base64 = "0.23.1"
 

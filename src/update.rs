@@ -77,8 +77,21 @@ pub fn parse_body(body: &str) -> Option<(String, String)> {
     Some((sha, build))
 }
 
+/// HTTP agent that trusts the OS certificate store (works behind antivirus
+/// HTTPS scanning, which Mozilla's bundled roots would reject).
+fn agent() -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .tls_config(tls)
+        .build()
+        .new_agent()
+}
+
 fn get(url: &str, token: &str, accept: &str) -> Result<Vec<u8>> {
-    let mut resp = ureq::get(url)
+    let mut resp = agent()
+        .get(url)
         .header("Authorization", &format!("Bearer {}", token.trim()))
         .header("Accept", accept)
         .header("User-Agent", "aa-macro-updater")
