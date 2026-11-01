@@ -88,7 +88,7 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
     let mut out = vec![];
     if s.run.own_team && s.run.party_invite {
         out.push(step(
-            "Party: main + > spam Invite until none left > each alt Accept (back to main after each) > close party menu > game mode",
+            "Party: main + > spam Invite until none left > alt 1 Accept > alt 2 Accept ... > back to main > close party menu > game mode",
             &["party_plus", "party_invite", "party_invited", "party_accept", "party_close"],
             true,
         ));
@@ -469,9 +469,8 @@ impl RunCtx {
         } else {
             "party: no Invite left but no 'Invited' either - trying the alts anyway".into()
         });
-        // 4. one alt at a time: swap to it, Accept, swap back to the main
-        //    (and re-invite there if an Invite came back). Alts that missed
-        //    the invite get a second round.
+        // 4. one alt at a time: swap to it and Accept, through every alt.
+        //    Only if one missed the invite: re-invite on the main, retry once.
         let mut waiting: Vec<Hwnd> = alts.clone();
         for round in 1..=2 {
             let mut missed = vec![];
@@ -485,13 +484,20 @@ impl RunCtx {
                     Some((_, p)) => self.click(*h, p, "accept party")?,
                     None => missed.push(*h),
                 }
-                self.to_main()?;
-                // the main's list may show Invite again (invite expired / not sent)
-                self.spam_invites()?;
             }
             if missed.is_empty() {
                 break;
             }
+            if round == 2 {
+                self.log(format!(
+                    "party: {} alt(s) still not in the party",
+                    missed.len()
+                ));
+                break;
+            }
+            // only if an alt missed it: back to the main, invite again, retry those
+            self.to_main()?;
+            self.spam_invites()?;
             self.log(format!(
                 "party: {} alt(s) didn't get the invite{}",
                 missed.len(),
