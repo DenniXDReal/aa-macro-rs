@@ -919,6 +919,10 @@ impl RunCtx {
                 let after = Self::read_level(scr);
                 match (before, after) {
                     // verified: the level text went up
+                    (_, Some(u32::MAX)) => {
+                        maxed[k] = true;
+                        self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+                    }
                     (Some(b), Some(a)) if a > b => {
                         done[k] = a;
                         self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
@@ -940,10 +944,16 @@ impl RunCtx {
         }
     }
 
-    /// The unit panel's level ("UPG [n]") when its pattern is captured:
-    /// unit_placed = 0, upg_1 .. upg_10.
+    /// The unit panel's level ("UPG [n]"): Windows OCR first (nothing to
+    /// capture), else your upg_1 .. upg_10 patterns (unit_placed = 0).
+    /// Some(u32::MAX) = MAX.
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
         let f = scr.frame()?;
+        match scr.ocr_level(&f) {
+            Some(Ok(n)) => return Some(n),
+            Some(Err(())) => return Some(u32::MAX),
+            None => {}
+        }
         let mut names: Vec<(u32, String)> = (1..=10).map(|n| (n, format!("upg_{n}"))).collect();
         names.push((0, "unit_placed".into()));
         // highest first so "UPG [10]" isn't read as "UPG [1]"

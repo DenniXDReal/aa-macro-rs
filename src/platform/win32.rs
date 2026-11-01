@@ -47,6 +47,37 @@ fn w(h: HWND) -> Hwnd {
     Hwnd(h.0 as isize)
 }
 
+/// Windows' own OCR (the same engine the AHK macro's OCR.ahk uses): the crop
+/// is greyed and scaled 4x first, which small game text needs.
+pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
+    use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+    use windows::Media::Ocr::OcrEngine;
+    use windows::Security::Cryptography::CryptographicBuffer;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+    let a = area
+        .intersect(&Rect::new(0, 0, frame.width as i32, frame.height as i32))
+        .ok_or_else(|| anyhow!("OCR area outside the picture"))?;
+    const K: i32 = 4;
+    let (w, h) = (a.w * K, a.h * K);
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let (r, g, b) = frame.rgb(a.x + x / K, a.y + y / K).unwrap_or((0, 0, 0));
+            let v = ((r as u32 * 38 + g as u32 * 75 + b as u32 * 15) >> 7) as u8;
+            let i = ((y * w + x) * 4) as usize;
+            buf[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let ib = CryptographicBuffer::CreateFromByteArray(&buf)?;
+    let bmp = SoftwareBitmap::CreateCopyFromBuffer(&ib, BitmapPixelFormat::Bgra8, w, h)?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
+    let res = engine.RecognizeAsync(&bmp)?.get()?;
+    Ok(res.Text()?.to_string())
+}
+
 /// Is this process running as administrator? `Some(true)` also when we may
 /// not even read its token (it runs above us).
 pub fn process_elevated(pid: u32) -> Option<bool> {
@@ -441,6 +472,10 @@ impl Platform for Win32Platform {
             )
         }
         .context("raise")
+    }
+
+    fn ocr(&self, frame: &Frame, area: Rect) -> Option<String> {
+        ocr_text(frame, area).ok()
     }
 
     fn process_started(&self, pid: u32) -> Option<std::time::SystemTime> {

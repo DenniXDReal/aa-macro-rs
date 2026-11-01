@@ -82,8 +82,8 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
     Flow {
-        name: "Upgrade levels",
-        steps: "Open a unit's panel and capture its level text after each upgrade: 'UPG [1]' as upg_1, 'UPG [2]' as upg_2 ... (unit_placed is 'UPG [0]'). An upgrade only counts when the level goes up - like the AHK and v10 macros - so no money = no count. Without them the macro just counts R presses.",
+        name: "Upgrade levels (optional)",
+        steps: "Not needed: the macro reads 'UPG [n]' and MAX with Windows' built-in OCR (test it with Placement > Read unit level). Only capture these if OCR misreads your level text: 'UPG [1]' as upg_1, 'UPG [2]' as upg_2 ...",
         needs: &[
             n("upg_1", "text", "'UPG [1]' on the unit panel"),
             n("upg_2", "text", "'UPG [2]'"),

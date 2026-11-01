@@ -7,6 +7,24 @@ pub mod run;
 #[cfg(test)]
 pub mod sim;
 
+#[cfg(test)]
+mod level_tests {
+    use super::parse_level;
+
+    #[test]
+    fn reads_levels() {
+        assert_eq!(parse_level("UPG [3]"), Some(Ok(3)));
+        assert_eq!(parse_level("UPG[0]"), Some(Ok(0)));
+        assert_eq!(parse_level("upg [O]"), Some(Ok(0)));
+        assert_eq!(parse_level("UPG 13]"), Some(Ok(3)));
+        assert_eq!(parse_level("UPG [10]"), Some(Ok(10)));
+        assert_eq!(parse_level("UPG 5"), Some(Ok(5)));
+        assert_eq!(parse_level("MAX"), Some(Err(())));
+        assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
+        assert_eq!(parse_level(""), None);
+    }
+}
+
 use crate::geom::{Hwnd, Point, Rect};
 use crate::input::Probe;
 use crate::movement::RouteEnv;
@@ -14,6 +32,45 @@ use crate::platform::Platform;
 use crate::vision::{key, Library, Pattern};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// "UPG [3]" -> Ok(3), "MAX" -> Err(()), junk -> None. Tolerates the
+/// usual OCR slips ("[" read as "1", "O" for 0, missing brackets).
+pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
+    let t = text.to_uppercase();
+    if t.contains("MAX") {
+        return Some(Err(()));
+    }
+    let t: String = t
+        .chars()
+        .map(|c| match c {
+            'O' | 'Q' | 'D' => '0',
+            'I' | 'L' | '|' | '!' => '1',
+            'S' => '5',
+            'B' => '8',
+            c => c,
+        })
+        .collect();
+    // text after "UPG" (the letters U, P, G survive the mapping above)
+    let after = t.find("UPG").map(|i| &t[i + 3..]).unwrap_or(&t);
+    let num = |s: &str| -> Option<u32> {
+        let d: String = s
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        d.parse().ok()
+    };
+    if let Some(i) = after.find('[') {
+        return num(&after[i + 1..]).map(Ok);
+    }
+    let n = num(after)?;
+    // "[3]" read as "13]": no '[' but a ']' - the leading 1 was the bracket
+    let digits = n.to_string();
+    if after.contains(']') && digits.len() >= 2 && digits.starts_with('1') {
+        return digits[1..].parse().ok().map(Ok);
+    }
+    Some(Ok(n))
+}
 
 /// One client's screen + a snapshot of your patterns.
 #[derive(Clone)]
@@ -42,6 +99,25 @@ impl LiveScreen {
                 .and_then(|p| p.find_in(&frame, region))
                 .map(|h| h.center())
         })
+    }
+
+    /// Where the unit panel's level text sits: around your `unit_placed`
+    /// capture, else the AHK macro's spot.
+    pub fn level_area(&self) -> Rect {
+        match self.pats.get(&key("unit_placed")) {
+            Some(p) => {
+                let c = p.captured_at;
+                Rect::new(c.x - 30, c.y - 6, c.w + 60, c.h + 12)
+            }
+            None => Rect::new(170, 228, 142, 24),
+        }
+    }
+
+    /// OCR of the unit panel's level: Some(Ok(n)) = "UPG [n]",
+    /// Some(Err(())) = MAX, None = couldn't read it.
+    pub fn ocr_level(&self, frame: &crate::capture::Frame) -> Option<Result<u32, ()>> {
+        let text = self.platform.ocr(frame, self.level_area())?;
+        parse_level(&text)
     }
 
     /// Is `name` in an already captured picture (no new capture)?

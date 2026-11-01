@@ -196,6 +196,38 @@ impl App {
         self.arbiter.as_ref().unwrap().handle()
     }
 
+    pub(super) fn read_level_test(&mut self) {
+        let Some(info) = self.clients.get(self.sel).cloned() else {
+            self.say("no client");
+            return;
+        };
+        let scr = crate::game::LiveScreen::new(self.platform.clone(), info.hwnd, &self.lib);
+        let Some(f) = scr.frame() else {
+            self.say("capture failed");
+            return;
+        };
+        let area = scr.level_area();
+        match self.platform.ocr(&f, area) {
+            Some(t) => {
+                let lv = crate::game::parse_level(&t);
+                self.say(format!(
+                    "OCR at {},{} {}x{}: '{}' -> {}",
+                    area.x,
+                    area.y,
+                    area.w,
+                    area.h,
+                    t.trim(),
+                    match lv {
+                        Some(Ok(n)) => format!("level {n}"),
+                        Some(Err(())) => "MAX".into(),
+                        None => "no level found".into(),
+                    }
+                ));
+            }
+            None => self.say("OCR not available (needs Windows 10/11 with an OCR language - English is built in)"),
+        }
+    }
+
     pub(super) fn capture(&mut self, ctx: &egui::Context) {
         self.last_cap = Instant::now();
         let Some(info) = self.clients.get(self.sel).cloned() else {
@@ -419,6 +451,15 @@ impl App {
                 .clicked()
             {
                 self.place_test();
+            }
+            if ui
+                .button("Read unit level")
+                .on_hover_text(
+                    "open a unit's panel in Roblox first - reads its UPG [n] with Windows OCR",
+                )
+                .clicked()
+            {
+                self.read_level_test();
             }
         });
         ui.small("Left click = add spot. Right click = remove nearest. Each placing client has its own spots (pick it in the client box above the picture). Units fill spots in number order (reserved slot spots first), then the spiral.");

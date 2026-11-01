@@ -71,6 +71,10 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// Read the text in `area` of `frame` (Windows' built-in OCR).
+    fn ocr(&self, _frame: &Frame, _area: Rect) -> Option<String> {
+        None
+    }
     /// When a process started (to find its Roblox log).
     fn process_started(&self, _pid: u32) -> Option<std::time::SystemTime> {
         None
