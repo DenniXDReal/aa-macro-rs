@@ -9,9 +9,13 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// Held for as long as the app runs; dropping it lets go of the lock.
+///
+/// A Windows mutex belongs to the *thread* that took it: when that thread
+/// ends the mutex is "abandoned" and the next Roblox grabs it, so only one
+/// client can run again. So the lock lives on its own thread that stays
+/// alive until this is dropped.
 pub struct MultiLock {
-    #[cfg(windows)]
-    _held: Vec<crate::platform::win32::SingletonHandle>,
+    _stop: std::sync::mpsc::Sender<()>,
     /// The lock already existed when we took it (RAM's Multi Roblox, say).
     pub shared: bool,
 }
@@ -19,9 +23,27 @@ pub struct MultiLock {
 impl MultiLock {
     #[cfg(windows)]
     pub fn acquire(names: &[String]) -> Result<Self> {
-        let (held, shared) = crate::platform::win32::hold_singleton(names)?;
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let (ok_tx, ok_rx) = std::sync::mpsc::channel();
+        let names = names.to_vec();
+        std::thread::Builder::new()
+            .name("roblox-lock".into())
+            .spawn(move || {
+                match crate::platform::win32::hold_singleton(&names) {
+                    Ok((held, shared)) => {
+                        let _ = ok_tx.send(Ok(shared));
+                        // park until the app drops the lock (or exits)
+                        let _ = stop_rx.recv();
+                        drop(held);
+                    }
+                    Err(e) => {
+                        let _ = ok_tx.send(Err(e));
+                    }
+                }
+            })?;
+        let shared = ok_rx.recv()??;
         Ok(Self {
-            _held: held,
+            _stop: stop_tx,
             shared,
         })
     }

@@ -71,6 +71,10 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// When a process started (to find its Roblox log).
+    fn process_started(&self, _pid: u32) -> Option<std::time::SystemTime> {
+        None
+    }
     /// Roblox runs as administrator and we don't: Windows then blocks moving
     /// it, capturing it and sending it input.
     fn needs_admin(&self, _hwnd: Hwnd) -> bool {

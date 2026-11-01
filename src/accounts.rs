@@ -101,6 +101,29 @@ impl Ram {
             .collect())
     }
 
+    /// (username, user id) of every account in RAM.
+    pub fn accounts_ids(&self) -> Result<Vec<(String, u64)>> {
+        #[derive(Deserialize)]
+        struct A {
+            #[serde(rename = "Username")]
+            username: String,
+            #[serde(rename = "UserID")]
+            user_id: serde_json::Value,
+        }
+        let m = self.call("GetAccountsJson", &[])?;
+        let list: Vec<A> = serde_json::from_str(&m)?;
+        Ok(list
+            .into_iter()
+            .filter_map(|a| {
+                let id = a
+                    .user_id
+                    .as_u64()
+                    .or_else(|| a.user_id.as_str().and_then(|s| s.parse().ok()))?;
+                Some((a.username, id))
+            })
+            .collect())
+    }
+
     /// Launch `account` into Anime Adventures, into the private server when
     /// `private_server` (a roblox.com share/VIP link) is given.
     pub fn launch(&self, account: &str, private_server: Option<&str>) -> Result<String> {
@@ -212,6 +235,16 @@ mod tests {
         assert!(seen[1].contains("PlaceId=8304191830"));
         assert!(seen[1].contains("JoinVIP=true"));
         assert!(seen[1].contains("JobId=https%3A%2F%2Fwww.roblox.com%2Fshare%3Fcode%3Dabc"));
+    }
+
+    #[test]
+    fn account_ids() {
+        let (port, h) = fake_ram(vec![
+            r#"{"Success":true,"Message":"[{\"Username\":\"MainAcc\",\"UserID\":111,\"Alias\":\"\"},{\"Username\":\"Alt1\",\"UserID\":222}]"}"#,
+        ]);
+        let ids = Ram::new(port, "secret1").accounts_ids().unwrap();
+        assert_eq!(ids, vec![("MainAcc".into(), 111), ("Alt1".into(), 222)]);
+        h.join().unwrap();
     }
 
     #[test]

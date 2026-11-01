@@ -25,6 +25,7 @@ pub mod movement;
 pub mod multi;
 pub mod placement;
 pub mod platform;
+pub mod robloxlog;
 pub mod secrets;
 pub mod update;
 pub mod vision;

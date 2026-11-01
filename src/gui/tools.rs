@@ -134,6 +134,7 @@ impl App {
         // forget usernames of closed clients
         let alive: std::collections::HashSet<u32> = w.iter().map(|c| c.pid).collect();
         self.names.retain(|pid, _| alive.contains(pid));
+        self.name_tries.retain(|pid, _| alive.contains(pid));
         self.clients = w;
         let admin = self
             .clients
@@ -143,6 +144,7 @@ impl App {
             self.say("Roblox runs as administrator - restart the macro as admin (red banner) or start RAM/Roblox without admin");
         }
         self.admin_needed = admin;
+        self.lookup_names();
         let find = |h: Option<crate::geom::Hwnd>| {
             h.and_then(|h| self.clients.iter().position(|c| c.hwnd == h))
         };
@@ -374,11 +376,34 @@ impl App {
             if super::toggle(
                 ui,
                 &mut self.settings.spiral_fallback,
-                "Spiral when custom spots run out",
+                "Shape when custom spots run out",
             ) {
                 self.dirty();
             }
-            super::toggle(ui, &mut self.show_spiral, "show spiral");
+            let cur = self.settings.place_shape;
+            ComboBox::from_id_salt("shape")
+                .selected_text(cur.label())
+                .show_ui(ui, |ui| {
+                    for sh in crate::game::placing::Shape::ALL {
+                        ui.selectable_value(&mut self.settings.place_shape, sh, sh.label());
+                    }
+                });
+            if self.settings.place_shape != cur {
+                self.dirty();
+            }
+            super::toggle(ui, &mut self.show_spiral, "show shape");
+            ui.label("delay");
+            if ui
+                .add(
+                    DragValue::new(&mut self.settings.place_delay_ms)
+                        .range(0..=10000)
+                        .suffix(" ms"),
+                )
+                .on_hover_text("pause between placements (2000 = 2 s)")
+                .changed()
+            {
+                self.dirty();
+            }
             if ui
                 .button("Camera top-down")
                 .on_hover_text("zoom in, look down, zoom out on the selected client (in a stage)")
@@ -429,9 +454,13 @@ impl App {
                 }
             }
             if self.show_spiral {
-                for (i, p) in crate::game::placing::spiral_spots(30, self.sel as u64 + 1)
-                    .iter()
-                    .enumerate()
+                for (i, p) in crate::game::placing::shape_spots(
+                    self.settings.place_shape,
+                    40,
+                    self.sel as u64 + 1,
+                )
+                .iter()
+                .enumerate()
                 {
                     let c = rect.min + Vec2::new(p.x as f32, p.y as f32) * scale;
                     painter.circle_stroke(c, 5.0, Stroke::new(1.0, Color32::from_white_alpha(140)));
@@ -486,7 +515,7 @@ impl App {
 
     /// Place every enabled unit on the selected client (custom spots, then spiral).
     pub(super) fn place_test(&mut self) {
-        use crate::game::placing::{place_slot, spiral_spots, Keys};
+        use crate::game::placing::{place_slot, Keys};
         let Some(info) = self.clients.get(self.sel).cloned() else {
             return;
         };
@@ -514,7 +543,11 @@ impl App {
                 .map(|s| Point::new(s.x, s.y))
                 .collect();
             if self.settings.spiral_fallback {
-                spots.extend(spiral_spots(60, self.sel as u64 * 7 + slot as u64));
+                spots.extend(crate::game::placing::shape_spots(
+                    self.settings.place_shape,
+                    60,
+                    self.sel as u64 * 7 + slot as u64,
+                ));
             }
             jobs.push((slot, u.place as u32, spots));
         }
@@ -523,16 +556,17 @@ impl App {
             return;
         }
         let screen = crate::game::LiveScreen::new(self.platform.clone(), info.hwnd, &self.lib);
-        let has_panel = self.lib.get("unit_panel").is_some();
+        let has_panel = self.lib.get("unit_placed").is_some();
+        let delay = self.settings.place_delay_ms;
         let arb = self.arbiter();
         let tx = self.log_tx.clone();
         std::thread::spawn(move || {
             let confirm =
-                || has_panel.then(|| screen.find(&["unit_panel".to_string()], None).is_some());
+                || has_panel.then(|| screen.find(&["unit_placed".to_string()], None).is_some());
             let mut used: Vec<Point> = vec![];
             for (slot, count, spots) in jobs {
                 let free: Vec<Point> = spots.into_iter().filter(|p| !used.contains(p)).collect();
-                match place_slot(&arb, info.hwnd, &keys, slot, count, &free, &confirm) {
+                match place_slot(&arb, info.hwnd, &keys, slot, count, &free, &confirm, delay) {
                     Ok(done) => {
                         let _ = tx.send(format!("slot {slot}: placed {}/{count}", done.len()));
                         used.extend(done);

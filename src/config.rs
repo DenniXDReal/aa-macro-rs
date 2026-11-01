@@ -22,6 +22,12 @@ pub struct Settings {
     pub mouse_settle_ms: u64,
     /// How long a click holds the button.
     pub click_hold_ms: u64,
+    /// Pause after every click the game loop / routes make (menus, settings).
+    pub step_delay_ms: u64,
+    /// Pause between unit placements so the game can register each one.
+    pub place_delay_ms: u64,
+    /// Shape tried when a map has no (or not enough) custom spots.
+    pub place_shape: crate::game::placing::Shape,
     /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
     pub click_mode: crate::input::ClickMode,
     /// Multi-instance unlock object names (held while `unlock` runs).
@@ -345,6 +351,9 @@ impl Default for Settings {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             click_mode: crate::input::ClickMode::Safe,
+            step_delay_ms: 800,
+            place_delay_ms: 2000,
+            place_shape: Default::default(),
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),
             keybinds: Keybinds::default(),

@@ -157,6 +157,8 @@ pub struct App {
     /// Roblox pid -> RAM username (learned when we launch an account).
     names: std::collections::HashMap<u32, String>,
     last_refresh: Instant,
+    /// When we last tried to work out a client's username (by pid).
+    name_tries: std::collections::HashMap<u32, Instant>,
     /// Roblox runs as admin and we don't: Windows blocks docking/capture/input.
     admin_needed: bool,
 
@@ -276,6 +278,7 @@ impl App {
             multi: None,
             names: Default::default(),
             last_refresh: Instant::now(),
+            name_tries: Default::default(),
             admin_needed: false,
             run_rx: None,
             notifier: crate::webhook::Notifier::start(),
@@ -678,6 +681,44 @@ impl App {
         self.top_hwnd = hwnd;
     }
 
+    /// Work out usernames of clients we didn't launch (or missed): their
+    /// Roblox log has the user id once they're in a game.
+    fn lookup_names(&mut self) {
+        let todo: Vec<u32> = self
+            .clients
+            .iter()
+            .map(|c| c.pid)
+            .filter(|pid| !self.names.contains_key(pid))
+            .filter(|pid| {
+                self.name_tries
+                    .get(pid)
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(10))
+            })
+            .collect();
+        for pid in todo {
+            self.name_tries.insert(pid, Instant::now());
+            let p = self.platform.clone();
+            let ram = self.ram();
+            let tx = self.ram_tx.clone();
+            std::thread::spawn(move || {
+                let Some(started) = p.process_started(pid) else {
+                    return;
+                };
+                let Some(id) = crate::robloxlog::user_id_for(started) else {
+                    return;
+                };
+                let name = ram
+                    .accounts_ids()
+                    .ok()
+                    .and_then(|l| l.into_iter().find(|(_, i)| *i == id).map(|(n, _)| n))
+                    .or_else(|| crate::robloxlog::username_online(id));
+                if let Some(n) = name {
+                    let _ = tx.send(RamMsg::Pid(pid, n));
+                }
+            });
+        }
+    }
+
     /// Client name for the UI: the RAM username when we know it.
     fn client_label(&self, i: usize) -> String {
         let Some(c) = self.clients.get(i) else {
@@ -688,7 +729,7 @@ impl App {
         }
         let l = client_name(i, &self.settings);
         if l == format!("Client {}", i + 1) {
-            format!("Roblox {} (pid {})", i + 1, c.pid)
+            format!("Roblox {} (finding name…)", i + 1)
         } else {
             l
         }
@@ -2015,6 +2056,7 @@ impl App {
         crate::movement::Vars {
             map: self.settings.run.map.clone(),
             act: self.settings.run.act.clone(),
+            click_wait_ms: self.settings.step_delay_ms,
         }
     }
 
@@ -2121,6 +2163,31 @@ impl App {
                 .size(11.0)
                 .color(if self.multi.is_some() { GOOD } else { MUTED }),
             );
+            if self.settings.multi_roblox && self.multi.is_none() {
+                if ui
+                    .button("Turn multi-Roblox on now")
+                    .on_hover_text("closes any open Roblox first, then takes the lock")
+                    .clicked()
+                {
+                    let p = self.platform.clone();
+                    let process = self.settings.process_name.clone();
+                    let names = self.settings.singleton_names.clone();
+                    let tx = self.ram_tx.clone();
+                    std::thread::spawn(move || {
+                        let log = |s: String| {
+                            let _ = tx.send(RamMsg::Log(s));
+                        };
+                        // `adding` 2 forces it even with nothing open
+                        match crate::multi::ensure(&*p, &process, &names, false, 2, &log) {
+                            Ok(Some(l)) => {
+                                let _ = tx.send(RamMsg::Lock(l));
+                            }
+                            Ok(None) => {}
+                            Err(e) => log(format!("multi-Roblox failed: {e:#}")),
+                        }
+                    });
+                }
+            }
             ui.add_space(6.0);
             changed |= toggle(
                 ui,
@@ -2207,6 +2274,19 @@ impl App {
                     ui.label("Click hold (ms)");
                     changed |= ui
                         .add(egui::DragValue::new(&mut s.click_hold_ms).range(10..=500))
+                        .changed();
+                    ui.end_row();
+                    ui.label("Delay after each click (ms)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.step_delay_ms).range(0..=5000))
+                        .on_hover_text(
+                            "menus / settings need a moment to open before the next look or click",
+                        )
+                        .changed();
+                    ui.end_row();
+                    ui.label("Delay between placements (ms)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.place_delay_ms).range(0..=10000))
                         .changed();
                     ui.end_row();
                     ui.label("Clicks");

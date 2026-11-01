@@ -5,7 +5,7 @@
 //! Everything it looks for is one of your patterns; [`plan`] lists them per
 //! step so the Home page can show what's still missing before you Start.
 
-use super::placing::{camera_batch, place_slot, spiral_spots, spots_key, Keys};
+use super::placing::{camera_batch, place_slot, spots_key, Keys};
 use super::LiveScreen;
 use crate::config::{Mode, PlayChoice, Settings, Upgrade};
 use crate::control::Control;
@@ -63,6 +63,7 @@ fn vars(s: &Settings) -> Vars {
     Vars {
         map: s.run.map.clone(),
         act: s.run.act.clone(),
+        click_wait_ms: s.step_delay_ms,
     }
 }
 
@@ -267,6 +268,8 @@ impl RunCtx {
         self.arb
             .run(Batch::new(h, why).click(p.x, p.y))
             .map_err(|e| format!("{why}: {e}"))?;
+        // give the game time to react before the next look / click
+        self.sleep(self.settings.step_delay_ms)?;
         Ok(())
     }
     /// Wait for `name` then click it; error when it never shows.
@@ -435,19 +438,20 @@ impl RunCtx {
         self.log(format!("party: inviting {} alt(s)", alts.len()));
         self.click_when(self.main, "party_plus", 5000)?;
         self.sleep(800)?;
+        // click every Invite in the list (each turns into 'Invited')
         let mut sent = 0;
-        for _ in 0..alts.len() {
-            match self.wait_any(self.main, &["party_invite"], 2000)? {
+        for _ in 0..alts.len() + 3 {
+            match self.wait_any(self.main, &["party_invite"], 2500)? {
                 Some((_, p)) => {
                     self.click(self.main, p, "invite")?;
                     sent += 1;
-                    self.sleep(600)?;
                 }
                 None => break,
             }
         }
+        // swap to each alt and accept
         for h in &alts {
-            match self.wait_any(*h, &["party_accept"], 8000)? {
+            match self.wait_any(*h, &["party_accept"], 10000)? {
                 Some((_, p)) => self.click(*h, p, "accept party")?,
                 None => self.log("party: an alt never got the invite"),
             }
@@ -624,13 +628,18 @@ impl RunCtx {
                     .map(|p| Point::new(p.x, p.y))
                     .collect();
                 if s.spiral_fallback {
-                    spots.extend(spiral_spots(80, n as u64 * 31 + slot as u64));
+                    spots.extend(super::placing::shape_spots(
+                        s.place_shape,
+                        80,
+                        n as u64 * 31 + slot as u64,
+                    ));
                 }
                 jobs.push((slot, u.place as u32, spots));
             }
             // farm units first
             jobs.sort_by_key(|(slot, _, _)| !s.units[slot - 1].farm);
             let (arb, keys, tx) = (self.arb.clone(), keys.clone(), self.tx.clone());
+            let delay = (s.place_delay_ms as f32 * self.speed) as u64;
             handles.push(std::thread::spawn(move || {
                 // "UPG [0]" badge = the unit really went down
                 let badge = ["unit_placed".to_string()];
@@ -641,7 +650,7 @@ impl RunCtx {
                 for (slot, count, spots) in jobs {
                     let free: Vec<Point> =
                         spots.into_iter().filter(|p| !used.contains(p)).collect();
-                    match place_slot(&arb, h, &keys, slot, count, &free, &confirm) {
+                    match place_slot(&arb, h, &keys, slot, count, &free, &confirm, delay) {
                         Ok(done) => {
                             let _ = tx.send(Event::Log(format!(
                                 "client {n}: slot {slot} placed {}/{count}",

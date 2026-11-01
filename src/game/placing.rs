@@ -77,6 +77,149 @@ pub const PLAY_AREA: Rect = Rect::new(190, 150, 445, 370);
 /// Spiral centre: client centre nudged up-left like the AHK (-30, -30).
 pub const SPIRAL_CENTRE: Point = Point::new(370, 270);
 
+/// Placement shapes from the AHK macro (+ the v10 spiral).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Shape {
+    /// v10: jittered spiral out from the middle.
+    #[default]
+    Spiral,
+    /// 4 rings (45 / 90 / 135 / 180 px) around the middle.
+    Circle,
+    /// Even grid over the middle of the screen, row by row.
+    Grid,
+    /// Tight 3x3 around the middle (30 px apart).
+    Grid3x3,
+    /// Square spiral on a 40 px grid (7x7).
+    SpiralGrid,
+    /// 7x7 grid, column by column (top to bottom, left to right).
+    UpDown,
+    /// Random spots, at least 40 px apart, middle last.
+    Random,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 7] = [
+        Shape::Spiral,
+        Shape::Circle,
+        Shape::Grid,
+        Shape::Grid3x3,
+        Shape::SpiralGrid,
+        Shape::UpDown,
+        Shape::Random,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Shape::Spiral => "Spiral",
+            Shape::Circle => "Circle",
+            Shape::Grid => "Grid",
+            Shape::Grid3x3 => "3x3 Grid",
+            Shape::SpiralGrid => "Spiral grid",
+            Shape::UpDown => "Up and Down",
+            Shape::Random => "Random",
+        }
+    }
+}
+
+/// AHK's centre of the play field (client px).
+pub const SHAPE_CENTRE: Point = Point::new(408, 320);
+/// Spots must stay off the hotbar / top UI.
+pub const SHAPE_AREA: Rect = Rect::new(20, 70, 760, 450);
+
+/// Candidate spots for `shape` (deterministic for a seed).
+pub fn shape_spots(shape: Shape, n: usize, seed: u64) -> Vec<Point> {
+    let c = SHAPE_CENTRE;
+    let mut v: Vec<Point> = match shape {
+        Shape::Spiral => return spiral_spots(n, seed),
+        Shape::Circle => {
+            let mut v = vec![];
+            for (r, k) in [(45.0, 8), (90.0, 16), (135.0, 8), (180.0, 8)] {
+                for i in 0..k {
+                    let a = (i as f64) * std::f64::consts::TAU / k as f64;
+                    v.push(Point::new(
+                        c.x + (r * a.cos()).round() as i32,
+                        c.y + (r * a.sin()).round() as i32,
+                    ));
+                }
+            }
+            v
+        }
+        Shape::Grid => {
+            let mut v = vec![];
+            let mut y = c.y - 140;
+            while y <= c.y + 140 {
+                let mut x = c.x - 180;
+                while x <= c.x + 180 {
+                    v.push(Point::new(x, y));
+                    x += 25;
+                }
+                y += 28;
+            }
+            v
+        }
+        Shape::Grid3x3 => square_spiral(c, 30, 9),
+        Shape::SpiralGrid => square_spiral(Point::new(c.x - 30, c.y - 30), 40, 49),
+        Shape::UpDown => {
+            let mut v = vec![];
+            for col in 0..7 {
+                for row in 0..7 {
+                    v.push(Point::new(c.x - 120 + col * 40, c.y - 120 + row * 40));
+                }
+            }
+            v
+        }
+        Shape::Random => {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = |lo: i32, hi: i32| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                lo + (rng % (hi - lo + 1) as u64) as i32
+            };
+            let mut v: Vec<Point> = vec![];
+            for _ in 0..200 {
+                let p = Point::new(next(c.x - 180, c.x + 180), next(c.y - 140, c.y + 140));
+                if v.iter().all(|q| {
+                    let (dx, dy) = ((q.x - p.x) as f64, (q.y - p.y) as f64);
+                    (dx * dx + dy * dy).sqrt() >= 40.0
+                }) {
+                    v.push(p);
+                }
+                if v.len() >= 40 {
+                    break;
+                }
+            }
+            v.push(c);
+            v
+        }
+    };
+    v.retain(|p| SHAPE_AREA.contains(*p));
+    v.truncate(n);
+    v
+}
+
+/// Square spiral out from `start`: right, down, left, up, growing.
+fn square_spiral(start: Point, step: i32, count: usize) -> Vec<Point> {
+    let dirs = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+    let (mut x, mut y) = (start.x, start.y);
+    let mut out = vec![Point::new(x, y)];
+    let (mut len, mut d) = (1, 0usize);
+    while out.len() < count {
+        for _ in 0..2 {
+            for _ in 0..len {
+                x += dirs[d].0 * step;
+                y += dirs[d].1 * step;
+                out.push(Point::new(x, y));
+                if out.len() >= count {
+                    return out;
+                }
+            }
+            d = (d + 1) % 4;
+        }
+        len += 1;
+    }
+    out
+}
+
 /// `n` spiral candidate spots (deterministic for a given `seed`).
 pub fn spiral_spots(n: usize, seed: u64) -> Vec<Point> {
     let dirs = [(1, 0), (0, 1), (-1, 0), (0, -1)];
@@ -217,11 +360,16 @@ pub fn place_slot(
     count: u32,
     spots: &[Point],
     confirm: &dyn Fn() -> Option<bool>,
+    delay_ms: u64,
 ) -> Result<Vec<Point>, InputError> {
     let mut placed = vec![];
-    for at in spots {
+    for (i, at) in spots.iter().enumerate() {
         if placed.len() as u32 >= count {
             break;
+        }
+        if i > 0 && delay_ms > 0 {
+            // let the game catch up so the next look / click is right
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         }
         arb.run(place_open_batch(hwnd, keys, slot, *at))?;
         // the badge pops up a moment after the click
@@ -239,6 +387,30 @@ pub fn place_slot(
         }
     }
     Ok(placed)
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    #[test]
+    fn every_shape_gives_spots_on_screen() {
+        for sh in Shape::ALL {
+            let v = shape_spots(sh, 60, 3);
+            assert!(v.len() >= 9, "{sh:?}: {}", v.len());
+            assert!(v.iter().all(|p| SHAPE_AREA.contains(*p)), "{sh:?}");
+        }
+        assert_eq!(shape_spots(Shape::Grid3x3, 60, 0)[0], SHAPE_CENTRE);
+        assert_eq!(shape_spots(Shape::Grid3x3, 60, 0).len(), 9);
+        assert_eq!(
+            shape_spots(Shape::Random, 60, 5),
+            shape_spots(Shape::Random, 60, 5)
+        );
+        assert_eq!(
+            *shape_spots(Shape::Random, 60, 5).last().unwrap(),
+            SHAPE_CENTRE
+        );
+    }
 }
 
 #[cfg(test)]
@@ -294,7 +466,9 @@ mod tests {
             .into_iter()
             .map(|h| {
                 let (a, k, s) = (arb.handle(), keys.clone(), spots.clone());
-                std::thread::spawn(move || place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None).unwrap())
+                std::thread::spawn(move || {
+                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0).unwrap()
+                })
             })
             .collect();
         for h in hs {

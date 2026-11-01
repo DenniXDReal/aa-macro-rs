@@ -119,6 +119,10 @@ pub fn hold_singleton(names: &[String]) -> Result<(Vec<SingletonHandle>, bool)> 
             .with_context(|| format!("CreateMutex {n}"))?;
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             existed = true;
+            // take ownership if nobody holds it (left over / abandoned) - RAM does the same
+            unsafe {
+                let _ = windows::Win32::System::Threading::WaitForSingleObject(handle, 0);
+            }
         }
         out.push(SingletonHandle(handle));
     }
@@ -437,6 +441,29 @@ impl Platform for Win32Platform {
             )
         }
         .context("raise")
+    }
+
+    fn process_started(&self, pid: u32) -> Option<std::time::SystemTime> {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::GetProcessTimes;
+        unsafe {
+            let hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let (mut c, mut e, mut k, mut u) = (
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+            );
+            let ok = GetProcessTimes(hp, &mut c, &mut e, &mut k, &mut u).is_ok();
+            let _ = CloseHandle(hp);
+            if !ok {
+                return None;
+            }
+            let t = ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64;
+            // 100 ns ticks since 1601 -> unix
+            let unix_100ns = t.checked_sub(116_444_736_000_000_000)?;
+            Some(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(unix_100ns * 100))
+        }
     }
 
     fn needs_admin(&self, hwnd: Hwnd) -> bool {

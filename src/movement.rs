@@ -140,6 +140,8 @@ pub trait RouteEnv {
 pub struct Vars {
     pub map: String,
     pub act: String,
+    /// Extra pause after every click (menus need a moment to open).
+    pub click_wait_ms: u64,
 }
 
 impl Vars {
@@ -261,24 +263,34 @@ fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) 
                 out.push(Action::Wait(*ms));
                 out.extend(ks.iter().map(|k| Action::KeyUp(*k)));
             }
-            Step::Click { x, y, button: b } => out.push(Action::Click {
-                at: Point::new(*x, *y),
-                button: button(b),
-            }),
+            Step::Click { x, y, button: b } => {
+                out.push(Action::Click {
+                    at: Point::new(*x, *y),
+                    button: button(b),
+                });
+                if v.click_wait_ms > 0 {
+                    out.push(Action::Wait(v.click_wait_ms));
+                }
+            }
             Step::ClickPattern {
                 pattern,
                 fallback,
                 timeout_ms,
                 button: b,
                 offset,
-            } => out.push(Action::ClickWhen {
-                probe: env
-                    .probe(&[v.fill(pattern)], None)
-                    .shifted(offset[0], offset[1]),
-                timeout_ms: *timeout_ms,
-                fallback: fallback.map(|[x, y]| Point::new(x, y)),
-                button: button(b),
-            }),
+            } => {
+                out.push(Action::ClickWhen {
+                    probe: env
+                        .probe(&[v.fill(pattern)], None)
+                        .shifted(offset[0], offset[1]),
+                    timeout_ms: *timeout_ms,
+                    fallback: fallback.map(|[x, y]| Point::new(x, y)),
+                    button: button(b),
+                });
+                if v.click_wait_ms > 0 {
+                    out.push(Action::Wait(v.click_wait_ms));
+                }
+            }
             Step::WaitFor {
                 patterns,
                 timeout_ms,
@@ -491,6 +503,7 @@ mod tests {
         let v = Vars {
             map: "Space Center".into(),
             act: "Act 1".into(),
+            ..Default::default()
         };
         for (name, route) in r.maps.iter().chain(r.lobby.iter()) {
             route
@@ -554,6 +567,7 @@ mod tests {
         let v = Vars {
             map: "Ruined City (Midnight)".into(),
             act: "Legend Stage 3".into(),
+            ..Default::default()
         };
         assert_eq!(
             r.patterns(&v),
