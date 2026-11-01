@@ -285,6 +285,7 @@ mod tests {
                 mouse_settle_ms: 1,
                 click_hold_ms: 1,
                 max_lease_ms: 400,
+                click_mode: crate::input::ClickMode::Single,
             },
         );
         let keys = Keys::from(&Keybinds::default()).unwrap();

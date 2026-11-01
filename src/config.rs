@@ -22,6 +22,8 @@ pub struct Settings {
     pub mouse_settle_ms: u64,
     /// How long a click holds the button.
     pub click_hold_ms: u64,
+    /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
+    pub click_mode: crate::input::ClickMode,
     /// Multi-instance unlock object names (held while `unlock` runs).
     pub singleton_names: Vec<String>,
     pub instances: Vec<InstanceProfile>,
@@ -338,6 +340,7 @@ impl Default for Settings {
             focus_timeout_ms: 600,
             mouse_settle_ms: 35,
             click_hold_ms: 40,
+            click_mode: crate::input::ClickMode::Safe,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),
             keybinds: Keybinds::default(),

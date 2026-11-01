@@ -216,6 +216,7 @@ mod tests {
                 mouse_settle_ms: 1,
                 click_hold_ms: 1,
                 max_lease_ms: 400,
+                click_mode: crate::input::ClickMode::Safe,
             },
         );
         let (tx, rx) = std::sync::mpsc::channel();

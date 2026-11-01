@@ -187,6 +187,7 @@ impl App {
                     mouse_settle_ms: s.mouse_settle_ms,
                     click_hold_ms: s.click_hold_ms,
                     max_lease_ms: s.max_lease_ms,
+                    click_mode: s.click_mode,
                 },
             ));
         }

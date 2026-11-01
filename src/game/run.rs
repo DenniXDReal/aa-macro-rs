@@ -272,7 +272,20 @@ impl RunCtx {
     /// Wait for `name` then click it; error when it never shows.
     fn click_when(&self, h: Hwnd, name: &str, ms: u64) -> R<()> {
         match self.wait_any(h, &[name], ms)? {
-            Some((_, p)) => self.click(h, p, name),
+            Some((_, p)) => {
+                self.click(h, p, name)?;
+                if self.settings.click_mode == crate::input::ClickMode::Safe {
+                    // still there, same place = the click didn't register
+                    self.sleep(400)?;
+                    if let Some(q) = self.screen(h).find(&[name.to_string()], None) {
+                        if (q.x - p.x).abs() <= 6 && (q.y - p.y).abs() <= 6 {
+                            self.log(format!("'{name}' click didn't take - clicking again"));
+                            self.click(h, q, name)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
             None => Err(format!("'{name}' never showed up")),
         }
     }

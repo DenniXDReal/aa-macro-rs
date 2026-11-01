@@ -31,6 +31,9 @@ use std::time::{Duration, Instant};
 pub struct Probe {
     pub label: String,
     pub find: Arc<dyn Fn() -> Option<Point> + Send + Sync>,
+    /// Clicking here doesn't make the thing go away (a button next to a
+    /// label), so Safe clicks must not click again.
+    pub stays: bool,
 }
 
 impl Probe {
@@ -41,6 +44,7 @@ impl Probe {
         Self {
             label: label.into(),
             find: Arc::new(f),
+            stays: false,
         }
     }
 
@@ -53,6 +57,7 @@ impl Probe {
         Self {
             label: self.label,
             find: Arc::new(move || f().map(|p| Point::new(p.x + dx, p.y + dy))),
+            stays: true,
         }
     }
 }
@@ -237,6 +242,21 @@ pub struct ArbiterOptions {
     pub mouse_settle_ms: u64,
     pub click_hold_ms: u64,
     pub max_lease_ms: u64,
+    pub click_mode: ClickMode,
+}
+
+/// How a click is sent. Roblox sometimes drops a click (no hover yet, or
+/// the frame was busy), like the AHK / Python macros work around.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ClickMode {
+    /// One plain click.
+    Single,
+    /// Hover + 1 px wiggle before clicking, and when a button we waited for
+    /// is still there afterwards, click it once more.
+    #[default]
+    Safe,
+    /// Always click twice (AHK `Click 2`).
+    Double,
 }
 
 impl Default for ArbiterOptions {
@@ -245,6 +265,7 @@ impl Default for ArbiterOptions {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             max_lease_ms: 400,
+            click_mode: ClickMode::Safe,
         }
     }
 }
@@ -534,9 +555,25 @@ impl Runner<'_> {
             Action::Click { at, button } => {
                 self.hover(geo, *at)?;
                 self.sleep(self.opts.mouse_settle_ms, w)?;
-                self.button(*button, true)?;
-                self.sleep(self.opts.click_hold_ms, w)?;
-                self.button(*button, false)?;
+                if self.opts.click_mode == ClickMode::Safe {
+                    // a tiny move on the spot so Roblox registers the hover
+                    self.p.mouse_move_rel(1, 0).map_err(perr)?;
+                    self.p.mouse_move_rel(-1, 0).map_err(perr)?;
+                    self.sleep(30, w)?;
+                }
+                let times = if self.opts.click_mode == ClickMode::Double {
+                    2
+                } else {
+                    1
+                };
+                for i in 0..times {
+                    if i > 0 {
+                        self.sleep(60, w)?;
+                    }
+                    self.button(*button, true)?;
+                    self.sleep(self.opts.click_hold_ms, w)?;
+                    self.button(*button, false)?;
+                }
             }
             Action::Scroll { at, notches } => {
                 self.hover(geo, *at)?;
@@ -582,14 +619,21 @@ impl Runner<'_> {
                 if !geo.in_client(at) {
                     return Err(InputError::OutsideClient(at));
                 }
-                self.act(
-                    geo,
-                    w,
-                    &Action::Click {
-                        at,
-                        button: *button,
-                    },
-                )?;
+                let click = Action::Click {
+                    at,
+                    button: *button,
+                };
+                self.act(geo, w, &click)?;
+                if self.opts.click_mode == ClickMode::Safe && !probe.stays {
+                    // still there, same spot = the click didn't register
+                    self.sleep(400, w)?;
+                    if let Some(p) = (probe.find)() {
+                        if (p.x - at.x).abs() <= 6 && (p.y - at.y).abs() <= 6 {
+                            log::info!("click on '{}' didn't take - clicking again", probe.label);
+                            self.act(geo, w, &click)?;
+                        }
+                    }
+                }
             }
             Action::ScrollUntil {
                 probe,
@@ -683,9 +727,49 @@ mod tests {
             mouse_settle_ms: 1,
             click_hold_ms: 1,
             max_lease_ms: 400,
+            click_mode: crate::input::ClickMode::Single,
         };
         let arb = Arbiter::start(mock.clone(), ctl.clone(), opts);
         (mock, ctl, arb)
+    }
+
+    #[test]
+    fn safe_and_double_clicks() {
+        let downs = |calls: Vec<Call>| {
+            calls
+                .iter()
+                .filter(|c| **c == Call::Button(MouseButton::Left, true))
+                .count()
+        };
+        for (mode, stays, want) in [
+            (ClickMode::Single, false, 1),
+            (ClickMode::Double, false, 2),
+            (ClickMode::Safe, false, 2), // button still there -> again
+            (ClickMode::Safe, true, 1),  // offset click: never again
+        ] {
+            let mock = Arc::new(MockPlatform::with_windows(1));
+            let arb = Arbiter::start(
+                mock.clone(),
+                Control::new(),
+                ArbiterOptions {
+                    mouse_settle_ms: 1,
+                    click_hold_ms: 1,
+                    max_lease_ms: 2000,
+                    click_mode: mode,
+                },
+            );
+            let mut probe = Probe::new("btn", || Some(Point::new(10, 10)));
+            probe.stays = stays;
+            arb.handle()
+                .run(Batch::new(Hwnd(100), "x").then(Action::ClickWhen {
+                    probe,
+                    timeout_ms: 100,
+                    fallback: None,
+                    button: MouseButton::Left,
+                }))
+                .unwrap();
+            assert_eq!(downs(mock.take_calls()), want, "{mode:?} stays={stays}");
+        }
     }
 
     #[test]

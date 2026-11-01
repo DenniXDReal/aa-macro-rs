@@ -2027,6 +2027,7 @@ impl App {
     fn page_settings(&mut self, ui: &mut egui::Ui) {
         heading(ui, "Settings", "");
         let mut changed = false;
+        let mut input_changed = false;
         card(ui, |ui| {
             ui.label(
                 RichText::new("MULTI-ROBLOX & DOCKING")
@@ -2135,6 +2136,22 @@ impl App {
                         .add(egui::DragValue::new(&mut s.click_hold_ms).range(10..=500))
                         .changed();
                     ui.end_row();
+                    ui.label("Clicks");
+                    let before = s.click_mode;
+                    segmented(
+                        ui,
+                        &mut s.click_mode,
+                        &[
+                            (crate::input::ClickMode::Single, "Single"),
+                            (crate::input::ClickMode::Safe, "Safe"),
+                            (crate::input::ClickMode::Double, "Double"),
+                        ],
+                    );
+                    if s.click_mode != before {
+                        changed = true;
+                        input_changed = true;
+                    }
+                    ui.end_row();
                     ui.label("Max input turn (ms)");
                     changed |= ui
                         .add(egui::DragValue::new(&mut s.max_lease_ms).range(100..=2000))
@@ -2152,6 +2169,9 @@ impl App {
                 }
             });
         });
+        if input_changed && !self.running {
+            self.arbiter = None; // next action uses the new click mode
+        }
         if changed {
             self.dirty();
         }
