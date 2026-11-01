@@ -71,6 +71,11 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// Roblox runs as administrator and we don't: Windows then blocks moving
+    /// it, capturing it and sending it input.
+    fn needs_admin(&self, _hwnd: Hwnd) -> bool {
+        false
+    }
     /// Keep `hwnd` above every normal window (`false` drops that again).
     fn set_topmost(&self, _hwnd: Hwnd, _on: bool) -> Result<()> {
         Ok(())

@@ -135,6 +135,14 @@ impl App {
         let alive: std::collections::HashSet<u32> = w.iter().map(|c| c.pid).collect();
         self.names.retain(|pid, _| alive.contains(pid));
         self.clients = w;
+        let admin = self
+            .clients
+            .iter()
+            .any(|c| self.platform.needs_admin(c.hwnd));
+        if admin && !self.admin_needed {
+            self.say("Roblox runs as administrator - restart the macro as admin (red banner) or start RAM/Roblox without admin");
+        }
+        self.admin_needed = admin;
         let find = |h: Option<crate::geom::Hwnd>| {
             h.and_then(|h| self.clients.iter().position(|c| c.hwnd == h))
         };
@@ -210,7 +218,7 @@ impl App {
                 self.refresh_quiet();
                 if self.clients.get(self.sel).map(|c| c.hwnd) == Some(info.hwnd) {
                     self.live = false;
-                    self.say(format!("capture failed: {e}"));
+                    self.say(format!("capture failed: {e:#}"));
                 }
             }
         }
@@ -218,6 +226,10 @@ impl App {
 
     pub(super) fn tile(&mut self) {
         self.refresh_quiet();
+        if self.admin_needed {
+            self.say("can't tile: Roblox runs as administrator - restart the macro as admin");
+            return;
+        }
         let p = self.platform.clone();
         let Some(first) = self.clients.first().and_then(|c| p.geometry(c.hwnd)) else {
             self.say("no Roblox clients open to tile");
@@ -225,9 +237,11 @@ impl App {
         };
         let (ow, oh) = first.outer_for_client(self.settings.client_w, self.settings.client_h);
         let rects = layout::tile(self.clients.len(), p.work_area(), ow, oh);
+        let mut failed = 0;
         for (c, r) in self.clients.clone().iter().zip(rects) {
             if let Err(e) = p.move_resize(c.hwnd, r) {
-                self.say(format!("tile failed: {e}"));
+                failed += 1;
+                self.say(format!("tile failed: {e:#}"));
             }
             if let Some(g) = p.geometry(c.hwnd) {
                 if (g.client.w, g.client.h) != (self.settings.client_w, self.settings.client_h) {
@@ -236,7 +250,9 @@ impl App {
                 }
             }
         }
-        self.say(format!("tiled {} client(s)", self.clients.len()));
+        if failed == 0 {
+            self.say(format!("tiled {} client(s)", self.clients.len()));
+        }
     }
 
     pub(super) fn doctor(&mut self) {
@@ -247,6 +263,12 @@ impl App {
             let size = p.geometry(c.hwnd).map(|g| (g.client.w, g.client.h));
             let cap = p.capture_client(c.hwnd);
             let mut bad = vec![];
+            if p.needs_admin(c.hwnd) {
+                bad.push(
+                    "Roblox runs as admin, the macro doesn't (restart the macro as admin)"
+                        .to_string(),
+                );
+            }
             if dpi != 96 {
                 bad.push(format!("scaling {}% (set 100%)", dpi * 100 / 96));
             }

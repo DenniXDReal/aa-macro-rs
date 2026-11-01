@@ -157,6 +157,8 @@ pub struct App {
     /// Roblox pid -> RAM username (learned when we launch an account).
     names: std::collections::HashMap<u32, String>,
     last_refresh: Instant,
+    /// Roblox runs as admin and we don't: Windows blocks docking/capture/input.
+    admin_needed: bool,
 
     // game loop
     run_rx: Option<Receiver<crate::game::run::Event>>,
@@ -273,6 +275,7 @@ impl App {
             multi: None,
             names: Default::default(),
             last_refresh: Instant::now(),
+            admin_needed: false,
             run_rx: None,
             notifier: crate::webhook::Notifier::start(),
             hook_input: String::new(),
@@ -533,6 +536,11 @@ impl App {
             self.docked_ok = false;
             return;
         };
+        if self.admin_needed {
+            self.docked_ok = false;
+            self.dock_note = "can't dock: Roblox runs as administrator (see the red banner)".into();
+            return;
+        }
         let Some(app) = p.geometry(own) else { return };
         let fg = p.foreground();
         let fg_client = self
@@ -599,6 +607,51 @@ impl App {
                 .unwrap_or_else(|| "?".into())
         );
         self.dock_note = note;
+    }
+
+    fn admin_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.admin_needed {
+            return;
+        }
+        egui::Frame::new()
+            .fill(Color32::from_rgb(70, 22, 30))
+            .stroke(Stroke::new(1.0, BAD))
+            .corner_radius(10)
+            .inner_margin(10)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Roblox is running as administrator, this macro isn't - Windows blocks moving, docking, capturing and clicking it.")
+                            .color(TEXT),
+                    );
+                    if ui
+                        .add(egui::Button::new(RichText::new("Restart macro as admin").color(Color32::WHITE)).fill(BAD))
+                        .clicked()
+                    {
+                        self.restart_as_admin();
+                    }
+                });
+                ui.label(
+                    RichText::new("Or: close Roblox and Roblox Account Manager, open RAM normally (not 'Run as administrator'), launch again.")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+        ui.add_space(8.0);
+    }
+
+    fn restart_as_admin(&mut self) {
+        #[cfg(windows)]
+        {
+            if crate::platform::win32::relaunch_as_admin() {
+                let _ = self.settings.save(&self.settings_path);
+                std::process::exit(0);
+            }
+            self.say("restart as admin was cancelled");
+        }
+        #[cfg(not(windows))]
+        self.say("needs Windows");
     }
 
     /// Make `hwnd` the one topmost client (None = none of them).
@@ -2734,6 +2787,7 @@ impl eframe::App for App {
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12))
             .show(ui, |ui| {
+                self.admin_banner(ui);
                 self.update_banner(ui);
                 egui::ScrollArea::vertical()
                     .id_salt("page")

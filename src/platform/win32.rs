@@ -47,6 +47,60 @@ fn w(h: HWND) -> Hwnd {
     Hwnd(h.0 as isize)
 }
 
+/// Is this process running as administrator? `Some(true)` also when we may
+/// not even read its token (it runs above us).
+pub fn process_elevated(pid: u32) -> Option<bool> {
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::OpenProcessToken;
+    unsafe {
+        let hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut tok = HANDLE::default();
+        let r = OpenProcessToken(hp, TOKEN_QUERY, &mut tok);
+        let _ = CloseHandle(hp);
+        if r.is_err() {
+            return Some(true);
+        }
+        let mut e = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            tok,
+            TokenElevation,
+            Some(&mut e as *mut TOKEN_ELEVATION as *mut c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(tok);
+        ok.then_some(e.TokenIsElevated != 0)
+    }
+}
+
+pub fn self_elevated() -> bool {
+    process_elevated(std::process::id()).unwrap_or(false)
+}
+
+/// Start this exe again as administrator (UAC prompt). True = it started.
+pub fn relaunch_as_admin() -> bool {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            &HSTRING::from("runas"),
+            &HSTRING::from(exe.as_os_str()),
+            windows::core::PCWSTR::null(),
+            windows::core::PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    r.0 as isize > 32
+}
+
 /// Make screen / window coordinates physical pixels (call once at startup).
 pub fn make_dpi_aware() {
     unsafe {
@@ -385,6 +439,14 @@ impl Platform for Win32Platform {
         .context("raise")
     }
 
+    fn needs_admin(&self, hwnd: Hwnd) -> bool {
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(h(hwnd), Some(&mut pid));
+        }
+        process_elevated(pid) == Some(true) && !self_elevated()
+    }
+
     fn set_topmost(&self, hwnd: Hwnd, on: bool) -> Result<()> {
         use windows::Win32::UI::WindowsAndMessaging::{
             HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
@@ -446,7 +508,7 @@ impl Platform for Win32Platform {
                 let _ = ShowWindow(hw, SW_RESTORE);
             }
             SetWindowPos(hw, None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE)
-                .context("SetWindowPos")
+                .map_err(|e| anyhow!("SetWindowPos: {}", e.message()))
         }
     }
 
@@ -515,7 +577,10 @@ impl Platform for Win32Platform {
             let _ = DeleteDC(mem);
             ReleaseDC(None, screen);
             if !ok {
-                bail!("PrintWindow failed");
+                bail!(
+                    "PrintWindow failed: {}",
+                    windows::core::Error::from_win32().message()
+                );
             }
             if lines != oh {
                 bail!("GetDIBits copied {lines}/{oh} lines");
