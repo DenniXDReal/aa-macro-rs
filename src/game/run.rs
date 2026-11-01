@@ -347,6 +347,7 @@ impl RunCtx {
             }
             if s.run.own_team {
                 self.alts_join_portal()?;
+                self.to_main()?;
             }
         }
         self.click_when(self.main, "start_button", 10000)?;
@@ -419,6 +420,21 @@ impl RunCtx {
         Ok(true)
     }
 
+    /// Card screen on any client (alts first); back to the main after an alt.
+    fn cards_all(&self) -> R<()> {
+        let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
+        let mut alt_done = false;
+        for h in self.main_last(all) {
+            if self.handle_cards(h)? && h != self.main {
+                alt_done = true;
+            }
+        }
+        if alt_done {
+            self.to_main()?;
+        }
+        Ok(())
+    }
+
     /// Main invites every alt into its party, each alt accepts.
     pub fn party_up(&self) -> R<()> {
         let alts: Vec<Hwnd> = self
@@ -485,8 +501,26 @@ impl RunCtx {
                 None => self.log("party: an alt never got the invite"),
             }
         }
-        self.log("party: done - going to the game mode");
+        // 5. back to the main for Play / Areas / Create lobby
+        self.to_main()?;
+        self.log("party: done - back on the main, going to the game mode");
         Ok(())
+    }
+
+    /// Bring the main client back to the front (after working on alts).
+    fn to_main(&self) -> R<()> {
+        self.arb
+            .run(Batch::new(self.main, "back to main"))
+            .map_err(|e| format!("back to main: {e}"))?;
+        self.sleep(300)?;
+        Ok(())
+    }
+
+    /// Alts first, the main last - so the sequence ends on the main.
+    fn main_last(&self, v: Vec<Hwnd>) -> Vec<Hwnd> {
+        let mut v: Vec<Hwnd> = v.into_iter().filter(|h| *h != self.main).collect();
+        v.push(self.main);
+        v
     }
 
     /// Clients that move / place: the main, then every placing client.
@@ -572,19 +606,19 @@ impl RunCtx {
                 String::new()
             }
         };
-        for h in self.movers() {
+        for h in self.main_last(self.movers()) {
             self.arb
                 .run(camera_batch(h, &s.camera))
                 .map_err(|e| format!("camera: {e}"))?;
         }
-        for h in self.movers() {
+        for h in self.main_last(self.movers()) {
             self.tp_spawn(h)?;
         }
         if let Some(r) = (!map.is_empty())
             .then(|| self.routes.find_map(&map))
             .flatten()
         {
-            for h in self.movers() {
+            for h in self.main_last(self.movers()) {
                 self.log(format!("map walk: {}", r.map));
                 let b = r
                     .to_batch(h, self.screen(h), &vars(s))
@@ -594,13 +628,16 @@ impl RunCtx {
                 }
             }
         }
-        for h in self.movers() {
+        // every client votes (alts first), then back on the main
+        let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
+        for h in self.main_last(all) {
             if let Some((_, p)) =
-                self.wait_any(h, &["vote_start"], if h == self.main { 3000 } else { 500 })?
+                self.wait_any(h, &["vote_start"], if h == self.main { 3000 } else { 1000 })?
             {
                 self.click(h, p, "vote start")?;
             }
         }
+        self.to_main()?;
         Ok(map)
     }
 
@@ -717,9 +754,7 @@ impl RunCtx {
             if let Some(won) = self.end_screen(&end)? {
                 return Ok(won);
             }
-            for h in self.movers() {
-                self.handle_cards(h)?;
-            }
+            self.cards_all()?;
             if dl.expired() {
                 return Err("no end screen after 40 min".into());
             }
@@ -793,9 +828,7 @@ impl RunCtx {
                     map.clear();
                 }
                 map = self.stage_setup(&map)?;
-                for h in self.movers() {
-                    self.handle_cards(h)?;
-                }
+                self.cards_all()?;
                 let started = Instant::now();
                 let placed = self.place_all(&map)?;
                 self.log(format!(
