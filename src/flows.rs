@@ -82,6 +82,20 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
     Flow {
+        name: "Upgrade levels",
+        steps: "Open a unit's panel and capture its level text after each upgrade: 'UPG [1]' as upg_1, 'UPG [2]' as upg_2 ... (unit_placed is 'UPG [0]'). An upgrade only counts when the level goes up - like the AHK and v10 macros - so no money = no count. Without them the macro just counts R presses.",
+        needs: &[
+            n("upg_1", "text", "'UPG [1]' on the unit panel"),
+            n("upg_2", "text", "'UPG [2]'"),
+            n("upg_3", "text", "'UPG [3]'"),
+            n("upg_4", "text", "'UPG [4]'"),
+            n("upg_5", "text", "'UPG [5]'"),
+            n("upg_6", "text", "'UPG [6]'"),
+            n("upg_7", "text", "'UPG [7]'"),
+            n("upg_8", "text", "'UPG [8]'"),
+        ],
+    },
+    Flow {
         name: "End screen",
         steps: "VICTORY / DEFEAT > Next > Replay (or Return to lobby).",
         needs: &[

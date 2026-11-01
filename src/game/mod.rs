@@ -44,6 +44,14 @@ impl LiveScreen {
         })
     }
 
+    /// Is `name` in an already captured picture (no new capture)?
+    pub fn find_in_frame(&self, frame: &crate::capture::Frame, name: &str) -> bool {
+        self.pats
+            .get(&key(name))
+            .and_then(|p| p.find_in(frame, None))
+            .is_some()
+    }
+
     /// The client's picture right now.
     pub fn frame(&self) -> Option<crate::capture::Frame> {
         self.platform.capture_client(self.hwnd).ok()

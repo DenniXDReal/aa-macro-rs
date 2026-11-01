@@ -174,8 +174,8 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         true,
     ));
     out.push(step(
-        "Upgrade by priority (R): 1-8 times or until MAX, FARM first; VICTORY / DEFEAT watched all the time; cards picked",
-        &["choose_card", "card_confirm", "upgrade_max"],
+        "Upgrade by priority (R): counts only when UPG [n] goes up, 1-8 or until MAX, FARM first; VICTORY / DEFEAT watched all the time; cards picked",
+        &["choose_card", "card_confirm", "upgrade_max", "upg_1", "upg_2"],
         true,
     ));
     out.push(step(
@@ -888,12 +888,22 @@ impl RunCtx {
             self.arb
                 .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
                 .map_err(|e| format!("upgrade: {e}"))?;
-            let is_max = s.units[slot - 1].upgrade == Upgrade::Max
-                && scr.has("upgrade_max")
-                && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
+            let is_max =
+                scr.has("upgrade_max") && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
+            let before = Self::read_level(scr);
+            let reached = match (s.units[slot - 1].upgrade, before) {
+                (Upgrade::Level(n), Some(l)) => l >= n as u32,
+                _ => false,
+            };
             if is_max {
                 maxed[k] = true;
                 self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+            } else if reached {
+                done[k] = before.unwrap_or(0);
+                self.log(format!(
+                    "slot {slot} at {},{} reached its level",
+                    at.x, at.y
+                ));
             } else {
                 self.arb
                     .run(
@@ -905,7 +915,20 @@ impl RunCtx {
                             .wait(150),
                     )
                     .map_err(|e| format!("upgrade: {e}"))?;
-                done[k] += 1;
+                self.sleep(500)?;
+                let after = Self::read_level(scr);
+                match (before, after) {
+                    // verified: the level text went up
+                    (Some(b), Some(a)) if a > b => {
+                        done[k] = a;
+                        self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
+                    }
+                    // same level = not enough money yet; doesn't count
+                    (Some(_), Some(_)) => {}
+                    (None, Some(a)) => done[k] = a,
+                    // level text not captured / not readable: count the press
+                    _ => done[k] += 1,
+                }
             }
             self.arb
                 .run(super::placing::cancel_batch(*h, &keys))
@@ -915,6 +938,21 @@ impl RunCtx {
             }
             self.sleep(400)?;
         }
+    }
+
+    /// The unit panel's level ("UPG [n]") when its pattern is captured:
+    /// unit_placed = 0, upg_1 .. upg_10.
+    fn read_level(scr: &super::LiveScreen) -> Option<u32> {
+        let f = scr.frame()?;
+        let mut names: Vec<(u32, String)> = (1..=10).map(|n| (n, format!("upg_{n}"))).collect();
+        names.push((0, "unit_placed".into()));
+        // highest first so "UPG [10]" isn't read as "UPG [1]"
+        names.sort_by(|a, b| b.0.cmp(&a.0));
+        names
+            .into_iter()
+            .filter(|(_, n)| scr.has(n))
+            .find(|(_, n)| scr.find_in_frame(&f, n))
+            .map(|(l, _)| l)
     }
 
     fn end_screen(&self, end: &[String]) -> R<Option<bool>> {
