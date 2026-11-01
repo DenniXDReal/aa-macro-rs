@@ -575,7 +575,8 @@ impl App {
                     &free,
                     &confirm,
                     delay,
-                    &|| {},
+                    &|| true,
+                    &|_| {},
                 ) {
                     Ok(done) => {
                         let _ = tx.send(format!("slot {slot}: placed {}/{count}", done.len()));

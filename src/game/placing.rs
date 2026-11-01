@@ -361,15 +361,18 @@ pub fn place_slot(
     spots: &[Point],
     confirm: &dyn Fn() -> Option<bool>,
     delay_ms: u64,
-    before_each: &dyn Fn(),
+    before_each: &dyn Fn() -> bool,
+    on_placed: &dyn Fn(Point),
 ) -> Result<Vec<Point>, InputError> {
     let mut placed = vec![];
     for (i, at) in spots.iter().enumerate() {
         if placed.len() as u32 >= count {
             break;
         }
-        // e.g. a card pick pop-up that blocks the screen
-        before_each();
+        // card pop-ups, and stop when the stage already ended
+        if !before_each() {
+            break;
+        }
         if i > 0 && delay_ms > 0 {
             // let the game catch up so the next look / click is right
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -384,10 +387,12 @@ pub fn place_slot(
             std::thread::sleep(std::time::Duration::from_millis(120));
             ok = confirm();
         }
-        arb.run(cancel_batch(hwnd, keys))?;
         if ok.unwrap_or(true) {
+            // its panel is still open here (e.g. turn Auto ability on)
+            on_placed(*at);
             placed.push(*at);
         }
+        arb.run(cancel_batch(hwnd, keys))?;
     }
     Ok(placed)
 }
@@ -470,7 +475,7 @@ mod tests {
             .map(|h| {
                 let (a, k, s) = (arb.handle(), keys.clone(), spots.clone());
                 std::thread::spawn(move || {
-                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0, &|| {}).unwrap()
+                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0, &|| true, &|_| {}).unwrap()
                 })
             })
             .collect();

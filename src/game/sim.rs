@@ -529,6 +529,22 @@ mod tests {
         assert_eq!(sim.screen_now(), 1);
     }
 
+    /// VICTORY on screen while placing: stop placing right away.
+    #[test]
+    fn stage_end_stops_placing() {
+        let sim = Arc::new(Sim::new(vec![scr(vec![el("victory", 360, 150, None)])]));
+        let mut s = Settings::default();
+        for u in s.units.iter_mut() {
+            u.enabled = false;
+        }
+        s.units[0].enabled = true;
+        s.units[0].place = 3;
+        s.place_delay_ms = 0;
+        let (c, _rx, _arb) = ctx(sim.clone(), s);
+        assert!(c.place_all("").unwrap().is_empty());
+        assert!(c.upgrade_until_end(&[]).unwrap(), "won");
+    }
+
     #[test]
     fn missing_button_is_reported_not_hung() {
         let sim = Arc::new(Sim::new(vec![

@@ -1521,28 +1521,37 @@ impl App {
                                     });
                                     changed |= stepper(ui, "Placement", &mut u.place, 0, 10);
                                     changed |= stepper(ui, "Priority", &mut u.priority, 1, 6);
-                                    let mut limit = matches!(u.upgrade, Upgrade::Level(_));
                                     ui.horizontal(|ui| {
-                                        if toggle(ui, &mut limit, "Limit") {
-                                            u.upgrade = if limit {
-                                                Upgrade::Level(5)
-                                            } else {
-                                                Upgrade::Max
-                                            };
-                                            changed = true;
-                                        }
-                                        if let Upgrade::Level(n) = &mut u.upgrade {
-                                            changed |= ui
-                                                .add(egui::DragValue::new(n).range(1..=20))
-                                                .changed();
-                                        }
+                                        ui.label("Upgrade");
+                                        let label = |u: Upgrade| match u {
+                                            Upgrade::None => "none".to_string(),
+                                            Upgrade::Max => "MAX".to_string(),
+                                            Upgrade::Level(n) => format!("{n}x"),
+                                        };
+                                        ComboBox::from_id_salt(("upg", i))
+                                            .width(70.0)
+                                            .selected_text(label(u.upgrade))
+                                            .show_ui(ui, |ui| {
+                                                let mut opts = vec![Upgrade::None];
+                                                opts.extend((1..=8).map(Upgrade::Level));
+                                                opts.push(Upgrade::Max);
+                                                for o in opts {
+                                                    changed |= ui
+                                                        .selectable_value(
+                                                            &mut u.upgrade,
+                                                            o,
+                                                            label(o),
+                                                        )
+                                                        .changed();
+                                                }
+                                            });
                                     });
                                     changed |=
                                         toggle(ui, &mut u.upg_immediately, "UPG immediately");
                                     let up = match u.upgrade {
                                         Upgrade::None => "no upgrades".to_string(),
                                         Upgrade::Max => "until MAX".to_string(),
-                                        Upgrade::Level(n) => format!("to level {n}"),
+                                        Upgrade::Level(n) => format!("{n} upgrade(s)"),
                                     };
                                     ui.label(
                                         RichText::new(format!(

@@ -167,15 +167,15 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
     out.push(step("Vote start", &["vote_start"], true));
     out.push(step(
         &format!(
-            "Place {units} unit slot(s) on {} client(s), checking the UPG [0] badge, picking cards that pop up",
+            "Place {units} unit slot(s) on {} client(s): FARM first, UPG [0] badge check, Auto ability on BUFF, cards picked, stops if VICTORY / DEFEAT",
             s.placers.len().max(1)
         ),
-        &["unit_placed"],
+        &["unit_placed", "auto_ability"],
         true,
     ));
     out.push(step(
-        "Upgrade by priority (R) until the end; card screen = green card, else the middle one",
-        &["choose_card", "card_confirm"],
+        "Upgrade by priority (R): 1-8 times or until MAX, FARM first; VICTORY / DEFEAT watched all the time; cards picked",
+        &["choose_card", "card_confirm", "upgrade_max"],
         true,
     ));
     out.push(step(
@@ -754,6 +754,9 @@ impl RunCtx {
             .map(|c| c.0)
             .filter(|h| !placing.contains(h))
             .collect();
+        // set when VICTORY / DEFEAT shows up while placing
+        let over = std::sync::atomic::AtomicBool::new(false);
+        let over = &over;
         let out = std::thread::scope(|sc| {
             let mut handles = vec![];
             for (wi, (n, h, scr, jobs)) in work.into_iter().enumerate() {
@@ -764,20 +767,48 @@ impl RunCtx {
                     let badge = ["unit_placed".to_string()];
                     let can = scr.has("unit_placed");
                     let confirm = || can.then(|| scr.find(&badge, None).is_some());
-                    // card pick (Summer Event) can pop up any time while placing
+                    // before every placement: stage over? card pop-up?
                     let cards = || {
+                        use std::sync::atomic::Ordering;
+                        if over.load(Ordering::Relaxed) {
+                            return false;
+                        }
+                        if matches!(
+                            self.end_screen(&Self::names(&["victory", "defeat"])),
+                            Ok(Some(_))
+                        ) {
+                            over.store(true, Ordering::Relaxed);
+                            self.log("stage ended while placing");
+                            return false;
+                        }
                         let _ = self.handle_cards(h);
                         for w in &watchers {
                             let _ = self.handle_cards(*w);
                         }
+                        true
                     };
                     let mut used: Vec<Point> = vec![];
                     let mut out = vec![];
                     for (slot, count, spots) in jobs {
                         let free: Vec<Point> =
                             spots.into_iter().filter(|p| !used.contains(p)).collect();
+                        // BUFF units: turn Auto ability on while the panel is open
+                        let buff = s.units[slot - 1].buff;
+                        let auto = |_at: Point| {
+                            if !buff || !scr.has("auto_ability") {
+                                return;
+                            }
+                            match self.wait_any(h, &["auto_ability"], 1500) {
+                                Ok(Some((_, p))) => {
+                                    let _ = self.click(h, p, "auto ability");
+                                    self.log(format!("client {n}: slot {slot} auto ability on"));
+                                }
+                                _ => self
+                                    .log(format!("client {n}: slot {slot} auto ability not seen")),
+                            }
+                        };
                         match place_slot(
-                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards,
+                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards, &auto,
                         ) {
                             Ok(done) => {
                                 self.log(format!(
@@ -817,6 +848,7 @@ impl RunCtx {
             .collect();
         order.sort_by_key(|(_, slot, _)| (!s.units[slot - 1].farm, s.units[slot - 1].priority));
         let mut done: Vec<u32> = vec![0; order.len()];
+        let mut maxed: Vec<bool> = vec![false; order.len()];
         let end = Self::names(&["victory", "defeat"]);
         let mut dl = self.control.deadline(self.secs(60.0 * 40.0));
         let mut i = 0usize;
@@ -833,21 +865,53 @@ impl RunCtx {
                 self.sleep(1500)?;
                 continue;
             }
+            // skip the ones already finished; all finished = just watch the end
+            let finished = |k: usize, done: &[u32], maxed: &[bool]| {
+                let (_, slot, _) = order[k];
+                maxed[k]
+                    || match s.units[slot - 1].upgrade {
+                        Upgrade::Level(n) => done[k] >= n as u32,
+                        _ => false,
+                    }
+            };
+            if (0..order.len()).all(|k| finished(k, &done, &maxed)) {
+                self.sleep(1000)?;
+                continue;
+            }
+            while finished(i % order.len(), &done, &maxed) {
+                i += 1;
+            }
             let k = i % order.len();
             let (h, slot, at) = order[k];
-            let limit = match s.units[slot - 1].upgrade {
-                Upgrade::Level(n) => n as u32,
-                _ => u32::MAX,
-            };
-            if done[k] < limit {
+            let scr = self.screen(*h);
+            // open the unit
+            self.arb
+                .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
+                .map_err(|e| format!("upgrade: {e}"))?;
+            let is_max = s.units[slot - 1].upgrade == Upgrade::Max
+                && scr.has("upgrade_max")
+                && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
+            if is_max {
+                maxed[k] = true;
+                self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+            } else {
                 self.arb
-                    .run(super::placing::upgrade_batch(*h, &keys, *at, 1))
+                    .run(
+                        Batch::new(*h, "upgrade")
+                            .then(crate::input::Action::KeyTap {
+                                key: keys.upgrade,
+                                hold_ms: 40,
+                            })
+                            .wait(150),
+                    )
                     .map_err(|e| format!("upgrade: {e}"))?;
                 done[k] += 1;
             }
-            i += 1;
-            if s.run.priority_upgrade && done[k] < limit {
-                i -= 1; // keep upgrading this one first
+            self.arb
+                .run(super::placing::cancel_batch(*h, &keys))
+                .map_err(|e| format!("upgrade: {e}"))?;
+            if !(s.run.priority_upgrade && !finished(k, &done, &maxed)) {
+                i += 1; // priority upgrade keeps on this one until it's done
             }
             self.sleep(400)?;
         }
