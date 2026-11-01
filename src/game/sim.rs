@@ -283,7 +283,8 @@ mod tests {
             },
             /*8 settings scrolled*/
             scr(vec![
-                el("tp_spawn", 360, 300, Some(8)),
+                el("tp_spawn", 300, 300, None),
+                el("tp_arrow", 478, 307, Some(8)),
                 el("settings_close", 570, 140, Some(6)),
             ]),
             /*9 stage*/
@@ -324,13 +325,13 @@ mod tests {
                 "open_button",
                 "start_button",
                 "settings_button",
-                "tp_spawn",
+                "tp_arrow",
                 "settings_close",
                 "vote_start",
                 "next_button",
                 "replay",
                 "settings_button",
-                "tp_spawn",
+                "tp_arrow",
                 "settings_close",
                 "vote_start",
             ]
