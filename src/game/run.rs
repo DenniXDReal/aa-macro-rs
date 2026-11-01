@@ -1,0 +1,736 @@
+//! The game loop (v1): lobby walk -> matchmaking / portal -> load in ->
+//! map walk -> top-down camera -> place (every placing client) -> upgrade by
+//! priority until the end screen -> Next -> Replay or back to the lobby.
+//!
+//! Everything it looks for is one of your patterns; [`plan`] lists them per
+//! step so the Home page can show what's still missing before you Start.
+
+use super::placing::{camera_batch, place_slot, spiral_spots, spots_key, Keys};
+use super::LiveScreen;
+use crate::config::{Mode, PlayChoice, Settings, Upgrade};
+use crate::control::Control;
+use crate::geom::{Hwnd, Point};
+use crate::input::{Action, ArbiterHandle, Batch};
+use crate::keys::Key;
+use crate::movement::{Routes, Vars};
+use crate::placement::Placements;
+use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+
+/// Lobby walk used by a mode.
+pub fn lobby_route(mode: Mode) -> &'static str {
+    match mode {
+        Mode::SummerHunt => "summer",
+        Mode::Story => "story",
+        Mode::Legend => "legend",
+        Mode::Raid => "raid",
+        Mode::InfinityCastle => "castle",
+        Mode::Challenge | Mode::Dungeon => "challenge",
+    }
+}
+
+/// Map-detect patterns are called `loading_<map>` (or `loading_<map>_2`
+/// for a second look of the same map). This turns one back into a map name.
+pub fn map_from_pattern(p: &str) -> String {
+    let rest = p.trim_start_matches("loading_");
+    let rest = match rest.rsplit_once('_') {
+        Some((a, n)) if n.chars().all(|c| c.is_ascii_digit()) => a,
+        _ => rest,
+    };
+    rest.split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Pattern name used to recognise `map` while it loads.
+pub fn loading_pattern(map: &str) -> String {
+    format!("loading_{}", crate::vision::key(&route_map(map)))
+}
+
+/// Map name as the per-map routes know it ("Ruined City (Midnight)" -> "Ruined City").
+pub fn route_map(name: &str) -> String {
+    name.split(" (").next().unwrap_or(name).trim().to_string()
+}
+
+fn vars(s: &Settings) -> Vars {
+    Vars {
+        map: s.run.map.clone(),
+        act: s.run.act.clone(),
+    }
+}
+
+/// One step of the sequence and the patterns it needs (`optional` = it
+/// carries on without them).
+#[derive(Clone, Debug)]
+pub struct PlanStep {
+    pub label: String,
+    pub needs: Vec<String>,
+    pub optional: bool,
+}
+
+/// The whole sequence for the chosen mode, step by step.
+pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
+    let mode = s.run.mode;
+    let v = vars(s);
+    let step = |label: &str, needs: &[&str], optional: bool| PlanStep {
+        label: label.into(),
+        needs: needs.iter().map(|n| n.to_string()).collect(),
+        optional,
+    };
+    let mut out = vec![];
+    let lobby = lobby_route(mode);
+    match routes.lobby.get(lobby) {
+        Some(r) => out.push(PlanStep {
+            label: format!("Walk: {}", r.map),
+            needs: r.patterns(&v),
+            optional: false,
+        }),
+        None => out.push(step(&format!("Walk: no '{lobby}' lobby route"), &[], false)),
+    }
+    match s.run.play {
+        PlayChoice::PlayHere => out.push(step(
+            "Join Matchmaking > Play Here",
+            &["join_matchmaking", "play_here"],
+            false,
+        )),
+        PlayChoice::FindMatch => out.push(step(
+            "Join Matchmaking > Find Match (you type the captcha)",
+            &["join_matchmaking", "find_match", "captcha"],
+            false,
+        )),
+    }
+    if mode == Mode::SummerHunt && s.run.play == PlayChoice::PlayHere {
+        let open = if s.run.own_team {
+            "open_friends_only"
+        } else {
+            "open_button"
+        };
+        out.push(step("Open Portal? > Open", &["open_portal", open], false));
+        if s.run.own_team {
+            out.push(step(
+                "Alts walk in and press E at the portal",
+                &["portal_join_e"],
+                false,
+            ));
+        }
+        out.push(step("Portal lobby > Start", &["start_button"], false));
+    } else if s.run.play == PlayChoice::PlayHere {
+        out.push(step("Start", &["start_button"], false));
+    }
+    let fixed = matches!(mode, Mode::Story | Mode::Legend | Mode::Raid);
+    if fixed {
+        out.push(step(
+            &format!("Loading: check it's {}", route_map(&s.run.map)),
+            &[],
+            true,
+        ));
+    } else {
+        out.push(step(
+            "Loading: work out the map (random each hour) from its loading screen",
+            &[],
+            true,
+        ));
+    }
+    out.push(step("Camera top-down", &[], true));
+    out.push(step(
+        "Settings > Teleport to Spawn > close",
+        &["settings_button", "tp_spawn", "settings_close"],
+        true,
+    ));
+    let walk = if fixed {
+        let m = route_map(&s.run.map);
+        if routes.find_map(&m).is_some() {
+            format!("Map walk: {m}")
+        } else {
+            format!("Map walk: none for {m} (stays at spawn)")
+        }
+    } else {
+        "Map walk: the detected map's route (none = stays at spawn)".into()
+    };
+    out.push(step(&walk, &[], true));
+    let units = s.units.iter().filter(|u| u.enabled && u.place > 0).count();
+    out.push(step("Vote start", &["vote_start"], true));
+    out.push(step(
+        &format!(
+            "Place {units} unit slot(s) on {} client(s), checking the UPG [0] badge",
+            s.placers.len().max(1)
+        ),
+        &["unit_placed"],
+        true,
+    ));
+    out.push(step("Upgrade by priority (R) until the end", &[], true));
+    out.push(step(
+        "End: VICTORY / DEFEAT > Next",
+        &["victory", "defeat", "next_button"],
+        false,
+    ));
+    if s.run.return_to_lobby {
+        out.push(step(
+            "Return to lobby, then repeat",
+            &["return_to_lobby"],
+            false,
+        ));
+    } else {
+        out.push(step(
+            "Replay, wait for Vote start, repeat from Teleport to Spawn",
+            &["replay"],
+            false,
+        ));
+    }
+    out
+}
+
+pub enum Event {
+    Log(String),
+    Win,
+    Loss,
+    /// Something needs the user (captcha) - ping them.
+    Attention(String),
+    Done(String),
+}
+
+pub struct RunCtx {
+    pub arb: ArbiterHandle,
+    pub control: Control,
+    pub main: Hwnd,
+    /// Every client: (hwnd, screen). Index = client number - 1.
+    pub clients: Vec<(Hwnd, LiveScreen)>,
+    pub settings: Settings,
+    pub routes: Routes,
+    pub placements: Placements,
+    pub tx: Sender<Event>,
+    /// 1.0 = real timing; tests use a small value.
+    pub speed: f32,
+}
+
+type R<T> = Result<T, String>;
+
+impl RunCtx {
+    fn log(&self, s: impl Into<String>) {
+        let _ = self.tx.send(Event::Log(s.into()));
+    }
+    fn screen(&self, h: Hwnd) -> &LiveScreen {
+        &self.clients.iter().find(|c| c.0 == h).expect("client").1
+    }
+    fn check(&self) -> R<()> {
+        self.control.checkpoint().map_err(|_| "stopped".to_string())
+    }
+    fn sleep(&self, ms: u64) -> R<()> {
+        self.control
+            .sleep((ms as f32 * self.speed) as u64)
+            .map_err(|_| "stopped".to_string())
+    }
+    fn secs(&self, s: f64) -> f64 {
+        s * self.speed as f64
+    }
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+    /// Wait up to `ms` for any of `names` on `h`; returns (name, centre).
+    fn wait_any(&self, h: Hwnd, names: &[&str], ms: u64) -> R<Option<(String, Point)>> {
+        let s = self.screen(h);
+        let mut dl = self
+            .control
+            .deadline(self.secs(ms as f64 / 1000.0).max(0.05));
+        loop {
+            self.check()?;
+            for n in names {
+                if let Some(p) = s.find(&[n.to_string()], None) {
+                    return Ok(Some((n.to_string(), p)));
+                }
+            }
+            if dl.expired() {
+                return Ok(None);
+            }
+            self.sleep(150)?;
+        }
+    }
+    fn click(&self, h: Hwnd, p: Point, why: &str) -> R<()> {
+        self.arb
+            .run(Batch::new(h, why).click(p.x, p.y))
+            .map_err(|e| format!("{why}: {e}"))?;
+        Ok(())
+    }
+    /// Wait for `name` then click it; error when it never shows.
+    fn click_when(&self, h: Hwnd, name: &str, ms: u64) -> R<()> {
+        match self.wait_any(h, &[name], ms)? {
+            Some((_, p)) => self.click(h, p, name),
+            None => Err(format!("'{name}' never showed up")),
+        }
+    }
+
+    /// Lobby -> in the stage.
+    pub fn enter_stage(&self) -> R<()> {
+        let s = &self.settings;
+        let mode = s.run.mode;
+        let key = lobby_route(mode);
+        let route = self
+            .routes
+            .lobby
+            .get(key)
+            .ok_or(format!("no lobby route '{key}'"))?;
+        self.log(format!("walking: {}", route.map));
+        let batch = route
+            .to_batch(self.main, self.screen(self.main), &vars(s))
+            .map_err(|e| e.to_string())?;
+        self.arb
+            .run(batch)
+            .map_err(|e| format!("lobby walk: {e}"))?;
+        // Join Matchmaking?
+        match s.run.play {
+            PlayChoice::PlayHere => self.click_when(self.main, "play_here", 6000)?,
+            PlayChoice::FindMatch => {
+                self.click_when(self.main, "find_match", 6000)?;
+                if self.wait_any(self.main, &["captcha"], 3000)?.is_some() {
+                    let _ = self.tx.send(Event::Attention(
+                        "Captcha - type it in Roblox, the macro waits".into(),
+                    ));
+                    // wait until the captcha is gone (typed) - up to 2 min
+                    let mut dl = self.control.deadline(self.secs(120.0));
+                    while self
+                        .screen(self.main)
+                        .find(&Self::names(&["captcha"]), None)
+                        .is_some()
+                    {
+                        if dl.expired() {
+                            return Err("captcha not typed in time".into());
+                        }
+                        self.sleep(500)?;
+                    }
+                }
+                self.log("matchmaking - waiting to load");
+                return Ok(());
+            }
+        }
+        if mode == Mode::SummerHunt {
+            let open = if s.run.own_team {
+                "open_friends_only"
+            } else {
+                "open_button"
+            };
+            if self.wait_any(self.main, &["open_portal"], 5000)?.is_some() {
+                self.click_when(self.main, open, 4000)?;
+            }
+            if s.run.own_team {
+                self.alts_join_portal()?;
+            }
+        }
+        self.click_when(self.main, "start_button", 10000)?;
+        self.log("started - loading");
+        Ok(())
+    }
+
+    /// Alts walk into the main's portal and press E.
+    fn alts_join_portal(&self) -> R<()> {
+        let e = Key::parse("e").expect("e");
+        let w = Key::parse("w").expect("w");
+        for (h, scr) in self.clients.iter().filter(|c| c.0 != self.main) {
+            self.log("alt joining the portal");
+            let probe = {
+                let s = scr.clone();
+                crate::input::Probe::new("portal_join_e", move || {
+                    s.find(&["portal_join_e".to_string()], None)
+                })
+            };
+            let b = Batch::new(*h, "alt: join portal")
+                .then(Action::KeyDown(w))
+                .then(Action::WaitFor {
+                    probe,
+                    timeout_ms: 12000,
+                    required: false,
+                })
+                .then(Action::KeyUp(w))
+                .then(Action::KeyTap {
+                    key: e,
+                    hold_ms: 80,
+                });
+            let mut b = b;
+            b.long = true;
+            self.arb.run(b).map_err(|e| format!("alt join: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Clients that move / place: the main, then every placing client.
+    fn movers(&self) -> Vec<Hwnd> {
+        let mut v = vec![self.main];
+        for n in &self.settings.placers {
+            if let Some((h, _)) = self.clients.get(n.saturating_sub(1)) {
+                if !v.contains(h) {
+                    v.push(*h);
+                }
+            }
+        }
+        v
+    }
+
+    /// From the lobby leaving (or Replay) until Vote Start is pressed:
+    /// work out the map while it loads, top-down camera, Teleport to Spawn,
+    /// walk the map's route, then Vote Start. Returns the map ("" = unknown).
+    pub fn stage_setup(&self, prev_map: &str) -> R<String> {
+        let s = &self.settings;
+        let main = self.screen(self.main);
+        let gone = Self::names(&[
+            "start_button",
+            "waiting_for_players",
+            "join_matchmaking",
+            "captcha",
+        ]);
+        let mut dl = self.control.deadline(self.secs(90.0));
+        while main.find(&gone, None).is_some() {
+            if dl.expired() {
+                return Err("still in the lobby after 90 s".into());
+            }
+            self.sleep(500)?;
+        }
+        let fixed = matches!(s.run.mode, Mode::Story | Mode::Legend | Mode::Raid);
+        let detect = main.with_prefix("loading_");
+        let vote = Self::names(&["vote_start"]);
+        let mut map: Option<String> = None;
+        if main.has("vote_start") || !detect.is_empty() {
+            // poll until Vote Start shows; spot the loading screen meanwhile
+            let mut dl = self.control.deadline(self.secs(120.0));
+            loop {
+                self.check()?;
+                if map.is_none() && !detect.is_empty() {
+                    for p in &detect {
+                        if main.find(std::slice::from_ref(p), None).is_some() {
+                            let m = map_from_pattern(p);
+                            self.log(format!("map: {m}"));
+                            map = Some(m);
+                            break;
+                        }
+                    }
+                }
+                if main.has("vote_start") && main.find(&vote, None).is_some() {
+                    break;
+                }
+                if !main.has("vote_start") && map.is_some() {
+                    self.sleep(6000)?;
+                    break;
+                }
+                if dl.expired() {
+                    self.log("no Vote Start after 2 min - carrying on");
+                    break;
+                }
+                self.sleep(300)?;
+            }
+        } else {
+            self.sleep(6000)?;
+        }
+        let map = match (map, fixed) {
+            (Some(m), true) if route_map(&m) != route_map(&s.run.map) => {
+                self.log(format!(
+                    "loaded {m}, expected {} - using {m}",
+                    route_map(&s.run.map)
+                ));
+                m
+            }
+            (Some(m), _) => m,
+            (None, true) => route_map(&s.run.map),
+            (None, false) if !prev_map.is_empty() => prev_map.to_string(),
+            (None, false) => {
+                self.log("map not recognised - staying at spawn, spiral placing (capture its loading screen as loading_<map>)");
+                String::new()
+            }
+        };
+        for h in self.movers() {
+            self.arb
+                .run(camera_batch(h, &s.camera))
+                .map_err(|e| format!("camera: {e}"))?;
+        }
+        for h in self.movers() {
+            self.tp_spawn(h)?;
+        }
+        if let Some(r) = (!map.is_empty())
+            .then(|| self.routes.find_map(&map))
+            .flatten()
+        {
+            for h in self.movers() {
+                self.log(format!("map walk: {}", r.map));
+                let b = r
+                    .to_batch(h, self.screen(h), &vars(s))
+                    .map_err(|e| e.to_string())?;
+                if let Err(e) = self.arb.run(b) {
+                    self.log(format!("map walk: {e} - placing from here"));
+                }
+            }
+        }
+        for h in self.movers() {
+            if let Some((_, p)) =
+                self.wait_any(h, &["vote_start"], if h == self.main { 3000 } else { 500 })?
+            {
+                self.click(h, p, "vote start")?;
+            }
+        }
+        Ok(map)
+    }
+
+    /// Settings > Teleport to Spawn > close (skipped until tp_spawn is captured).
+    fn tp_spawn(&self, h: Hwnd) -> R<()> {
+        let scr = self.screen(h);
+        if !scr.has("tp_spawn") {
+            return Ok(());
+        }
+        let Some(r) = self.routes.lobby.get("tp_spawn") else {
+            return Ok(());
+        };
+        let b = r
+            .to_batch(h, scr, &vars(&self.settings))
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self.arb.run(b) {
+            self.log(format!("teleport to spawn: {e}"));
+            // don't leave the settings open
+            if let Some(p) = scr.find(&Self::names(&["settings_close"]), None) {
+                let _ = self.click(h, p, "close settings");
+            }
+        }
+        Ok(())
+    }
+
+    /// Place on every placing client at once. Returns placed (client, slot, spot).
+    pub fn place_all(&self, map: &str) -> R<Vec<(Hwnd, usize, Point)>> {
+        let s = &self.settings;
+        let keys = Keys::from(&s.keybinds)?;
+        let map = route_map(map);
+        let mut handles = vec![];
+        for n in s.placers.iter().copied() {
+            let Some((h, scr)) = self.clients.get(n.saturating_sub(1)).cloned() else {
+                continue;
+            };
+            let key = spots_key(&map, n);
+            let mut jobs = vec![];
+            for (i, u) in s
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(_, u)| u.enabled && u.place > 0)
+            {
+                let slot = i + 1;
+                let mut spots: Vec<Point> = self
+                    .placements
+                    .for_slot(&key, slot as u8)
+                    .iter()
+                    .map(|p| Point::new(p.x, p.y))
+                    .collect();
+                if s.spiral_fallback {
+                    spots.extend(spiral_spots(80, n as u64 * 31 + slot as u64));
+                }
+                jobs.push((slot, u.place as u32, spots));
+            }
+            // farm units first
+            jobs.sort_by_key(|(slot, _, _)| !s.units[slot - 1].farm);
+            let (arb, keys, tx) = (self.arb.clone(), keys.clone(), self.tx.clone());
+            handles.push(std::thread::spawn(move || {
+                // "UPG [0]" badge = the unit really went down
+                let badge = ["unit_placed".to_string()];
+                let can = scr.has("unit_placed");
+                let confirm = || can.then(|| scr.find(&badge, None).is_some());
+                let mut used: Vec<Point> = vec![];
+                let mut out = vec![];
+                for (slot, count, spots) in jobs {
+                    let free: Vec<Point> =
+                        spots.into_iter().filter(|p| !used.contains(p)).collect();
+                    match place_slot(&arb, h, &keys, slot, count, &free, &confirm) {
+                        Ok(done) => {
+                            let _ = tx.send(Event::Log(format!(
+                                "client {n}: slot {slot} placed {}/{count}",
+                                done.len()
+                            )));
+                            used.extend(done.iter().copied());
+                            out.extend(done.into_iter().map(|p| (h, slot, p)));
+                        }
+                        Err(e) => {
+                            let _ =
+                                tx.send(Event::Log(format!("client {n}: placing stopped - {e}")));
+                            break;
+                        }
+                    }
+                }
+                out
+            }));
+        }
+        Ok(handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect())
+    }
+
+    /// Upgrade by priority until VICTORY / DEFEAT shows. Returns true on a win.
+    pub fn upgrade_until_end(&self, placed: &[(Hwnd, usize, Point)]) -> R<bool> {
+        let s = &self.settings;
+        let keys = Keys::from(&s.keybinds)?;
+        let mut order: Vec<&(Hwnd, usize, Point)> = placed
+            .iter()
+            .filter(|(_, slot, _)| s.units[slot - 1].upgrade != Upgrade::None)
+            .collect();
+        order.sort_by_key(|(_, slot, _)| (!s.units[slot - 1].farm, s.units[slot - 1].priority));
+        let mut done: Vec<u32> = vec![0; order.len()];
+        let end = Self::names(&["victory", "defeat"]);
+        let mut dl = self.control.deadline(self.secs(60.0 * 40.0));
+        let mut i = 0usize;
+        loop {
+            self.check()?;
+            if let Some(won) = self.end_screen(&end)? {
+                return Ok(won);
+            }
+            if dl.expired() {
+                return Err("no end screen after 40 min".into());
+            }
+            if order.is_empty() {
+                self.sleep(1500)?;
+                continue;
+            }
+            let k = i % order.len();
+            let (h, slot, at) = order[k];
+            let limit = match s.units[slot - 1].upgrade {
+                Upgrade::Level(n) => n as u32,
+                _ => u32::MAX,
+            };
+            if done[k] < limit {
+                self.arb
+                    .run(super::placing::upgrade_batch(*h, &keys, *at, 1))
+                    .map_err(|e| format!("upgrade: {e}"))?;
+                done[k] += 1;
+            }
+            i += 1;
+            if s.run.priority_upgrade && done[k] < limit {
+                i -= 1; // keep upgrading this one first
+            }
+            self.sleep(400)?;
+        }
+    }
+
+    fn end_screen(&self, end: &[String]) -> R<Option<bool>> {
+        for n in end {
+            if self
+                .screen(self.main)
+                .find(std::slice::from_ref(n), None)
+                .is_some()
+            {
+                return Ok(Some(n == "victory"));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
+    pub fn after_end(&self) -> R<bool> {
+        if let Some((_, p)) = self.wait_any(self.main, &["next_button"], 8000)? {
+            self.click(self.main, p, "next")?;
+        }
+        self.sleep(1500)?;
+        if self.settings.run.return_to_lobby {
+            self.click_when(self.main, "return_to_lobby", 10000)?;
+            self.sleep(8000)?;
+            Ok(true)
+        } else {
+            self.click_when(self.main, "replay", 10000)?;
+            Ok(false)
+        }
+    }
+
+    /// The whole loop until Stop / an error.
+    pub fn run(&self) {
+        let res = (|| -> R<()> {
+            let mut in_lobby = true;
+            let mut map = String::new();
+            loop {
+                if in_lobby {
+                    self.enter_stage()?;
+                    map.clear();
+                }
+                map = self.stage_setup(&map)?;
+                let started = Instant::now();
+                let placed = self.place_all(&map)?;
+                self.log(format!(
+                    "placed {} unit(s) in {:.0}s",
+                    placed.len(),
+                    started.elapsed().as_secs_f32()
+                ));
+                let won = self.upgrade_until_end(&placed)?;
+                let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
+                if !won && self.settings.run.stop_after_defeat {
+                    return Err("stopped after a defeat".into());
+                }
+                in_lobby = self.after_end()?;
+                self.sleep(Duration::from_millis(500).as_millis() as u64)?;
+            }
+        })();
+        let _ = self.tx.send(Event::Done(match res {
+            Ok(()) => "finished".into(),
+            Err(e) => e,
+        }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn plan_per_mode() {
+        let routes = Routes::load(Path::new("/nonexistent"));
+        let mut s = Settings::default();
+        s.units[0].enabled = true;
+        s.run.mode = Mode::SummerHunt;
+        let p = plan(&s, &routes);
+        let all: Vec<String> = p.iter().flat_map(|x| x.needs.clone()).collect();
+        for n in [
+            "play_button",
+            "join_matchmaking",
+            "play_here",
+            "open_portal",
+            "open_button",
+            "start_button",
+            "victory",
+            "next_button",
+            "replay",
+        ] {
+            assert!(all.iter().any(|a| a == n), "summer needs {n}");
+        }
+        s.run.own_team = true;
+        let all: Vec<String> = plan(&s, &routes)
+            .iter()
+            .flat_map(|x| x.needs.clone())
+            .collect();
+        assert!(
+            all.iter().any(|a| a == "open_friends_only")
+                && all.iter().any(|a| a == "portal_join_e")
+        );
+
+        s.run.mode = Mode::Legend;
+        s.run.map = "Ruined City (Midnight)".into();
+        s.run.act = "Legend Stage 3".into();
+        s.run.return_to_lobby = true;
+        let p = plan(&s, &routes);
+        let all: Vec<String> = p.iter().flat_map(|x| x.needs.clone()).collect();
+        for n in [
+            "areas_button",
+            "play_area_button",
+            "select_world",
+            "world_ruined_city_midnight",
+            "act_legend_stage_3",
+            "select_button",
+            "return_to_lobby",
+        ] {
+            assert!(all.iter().any(|a| a == n), "legend needs {n}");
+        }
+        assert!(p.iter().any(|x| x.label == "Map walk: Ruined City"));
+        assert!(!all.iter().any(|a| a == "open_portal"));
+    }
+
+    #[test]
+    fn route_map_strips_variant() {
+        assert_eq!(route_map("Ruined City (Midnight)"), "Ruined City");
+        assert_eq!(route_map("Space Center"), "Space Center");
+    }
+}

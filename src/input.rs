@@ -43,6 +43,18 @@ impl Probe {
             find: Arc::new(f),
         }
     }
+
+    /// Same probe, answer moved by (dx, dy) - click next to what it found.
+    pub fn shifted(self, dx: i32, dy: i32) -> Self {
+        if (dx, dy) == (0, 0) {
+            return self;
+        }
+        let f = self.find.clone();
+        Self {
+            label: self.label,
+            find: Arc::new(move || f().map(|p| Point::new(p.x + dx, p.y + dy))),
+        }
+    }
 }
 
 impl std::fmt::Debug for Probe {
@@ -333,11 +345,11 @@ impl Arbiter {
 
 impl Drop for Arbiter {
     fn drop(&mut self) {
-        // Arbiter exits once every handle (incl. workers' clones) is dropped.
+        // The thread ends by itself once every handle (workers' clones too) is
+        // gone. Never wait for it here: a worker may still hold a handle, and
+        // waiting would hang whoever drops the arbiter.
         self.handle.take();
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        self.join.take();
     }
 }
 

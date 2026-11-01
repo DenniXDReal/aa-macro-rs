@@ -69,9 +69,13 @@ pub const FLOWS: &[Flow] = &[
     },
     Flow {
         name: "In stage",
-        steps: "Loaded in > place units with hotbar keys 1-6 on your spots > upgrade with R by priority > watch for the end screen.",
+        steps: "Vote Start shows > camera top-down > Settings > Teleport to Spawn > close > map walk > Vote Start > place units (1-6) > upgrade with R by priority > end screen. After Replay it waits for Vote Start and does it all again.",
         needs: &[
-            n("vote_start", "text", "Vote / skip button at stage start, if the mode shows one"),
+            n("vote_start", "text", "Vote Start button at the start of a stage"),
+            n("settings_button", "icon", "Settings cog (bottom left) - optional, it clicks (26, 570) without it"),
+            n("tp_spawn", "text", "'Teleport to Spawn' in the settings list (scroll down to it first)"),
+            n("settings_close", "icon", "X that closes settings - optional, it clicks (583, 147) without it"),
+            n("unit_placed", "text", "'UPG [0]' badge that shows on a unit you just placed"),
         ],
     },
     Flow {
@@ -87,6 +91,20 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
 ];
+
+/// Map detection: one `loading_<map>` pattern per map you play, taken from
+/// its loading screen (the map name / a stand-out part). Needed for random
+/// map modes like the Summer Event; optional for Story / Legend / Raid.
+pub fn map_needs(maps: &[String]) -> Vec<(String, String)> {
+    maps.iter()
+        .map(|m| {
+            (
+                crate::game::run::loading_pattern(m),
+                format!("'{m}' while it loads (map name on the loading screen)"),
+            )
+        })
+        .collect()
+}
 
 pub fn all_names() -> impl Iterator<Item = &'static str> {
     FLOWS.iter().flat_map(|f| f.needs.iter().map(|n| n.name))

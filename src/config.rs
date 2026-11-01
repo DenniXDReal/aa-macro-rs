@@ -25,8 +25,13 @@ pub struct Settings {
     /// Multi-instance unlock object names (held while `unlock` runs).
     pub singleton_names: Vec<String>,
     pub instances: Vec<InstanceProfile>,
-    /// Hotbar slots 1-6 (shared by every instance for now).
+    /// Hotbar slots 1-6 of the team in use (shared by every instance for now).
     pub units: Vec<UnitSlot>,
+    /// Saved team loadouts; `team` is the one `units` belongs to.
+    pub teams: Vec<Team>,
+    pub team: usize,
+    /// Mode label -> team to switch to when that mode is picked.
+    pub mode_teams: std::collections::BTreeMap<String, usize>,
     /// What the main client farms (Home page).
     pub run: RunSettings,
     pub keybinds: Keybinds,
@@ -39,6 +44,12 @@ pub struct Settings {
     pub spiral_fallback: bool,
     /// Dock the main client into the app's preview box; alts stack behind it.
     pub dock: bool,
+    /// Fine-tune the docked position (screen px) if Roblox sits a bit off.
+    pub dock_dx: i32,
+    pub dock_dy: i32,
+    /// The app itself lets several Roblox clients run (holds Roblox's
+    /// single-instance lock), no RAM "Multi Roblox" needed.
+    pub multi_roblox: bool,
     /// Roblox Account Manager web server port.
     pub ram_port: u16,
     /// RAM accounts: one main + alts, launch order = main first.
@@ -169,6 +180,85 @@ pub enum Upgrade {
     Level(u8),
 }
 
+/// A named loadout of the 6 hotbar slots ("Summer farm", "Raid team"...).
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Team {
+    pub name: String,
+    pub units: Vec<UnitSlot>,
+}
+
+impl Settings {
+    /// Keep `teams` valid: at least one, `team` in range, current units saved.
+    pub fn fix_teams(&mut self) {
+        if self.teams.is_empty() {
+            self.teams.push(Team {
+                name: "Team 1".into(),
+                units: self.units.clone(),
+            });
+            self.team = 0;
+        }
+        self.team = self.team.min(self.teams.len() - 1);
+        self.teams[self.team].units = self.units.clone();
+    }
+
+    /// Save the current slots into their team, then load team `i`.
+    pub fn switch_team(&mut self, i: usize) {
+        self.fix_teams();
+        if i >= self.teams.len() || i == self.team {
+            return;
+        }
+        self.team = i;
+        self.units = self.teams[i].units.clone();
+        let n = self.units.len();
+        if n < 6 {
+            self.ensure(0);
+        }
+    }
+
+    /// New team copied from the current one; returns its index.
+    pub fn add_team(&mut self, name: &str) -> usize {
+        self.fix_teams();
+        self.teams.push(Team {
+            name: name.into(),
+            units: self.units.clone(),
+        });
+        let i = self.teams.len() - 1;
+        self.switch_team(i);
+        i
+    }
+
+    pub fn remove_team(&mut self, i: usize) {
+        self.fix_teams();
+        if self.teams.len() <= 1 || i >= self.teams.len() {
+            return;
+        }
+        self.teams.remove(i);
+        self.mode_teams.retain(|_, t| *t != i);
+        for t in self.mode_teams.values_mut() {
+            if *t > i {
+                *t -= 1;
+            }
+        }
+        let next = if self.team == i {
+            i.saturating_sub(1)
+        } else if self.team > i {
+            self.team - 1
+        } else {
+            self.team
+        };
+        self.team = next.min(self.teams.len() - 1);
+        self.units = self.teams[self.team].units.clone();
+    }
+
+    /// Picking a mode loads the team linked to it (if any).
+    pub fn team_for_mode(&mut self, mode: Mode) {
+        if let Some(&t) = self.mode_teams.get(mode.label()) {
+            self.switch_team(t);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnitSlot {
@@ -255,7 +345,13 @@ impl Default for Settings {
             camera: crate::game::placing::CameraSettings::default(),
             placers: vec![1],
             spiral_fallback: true,
+            teams: vec![],
+            team: 0,
+            mode_teams: Default::default(),
             dock: true,
+            dock_dx: 0,
+            dock_dy: 0,
+            multi_roblox: true,
             ram_port: 7963,
             accounts: vec![],
             update_repo: "DenniXDReal/aa-macro-rs".into(),
@@ -311,12 +407,18 @@ impl Settings {
         }
         let txt =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&txt).with_context(|| format!("parsing {}", path.display()))
+        let mut s: Settings =
+            serde_json::from_str(&txt).with_context(|| format!("parsing {}", path.display()))?;
+        s.ensure(0);
+        s.fix_teams();
+        Ok(s)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
+        let mut me = self.clone();
+        me.fix_teams();
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
+        std::fs::write(&tmp, serde_json::to_string_pretty(&me)?)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     }

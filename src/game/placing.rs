@@ -153,6 +153,17 @@ impl Keys {
 
 /// One placement try for `slot` (1-6) at `at`.
 pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
+    let mut b = place_open_batch(hwnd, keys, slot, at);
+    b.actions.push(Action::KeyTap {
+        key: keys.cancel,
+        hold_ms: 40,
+    });
+    b
+}
+
+/// Pick the unit and click the spot, leaving whatever opened (the unit's
+/// "UPG [0]" panel on success) on screen so it can be checked.
+pub fn place_open_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
     let key = keys.units[(slot.clamp(1, 6)) - 1];
     Batch::new(hwnd, format!("place slot {slot}"))
         .then(Action::KeyTap { key, hold_ms: 40 })
@@ -161,10 +172,13 @@ pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
         .wait(90)
         .click(at.x, at.y)
         .wait(60)
-        .then(Action::KeyTap {
-            key: keys.cancel,
-            hold_ms: 40,
-        })
+}
+
+pub fn cancel_batch(hwnd: Hwnd, keys: &Keys) -> Batch {
+    Batch::new(hwnd, "close panel").then(Action::KeyTap {
+        key: keys.cancel,
+        hold_ms: 40,
+    })
 }
 
 /// Open the unit at `at`, press upgrade `times` times, close the panel.
@@ -193,7 +207,8 @@ pub enum Placed {
 }
 
 /// Try `spots` in order until `count` units of `slot` are down.
-/// `confirm` returns Some(true/false) when it can tell, None when it can't.
+/// `confirm` returns Some(true/false) when it can tell (the "UPG [0]" badge
+/// of a freshly placed unit), None when it can't - then every try counts.
 pub fn place_slot(
     arb: &ArbiterHandle,
     hwnd: Hwnd,
@@ -208,8 +223,18 @@ pub fn place_slot(
         if placed.len() as u32 >= count {
             break;
         }
-        arb.run(place_batch(hwnd, keys, slot, *at))?;
-        if confirm().unwrap_or(true) {
+        arb.run(place_open_batch(hwnd, keys, slot, *at))?;
+        // the badge pops up a moment after the click
+        let mut ok = confirm();
+        for _ in 0..4 {
+            if ok != Some(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            ok = confirm();
+        }
+        arb.run(cancel_batch(hwnd, keys))?;
+        if ok.unwrap_or(true) {
             placed.push(*at);
         }
     }

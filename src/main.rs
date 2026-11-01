@@ -329,7 +329,10 @@ fn ping(p: Arc<dyn Platform>, s: &Settings, rounds: u32) -> Result<()> {
 fn unlock(s: &Settings) -> Result<()> {
     #[cfg(windows)]
     {
-        let _held = platform::win32::hold_singleton(&s.singleton_names)?;
+        let (_held, existed) = platform::win32::hold_singleton(&s.singleton_names)?;
+        if existed {
+            println!("note: the lock already existed - close every Roblox client first for multi-Roblox to work");
+        }
         println!(
             "holding {:?} - open your Roblox clients now. Keep this window open; Ctrl+C to quit.",
             s.singleton_names

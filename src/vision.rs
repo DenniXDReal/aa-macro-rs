@@ -567,6 +567,11 @@ impl Library {
         Ok(path)
     }
 
+    /// Add a pattern in memory (no files).
+    pub fn insert(&mut self, p: Pattern) {
+        self.pats.insert(key(&p.name), p);
+    }
+
     pub fn remove(&mut self, name: &str) -> Result<()> {
         let k = key(name);
         self.pats.remove(&k);

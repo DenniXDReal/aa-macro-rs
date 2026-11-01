@@ -1,0 +1,14 @@
+{
+ "map": "In stage > Settings > Teleport to Spawn",
+ "source": "DenniXD + the AHK macro's TpSpawn: settings cog, scroll the list to Teleport to Spawn, click it, close settings",
+ "steps": [
+  { "type": "click_pattern", "pattern": "settings_button", "timeout_ms": 3000, "fallback": [26, 570] },
+  { "type": "wait", "ms": 500 },
+  { "type": "scroll_until", "pattern": "tp_spawn", "x": 400, "y": 300, "max": 12 },
+  { "type": "wait", "ms": 200 },
+  { "type": "click_pattern", "pattern": "tp_spawn", "timeout_ms": 2000 },
+  { "type": "wait", "ms": 400 },
+  { "type": "click_pattern", "pattern": "settings_close", "timeout_ms": 2000, "fallback": [583, 147] },
+  { "type": "wait", "ms": 400 }
+ ]
+}

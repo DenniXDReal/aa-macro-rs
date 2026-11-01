@@ -2,6 +2,7 @@
 //! placement designer and the pattern tool.
 
 use super::*;
+use crate::accounts::AccountRole;
 use crate::flows::FLOWS;
 use crate::geom::{Point, Rect};
 use crate::input::{ArbiterHandle, ArbiterOptions, Batch};
@@ -12,6 +13,19 @@ use eframe::egui::{Align2, DragValue, FontId, Pos2, Slider, StrokeKind};
 impl App {
     pub(super) fn say(&mut self, s: impl Into<String>) {
         let s = s.into();
+        if self
+            .log
+            .last()
+            .is_some_and(|l| l == &s || l.starts_with(&format!("{s} (x")))
+        {
+            let last = self.log.last_mut().unwrap();
+            let n = last
+                .rsplit_once(" (x")
+                .and_then(|(_, r)| r.trim_end_matches(')').parse::<u32>().ok())
+                .unwrap_or(1);
+            *last = format!("{s} (x{})", n + 1);
+            return;
+        }
         log::info!("{s}");
         self.log.push(s);
         if self.log.len() > 300 {
@@ -98,16 +112,61 @@ impl App {
     }
 
     pub(super) fn refresh_clients(&mut self) {
+        self.refresh_inner(true);
+    }
+
+    /// Background refresh every few seconds: drops closed windows, picks up
+    /// new ones, only logs when something changed.
+    pub(super) fn refresh_quiet(&mut self) {
+        self.refresh_inner(false);
+    }
+
+    fn refresh_inner(&mut self, loud: bool) {
+        self.last_refresh = Instant::now();
+        let main_h = self.clients.get(self.main).map(|c| c.hwnd);
+        let sel_h = self.clients.get(self.sel).map(|c| c.hwnd);
         let mut w = self.platform.list_windows(&self.settings.process_name);
         w.truncate(self.settings.max_instances);
+        let changed = w.iter().map(|c| c.hwnd).collect::<Vec<_>>()
+            != self.clients.iter().map(|c| c.hwnd).collect::<Vec<_>>();
         self.settings
             .ensure(w.len().max(self.settings.max_instances));
+        // forget usernames of closed clients
+        let alive: std::collections::HashSet<u32> = w.iter().map(|c| c.pid).collect();
+        self.names.retain(|pid, _| alive.contains(pid));
         self.clients = w;
-        if self.sel >= self.clients.len() {
-            self.sel = 0;
+        let find = |h: Option<crate::geom::Hwnd>| {
+            h.and_then(|h| self.clients.iter().position(|c| c.hwnd == h))
+        };
+        // the RAM account marked Main becomes the main client
+        let main_acc = self
+            .settings
+            .accounts
+            .iter()
+            .find(|a| a.role == AccountRole::Main && a.enabled)
+            .map(|a| a.username.clone());
+        let by_name = main_acc.and_then(|n| {
+            self.clients
+                .iter()
+                .position(|c| self.names.get(&c.pid) == Some(&n))
+        });
+        self.main = by_name.or(find(main_h)).unwrap_or(0);
+        self.sel = find(sel_h).unwrap_or(self.main);
+        if changed {
+            self.alt_tex.clear();
+            if self.clients.get(self.sel).is_some() {
+                self.live = true;
+            }
         }
-        let n = self.clients.len();
-        self.say(format!("found {n} Roblox client(s)"));
+        if loud || changed {
+            let n = self.clients.len();
+            let who: Vec<String> = (0..n).map(|i| self.client_label(i)).collect();
+            self.say(if n == 0 {
+                "no Roblox clients open".to_string()
+            } else {
+                format!("found {n} Roblox client(s): {}", who.join(", "))
+            });
+        }
     }
 
     pub(super) fn arbiter(&mut self) -> ArbiterHandle {
@@ -147,16 +206,21 @@ impl App {
                 self.update_preview(ctx);
             }
             Err(e) => {
-                self.live = false;
-                self.say(format!("capture failed: {e}"));
+                // usually the window just closed: re-scan instead of nagging
+                self.refresh_quiet();
+                if self.clients.get(self.sel).map(|c| c.hwnd) == Some(info.hwnd) {
+                    self.live = false;
+                    self.say(format!("capture failed: {e}"));
+                }
             }
         }
     }
 
     pub(super) fn tile(&mut self) {
+        self.refresh_quiet();
         let p = self.platform.clone();
         let Some(first) = self.clients.first().and_then(|c| p.geometry(c.hwnd)) else {
-            self.say("no clients to tile");
+            self.say("no Roblox clients open to tile");
             return;
         };
         let (ow, oh) = first.outer_for_client(self.settings.client_w, self.settings.client_h);
@@ -272,7 +336,7 @@ impl App {
             for i in 0..self.clients.len().max(1) {
                 let n = i + 1;
                 let mut on = self.settings.placers.contains(&n);
-                if super::toggle(ui, &mut on, &super::client_name(i, &self.settings)) {
+                if super::toggle(ui, &mut on, &self.client_label(i)) {
                     if on {
                         self.settings.placers.push(n);
                         self.settings.placers.sort();
@@ -372,7 +436,7 @@ impl App {
         }
         ui.label(format!(
             "{n} custom spot(s) for {} on {}",
-            super::client_name(self.sel, &self.settings),
+            self.client_label(self.sel),
             self.map
         ));
     }
@@ -564,11 +628,54 @@ impl App {
                 }
             });
         }
+        {
+            let mut maps: Vec<String> = self.routes.maps.keys().cloned().collect();
+            for p in self.lib.names() {
+                if p.starts_with("loading_") {
+                    let m = crate::game::run::map_from_pattern(&p);
+                    if !maps.iter().any(|x| vision::key(x) == vision::key(&m)) {
+                        maps.push(m);
+                    }
+                }
+            }
+            let needs = crate::flows::map_needs(&maps);
+            let have = needs
+                .iter()
+                .filter(|(n, _)| self.lib.get(n).is_some())
+                .count();
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("Map detection (random maps)  {have}/{}", needs.len()))
+                    .color(if have > 0 { GOOD } else { WARN }),
+            )
+            .id_salt("map-detect")
+            .show(ui, |ui| {
+                ui.small("The Summer Event changes map every hour. While a stage loads the macro looks for these; the one it sees picks that map's walk and your spots for it. Capture the map name on the loading screen (F6 on it) for each map you meet. A map can have a 2nd look: name it loading_<map>_2. Not recognised = stays at spawn and spiral-places.");
+                ui.horizontal(|ui| {
+                    ui.label("Map not listed:");
+                    ui.add(egui::TextEdit::singleline(&mut self.detect_map).desired_width(160.0).hint_text("e.g. Summer Beach"));
+                    if ui.small_button("use name").clicked() && !self.detect_map.trim().is_empty() {
+                        pick = Some((crate::game::run::loading_pattern(self.detect_map.trim()), false));
+                        self.detect_map.clear();
+                    }
+                });
+                for (name, hint) in &needs {
+                    ui.horizontal(|ui| {
+                        let ok = self.lib.get(name).is_some();
+                        ui.colored_label(if ok { GOOD } else { MUTED }, if ok { "OK " } else { "-" });
+                        ui.monospace(name);
+                        ui.small(hint);
+                        if ui.small_button(if ok { "redo" } else { "capture" }).clicked() {
+                            pick = Some((name.clone(), false));
+                        }
+                    });
+                }
+            });
+        }
         if let Some((name, icon)) = pick {
             self.pat_name = name.clone();
             self.pat_image = icon;
             self.say(format!(
-                "name set to '{name}' - drag a box around it on the picture, then Save pattern"
+                "name set to '{name}' - F6 over it in Roblox, or drag a box on the picture and Save pattern"
             ));
         }
         ui.separator();
@@ -810,7 +917,7 @@ impl App {
                 .clients
                 .iter()
                 .enumerate()
-                .map(|(i, _c)| client_name(i, &self.settings))
+                .map(|(i, _c)| self.client_label(i))
                 .collect();
             if !labels.is_empty() {
                 ComboBox::from_id_salt("viewsel")

@@ -67,6 +67,7 @@ const PAGES: [(Page, &str); 6] = [
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HomeTab {
     Control,
+    Sequence,
     Activity,
 }
 
@@ -116,6 +117,7 @@ pub struct App {
     pat_thr: u8,
     pat_margin: i32,
     pat_preview: Option<TextureHandle>,
+    detect_map: String,
     hits: Vec<(String, Rect, Option<Hit>)>,
 
     // placement
@@ -146,6 +148,18 @@ pub struct App {
     own_hwnd: Option<crate::geom::Hwnd>,
     last_dock: Instant,
     docked_ok: bool,
+    /// Window we last made topmost (so we only touch z-order on change).
+    top_hwnd: Option<crate::geom::Hwnd>,
+    dock_note: String,
+
+    // multi-Roblox + usernames
+    multi: Option<crate::multi::MultiLock>,
+    /// Roblox pid -> RAM username (learned when we launch an account).
+    names: std::collections::HashMap<u32, String>,
+    last_refresh: Instant,
+
+    // game loop
+    run_rx: Option<Receiver<crate::game::run::Event>>,
 
     // webhook
     notifier: crate::webhook::Notifier,
@@ -175,6 +189,10 @@ enum RamMsg {
     Status(bool, String),
     Accounts(Vec<String>),
     Log(String),
+    /// A launched account's Roblox window showed up.
+    Pid(u32, String),
+    Lock(crate::multi::MultiLock),
+    LaunchDone,
 }
 
 impl App {
@@ -227,6 +245,7 @@ impl App {
             pat_thr: 128,
             pat_margin: 40,
             pat_preview: None,
+            detect_map: String::new(),
             hits: vec![],
             map,
             new_map: String::new(),
@@ -249,6 +268,12 @@ impl App {
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
+            top_hwnd: None,
+            dock_note: String::new(),
+            multi: None,
+            names: Default::default(),
+            last_refresh: Instant::now(),
+            run_rx: None,
             notifier: crate::webhook::Notifier::start(),
             hook_input: String::new(),
             running: false,
@@ -266,7 +291,19 @@ impl App {
             upd_tx,
             upd_rx,
         };
+        app.settings.ensure(0);
+        app.settings.fix_teams();
         app.refresh_clients();
+        if app.settings.multi_roblox && app.clients.is_empty() {
+            // nothing open yet: take Roblox's lock now so every client can open
+            match crate::multi::MultiLock::acquire(&app.settings.singleton_names) {
+                Ok(l) => {
+                    app.say("multi-Roblox on - open as many clients as you like");
+                    app.multi = Some(l);
+                }
+                Err(e) => log::warn!("multi-Roblox: {e}"),
+            }
+        }
         app.load_route_text();
         app.page = match std::env::var("AA_START_PAGE").as_deref() {
             Ok("accounts") => Page::Accounts,
@@ -285,11 +322,61 @@ impl App {
     // ---------------- run controls ----------------
 
     fn start(&mut self) {
+        if self.run_rx.is_some() {
+            self.say("the game loop is still running (or still stopping) - press Stop and give it a second");
+            return;
+        }
+        self.refresh_clients();
         if self.clients.is_empty() {
             self.say("no Roblox clients - open Roblox first");
             return;
         }
+        let missing: Vec<String> = crate::game::run::plan(&self.settings, &self.routes)
+            .into_iter()
+            .filter(|st| !st.optional)
+            .flat_map(|st| st.needs)
+            .filter(|n| self.lib.get(n).is_none())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !missing.is_empty() {
+            self.say(format!(
+                "can't start yet - capture these on the Patterns page first (F6 over each): {}",
+                missing.join(", ")
+            ));
+            self.home_tab = HomeTab::Activity;
+            return;
+        }
         self.control.reset();
+        let arb = self.arbiter();
+        let main = self.clients[self.main.min(self.clients.len() - 1)].hwnd;
+        let clients = self
+            .clients
+            .iter()
+            .map(|c| {
+                (
+                    c.hwnd,
+                    crate::game::LiveScreen::new(self.platform.clone(), c.hwnd, &self.lib),
+                )
+            })
+            .collect();
+        let (tx, rx) = mpsc::channel();
+        let ctx = crate::game::run::RunCtx {
+            arb,
+            control: self.control.clone(),
+            main,
+            clients,
+            settings: self.settings.clone(),
+            routes: self.routes.clone(),
+            placements: self.placements.clone(),
+            tx,
+            speed: 1.0,
+        };
+        std::thread::Builder::new()
+            .name("game-loop".into())
+            .spawn(move || ctx.run())
+            .expect("spawn game loop");
+        self.run_rx = Some(rx);
         self.running = true;
         self.paused = false;
         self.started.get_or_insert(Instant::now());
@@ -299,15 +386,62 @@ impl App {
             &format!(
                 "{} on {}",
                 self.settings.run.mode.label(),
-                client_name(self.main, &self.settings)
+                self.client_label(self.main)
             ),
             false,
         );
         self.say(format!(
-            "Start: {} on client #{} - the game loop is switched on once your patterns are captured (Patterns page)",
+            "Start: {} on {}",
             self.settings.run.mode.label(),
-            self.main + 1
+            self.client_label(self.main)
         ));
+    }
+
+    /// Events from the game loop thread.
+    fn run_events(&mut self) {
+        use crate::game::run::Event;
+        let Some(rx) = &self.run_rx else { return };
+        let evs: Vec<Event> = rx.try_iter().collect();
+        for e in evs {
+            match e {
+                Event::Log(s) => self.say(s),
+                Event::Win => {
+                    self.wins += 1;
+                    let (w, l) = (self.wins, self.losses);
+                    self.say("VICTORY");
+                    self.hook(
+                        crate::webhook::Kind::Win,
+                        "Victory",
+                        &format!("{w}W / {l}L"),
+                        false,
+                    );
+                }
+                Event::Loss => {
+                    self.losses += 1;
+                    let (w, l) = (self.wins, self.losses);
+                    self.say("DEFEAT");
+                    self.hook(
+                        crate::webhook::Kind::Loss,
+                        "Defeat",
+                        &format!("{w}W / {l}L"),
+                        false,
+                    );
+                }
+                Event::Attention(s) => {
+                    self.say(format!("needs you: {s}"));
+                    self.hook(crate::webhook::Kind::Problem, "Needs you", &s, true);
+                }
+                Event::Done(why) => {
+                    self.say(format!("game loop ended: {why}"));
+                    self.run_rx = None;
+                    self.running = false;
+                    self.paused = false;
+                    if why != "stopped" {
+                        self.hook(crate::webhook::Kind::Problem, "Macro stopped", &why, true);
+                    }
+                }
+            }
+        }
     }
 
     fn stop(&mut self) {
@@ -383,7 +517,9 @@ impl App {
         );
     }
 
-    /// Keep the main client inside the Home box, alts stacked behind it.
+    /// Keep the main client exactly over the dock box (left column, every
+    /// page), alts stacked behind it. While the app or a client is in front,
+    /// the client on show is kept topmost so clicking the app never covers it.
     fn dock_tick(&mut self, ppp: f32) {
         if !self.settings.dock || self.last_dock.elapsed() < Duration::from_millis(250) {
             return;
@@ -399,23 +535,27 @@ impl App {
         };
         let Some(app) = p.geometry(own) else { return };
         let fg = p.foreground();
-        let ours = fg == Some(own) || self.clients.iter().any(|c| Some(c.hwnd) == fg);
-        if self.page != Page::Home || p.is_minimized(own) {
-            // Box not on screen: keep Roblox out of the way of the other pages.
-            if ours && fg != Some(main.hwnd) {
-                let _ = p.lower(main.hwnd);
-            }
+        let fg_client = self
+            .clients
+            .iter()
+            .find(|c| Some(c.hwnd) == fg)
+            .map(|c| c.hwnd);
+        let ours = fg == Some(own) || fg_client.is_some();
+        if p.is_minimized(own) {
+            self.set_top(None);
             return;
         }
         let Some(rect) = self.dock_rect else { return };
-        let target = crate::layout::ui_to_screen(
+        let mut target = crate::layout::ui_to_screen(
             Point::new(app.client.x, app.client.y),
             rect.min.x,
             rect.min.y,
             ppp,
         );
+        target.x += self.settings.dock_dx;
+        target.y += self.settings.dock_dy;
         let (cw, ch) = (self.settings.client_w, self.settings.client_h);
-        for (i, c) in self.clients.clone().iter().enumerate() {
+        for c in self.clients.clone() {
             let Some(g) = p.geometry(c.hwnd) else {
                 continue;
             };
@@ -425,16 +565,74 @@ impl App {
                     crate::layout::outer_for_client_at(&g, target, cw, ch),
                 );
             }
-            if i != self.main && ours && fg != Some(c.hwnd) {
-                let _ = p.lower(c.hwnd);
+        }
+        // Which client is on show: the one the macro is driving right now
+        // (it focuses alts to click them), else the main.
+        let show = fg_client.unwrap_or(main.hwnd);
+        if ours {
+            self.set_top(Some(show));
+            for c in &self.clients {
+                if c.hwnd != show {
+                    let _ = p.place_below(c.hwnd, show);
+                }
+            }
+        } else {
+            self.set_top(None);
+            if let Some(f) = fg {
+                // another app is in front: tuck Roblox behind it
+                let _ = p.place_below(main.hwnd, f);
             }
         }
-        if ours {
-            let _ = p.raise(main.hwnd);
-        }
-        self.docked_ok = p
-            .geometry(main.hwnd)
+        let now = p.geometry(main.hwnd);
+        self.docked_ok = now
+            .as_ref()
             .is_some_and(|g| (g.client.x, g.client.y) == (target.x, target.y));
+        let note = format!(
+            "app client at {},{} · box at {:.0},{:.0} pt × {ppp:.2} · target {},{} · main client at {}",
+            app.client.x,
+            app.client.y,
+            rect.min.x,
+            rect.min.y,
+            target.x,
+            target.y,
+            now.map(|g| format!("{},{} ({}×{})", g.client.x, g.client.y, g.client.w, g.client.h))
+                .unwrap_or_else(|| "?".into())
+        );
+        self.dock_note = note;
+    }
+
+    /// Make `hwnd` the one topmost client (None = none of them).
+    fn set_top(&mut self, hwnd: Option<crate::geom::Hwnd>) {
+        if self.top_hwnd == hwnd {
+            if let Some(h) = hwnd {
+                // re-assert cheaply: something may have bumped it
+                let _ = self.platform.set_topmost(h, true);
+            }
+            return;
+        }
+        if let Some(old) = self.top_hwnd.take() {
+            let _ = self.platform.set_topmost(old, false);
+        }
+        if let Some(h) = hwnd {
+            let _ = self.platform.set_topmost(h, true);
+        }
+        self.top_hwnd = hwnd;
+    }
+
+    /// Client name for the UI: the RAM username when we know it.
+    fn client_label(&self, i: usize) -> String {
+        let Some(c) = self.clients.get(i) else {
+            return client_name(i, &self.settings);
+        };
+        if let Some(n) = self.names.get(&c.pid) {
+            return n.clone();
+        }
+        let l = client_name(i, &self.settings);
+        if l == format!("Client {}", i + 1) {
+            format!("Roblox {} (pid {})", i + 1, c.pid)
+        } else {
+            l
+        }
     }
 
     /// Next checklist pattern nobody captured yet (your stage first).
@@ -572,12 +770,15 @@ impl App {
                 {
                     self.settings.dock = false;
                     self.docked_ok = false;
+                    self.set_top(None);
                     self.dirty();
                     self.tile();
                 }
             } else if ui
                 .button("Dock")
-                .on_hover_text("put the main client inside the Home preview box")
+                .on_hover_text(
+                    "put the main client into the left column, always in front of the app",
+                )
                 .clicked()
             {
                 self.settings.dock = true;
@@ -649,15 +850,13 @@ impl App {
     // ---------------- Home ----------------
 
     fn page_home(&mut self, ui: &mut egui::Ui) {
+        if self.settings.dock {
+            // Roblox + session live in the dock column; this side is controls.
+            self.home_controls(ui);
+            return;
+        }
         let avail = ui.available_width();
-        let ppp = ui.ctx().pixels_per_point();
-        let left_w = if self.settings.dock {
-            (self.settings.client_w as f32 / ppp + 26.0)
-                .min(avail - 380.0)
-                .max(420.0)
-        } else {
-            (avail * 0.58).max(420.0)
-        };
+        let left_w = (avail * 0.58).max(420.0);
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(left_w, 0.0),
@@ -665,48 +864,163 @@ impl App {
                 |ui| {
                     self.home_preview(ui);
                     ui.add_space(8.0);
-                    ui.horizontal_top(|ui| {
-                        let w = (ui.available_width() - 8.0) / 2.0;
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(w, 0.0),
-                            Layout::top_down(Align::Min),
-                            |ui| self.session_card(ui),
-                        );
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(w, 0.0),
-                            Layout::top_down(Align::Min),
-                            |ui| self.quick_card(ui),
-                        );
-                    });
+                    self.session_row(ui);
                 },
             );
             ui.add_space(8.0);
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), 0.0),
                 Layout::top_down(Align::Min),
-                |ui| {
-                    self.mode_card(ui);
-                    ui.add_space(8.0);
-                    if self.settings.run.own_team {
-                        self.alts_card(ui);
-                        ui.add_space(8.0);
-                    }
-                    segmented(
-                        ui,
-                        &mut self.home_tab,
-                        &[
-                            (HomeTab::Control, "Control"),
-                            (HomeTab::Activity, "Activity"),
-                        ],
-                    );
-                    ui.add_space(6.0);
-                    match self.home_tab {
-                        HomeTab::Control => self.units_grid(ui),
-                        HomeTab::Activity => self.activity(ui),
-                    }
-                },
+                |ui| self.home_controls(ui),
             );
         });
+    }
+
+    fn session_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_top(|ui| {
+            let w = (ui.available_width() - 8.0) / 2.0;
+            ui.allocate_ui_with_layout(Vec2::new(w, 0.0), Layout::top_down(Align::Min), |ui| {
+                self.session_card(ui)
+            });
+            ui.allocate_ui_with_layout(Vec2::new(w, 0.0), Layout::top_down(Align::Min), |ui| {
+                self.quick_card(ui)
+            });
+        });
+    }
+
+    fn home_controls(&mut self, ui: &mut egui::Ui) {
+        self.mode_card(ui);
+        ui.add_space(8.0);
+        if self.settings.run.own_team {
+            self.alts_card(ui);
+            ui.add_space(8.0);
+        }
+        segmented(
+            ui,
+            &mut self.home_tab,
+            &[
+                (HomeTab::Control, "Control"),
+                (HomeTab::Sequence, "Sequence check"),
+                (HomeTab::Activity, "Activity"),
+            ],
+        );
+        ui.add_space(6.0);
+        match self.home_tab {
+            HomeTab::Control => self.units_grid(ui),
+            HomeTab::Sequence => self.sequence_card(ui),
+            HomeTab::Activity => self.activity(ui),
+        }
+    }
+
+    /// Every step the game loop will do for the chosen mode, and whether the
+    /// patterns it looks for are captured.
+    fn sequence_card(&mut self, ui: &mut egui::Ui) {
+        let steps = crate::game::run::plan(&self.settings, &self.routes);
+        card(ui, |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} · what Start will do, in order",
+                    self.settings.run.mode.label()
+                ))
+                .size(11.0)
+                .color(MUTED),
+            );
+            let mut blocking = 0;
+            for (i, st) in steps.iter().enumerate() {
+                let missing: Vec<&String> = st
+                    .needs
+                    .iter()
+                    .filter(|n| self.lib.get(n).is_none())
+                    .collect();
+                let c = if missing.is_empty() {
+                    GOOD
+                } else if st.optional {
+                    WARN
+                } else {
+                    blocking += 1;
+                    BAD
+                };
+                ui.horizontal_wrapped(|ui| {
+                    dot(ui, c);
+                    ui.label(RichText::new(format!("{}. {}", i + 1, st.label)).color(TEXT));
+                    if !missing.is_empty() {
+                        let names: Vec<&str> = missing.iter().map(|s| s.as_str()).collect();
+                        ui.label(
+                            RichText::new(format!(
+                                "{} {}",
+                                if st.optional { "optional:" } else { "missing:" },
+                                names.join(", ")
+                            ))
+                            .size(11.0)
+                            .color(c),
+                        );
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(if blocking == 0 {
+                    "Everything the loop needs is captured - Start will run this.".to_string()
+                } else {
+                    format!("{blocking} step(s) still need patterns - F6 over each label in game (Patterns page shows the list).")
+                })
+                .size(11.0)
+                .color(if blocking == 0 { GOOD } else { WARN }),
+            );
+        });
+    }
+
+    /// Left column when docked: the box Roblox sits on, then the session.
+    fn dock_column(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("MAIN").size(11.0).color(MUTED));
+            let labels: Vec<String> = (0..self.clients.len())
+                .map(|i| self.client_label(i))
+                .collect();
+            if !labels.is_empty() {
+                let cur = labels[self.main.min(labels.len() - 1)].clone();
+                ComboBox::from_id_salt("mainsel")
+                    .selected_text(cur)
+                    .show_ui(ui, |ui| {
+                        for (i, l) in labels.iter().enumerate() {
+                            if ui.selectable_value(&mut self.main, i, l).changed() {
+                                self.sel = i;
+                            }
+                        }
+                    });
+            }
+            ui.label(
+                RichText::new(if self.docked_ok {
+                    "docked"
+                } else {
+                    "docking…"
+                })
+                .size(11.0)
+                .color(if self.docked_ok { GOOD } else { WARN }),
+            );
+        });
+        let ppp = ui.ctx().pixels_per_point();
+        let size = Vec2::new(
+            self.settings.client_w as f32 / ppp,
+            self.settings.client_h as f32 / ppp,
+        );
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, BG);
+        let msg = if self.clients.is_empty() {
+            "No Roblox client - open Roblox (windowed) or launch from Accounts"
+        } else {
+            "Roblox sits here"
+        };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            msg,
+            egui::FontId::proportional(14.0),
+            MUTED,
+        );
+        self.dock_rect = Some(rect);
+        ui.add_space(8.0);
+        self.session_row(ui);
     }
 
     fn home_preview(&mut self, ui: &mut egui::Ui) {
@@ -714,7 +1028,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("MAIN").size(11.0).color(MUTED));
                 let labels: Vec<String> = (0..self.clients.len())
-                    .map(|i| client_name(i, &self.settings))
+                    .map(|i| self.client_label(i))
                     .collect();
                 if !labels.is_empty() {
                     let cur = labels[self.main.min(labels.len() - 1)].clone();
@@ -731,34 +1045,7 @@ impl App {
                 toggle(ui, &mut self.live, "live");
             });
             self.sel = self.main;
-            if self.settings.dock {
-                let ppp = ui.ctx().pixels_per_point();
-                let size = Vec2::new(
-                    self.settings.client_w as f32 / ppp,
-                    self.settings.client_h as f32 / ppp,
-                );
-                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                ui.painter().rect_filled(rect, 0.0, BG);
-                ui.painter().rect_stroke(
-                    rect,
-                    0.0,
-                    Stroke::new(1.0, PURPLE_DIM),
-                    egui::StrokeKind::Outside,
-                );
-                let msg = if self.clients.is_empty() {
-                    "No Roblox client - open Roblox (windowed) and press Refresh"
-                } else {
-                    "Roblox is docked here"
-                };
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    msg,
-                    egui::FontId::proportional(14.0),
-                    MUTED,
-                );
-                self.dock_rect = Some(rect);
-            } else if let Some(tex) = &self.tex {
+            if let Some(tex) = &self.tex {
                 let size = tex.size_vec2();
                 let scale = (ui.available_width() / size.x).min(1.0);
                 let (rect, _) = ui.allocate_exact_size(size * scale, Sense::hover());
@@ -841,6 +1128,7 @@ impl App {
 
     fn mode_card(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
+        let mode_before = self.settings.run.mode;
         card(ui, |ui| {
             let r = &mut self.settings.run;
             ui.horizontal(|ui| {
@@ -932,6 +1220,17 @@ impl App {
                 changed |= toggle(ui, &mut r.stop_after_defeat, "Stop after a defeat");
             });
         });
+        if self.settings.run.mode != mode_before {
+            let before = self.settings.team;
+            self.settings.team_for_mode(self.settings.run.mode);
+            if self.settings.team != before {
+                let n = self.settings.teams[self.settings.team].name.clone();
+                self.say(format!(
+                    "team '{n}' loaded for {}",
+                    self.settings.run.mode.label()
+                ));
+            }
+        }
         if changed {
             self.dirty();
         }
@@ -983,7 +1282,7 @@ impl App {
                             }
                         }
                         ui.label(
-                            RichText::new(format!("{} · 800×599", client_name(*i, &self.settings)))
+                            RichText::new(format!("{} · 800×599", self.client_label(*i)))
                                 .size(11.0)
                                 .color(TEXT),
                         );
@@ -996,10 +1295,7 @@ impl App {
             if let Some(i) = make_main {
                 self.main = i;
                 self.sel = i;
-                self.say(format!(
-                    "{} is now the main",
-                    client_name(i, &self.settings)
-                ));
+                self.say(format!("{} is now the main", self.client_label(i)));
             }
             ui.label(
                 RichText::new(format!(
@@ -1012,7 +1308,67 @@ impl App {
         });
     }
 
+    /// Team loadouts: pick, rename, add, delete, link to the current mode.
+    fn team_bar(&mut self, ui: &mut egui::Ui) {
+        self.settings.fix_teams();
+        let mut switch = None;
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("TEAM").size(11.0).color(MUTED));
+            let cur = self.settings.team;
+            ComboBox::from_id_salt("team")
+                .selected_text(self.settings.teams[cur].name.clone())
+                .show_ui(ui, |ui| {
+                    for (i, t) in self.settings.teams.iter().enumerate() {
+                        if ui.selectable_label(i == cur, &t.name).clicked() {
+                            switch = Some(i);
+                        }
+                    }
+                });
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.settings.teams[cur].name)
+                        .desired_width(120.0)
+                        .hint_text("team name"),
+                )
+                .on_hover_text("rename this team")
+                .changed();
+            if ui
+                .small_button("+ New")
+                .on_hover_text("copy of this team")
+                .clicked()
+            {
+                let n = format!("Team {}", self.settings.teams.len() + 1);
+                self.settings.add_team(&n);
+                changed = true;
+            }
+            if self.settings.teams.len() > 1 && ui.small_button("Delete").clicked() {
+                self.settings.remove_team(cur);
+                changed = true;
+            }
+            let mode = self.settings.run.mode.label().to_string();
+            let mut linked = self.settings.mode_teams.get(&mode) == Some(&self.settings.team);
+            if toggle(ui, &mut linked, &format!("use for {mode}")) {
+                if linked {
+                    self.settings.mode_teams.insert(mode, self.settings.team);
+                } else {
+                    self.settings.mode_teams.remove(&mode);
+                }
+                changed = true;
+            }
+        });
+        if let Some(i) = switch {
+            self.settings.switch_team(i);
+            changed = true;
+        }
+        if changed {
+            self.dirty();
+        }
+        ui.add_space(4.0);
+    }
+
     fn units_grid(&mut self, ui: &mut egui::Ui) {
+        self.team_bar(ui);
         let mut changed = false;
         let keys = self.settings.keybinds.units.clone();
         let avail = ui.available_width();
@@ -1385,21 +1741,45 @@ impl App {
         let ram = self.ram();
         let link = self.secrets.get(accounts::PRIVATE_SERVER_KEY);
         let tx = self.ram_tx.clone();
+        let p = self.platform.clone();
+        let process = self.settings.process_name.clone();
+        let lock_names = self.settings.singleton_names.clone();
+        let want_multi = self.settings.multi_roblox;
+        let have_lock = self.multi.is_some();
         self.say(format!("launching {} account(s) through RAM…", names.len()));
         std::thread::spawn(move || {
-            for (i, n) in names.iter().enumerate() {
-                if i > 0 {
-                    std::thread::sleep(Duration::from_secs(8)); // let each client get past the splash
+            let log = |s: String| {
+                let _ = tx.send(RamMsg::Log(s));
+            };
+            if want_multi {
+                match crate::multi::ensure(&*p, &process, &lock_names, have_lock, names.len(), &log)
+                {
+                    Ok(Some(l)) => {
+                        let _ = tx.send(RamMsg::Lock(l));
+                    }
+                    Ok(None) => {}
+                    Err(e) => log(format!("multi-Roblox failed: {e} - launching anyway")),
                 }
-                let msg = match ram.launch(n, link.as_deref()) {
-                    Ok(m) => format!("{n}: {m}"),
-                    Err(e) => format!("{n}: launch failed - {e}"),
-                };
-                let _ = tx.send(RamMsg::Log(msg));
             }
-            let _ = tx.send(RamMsg::Log(
-                "launch done - press Refresh when the clients are in game, then Tile".into(),
-            ));
+            let pids = || {
+                p.list_windows(&process)
+                    .into_iter()
+                    .map(|w| w.pid)
+                    .collect()
+            };
+            crate::multi::launch_each(
+                &names,
+                &pids,
+                &mut |n| ram.launch(n, link.as_deref()),
+                &mut |pid, n| {
+                    let _ = tx.send(RamMsg::Pid(pid, n.to_string()));
+                },
+                &log,
+                Duration::from_secs(60),
+                Duration::from_millis(500),
+            );
+            log("launch done - the clients join your private server".into());
+            let _ = tx.send(RamMsg::LaunchDone);
         });
     }
 
@@ -1588,6 +1968,52 @@ impl App {
     fn page_settings(&mut self, ui: &mut egui::Ui) {
         heading(ui, "Settings", "");
         let mut changed = false;
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("MULTI-ROBLOX & DOCKING")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            changed |= toggle(
+                ui,
+                &mut self.settings.multi_roblox,
+                "Multi-Roblox built in (no RAM Multi Roblox needed)",
+            );
+            ui.label(
+                RichText::new(match &self.multi {
+                    Some(l) if l.shared => "On - the lock is shared with RAM, that's fine.",
+                    Some(_) => "On - every client opened from now on can stay open.",
+                    None => "Off right now. Launching 2+ accounts from Accounts closes any open Roblox first, switches it on, then launches them.",
+                })
+                .size(11.0)
+                .color(if self.multi.is_some() { GOOD } else { MUTED }),
+            );
+            ui.add_space(6.0);
+            changed |= toggle(
+                ui,
+                &mut self.settings.dock,
+                "Dock Roblox into the app (left column)",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Nudge docked Roblox  x");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut self.settings.dock_dx).range(-200..=200))
+                    .changed();
+                ui.label("y");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut self.settings.dock_dy).range(-200..=200))
+                    .changed();
+                ui.label(
+                    RichText::new("px, only if it still sits off")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+            if !self.dock_note.is_empty() {
+                ui.label(RichText::new(&self.dock_note).size(11.0).color(MUTED));
+            }
+        });
+        ui.add_space(8.0);
         card(ui, |ui| {
             ui.label(RichText::new("KEYBINDS").size(11.0).color(MUTED));
             let kb = &mut self.settings.keybinds;
@@ -1891,10 +2317,25 @@ impl App {
                 }
                 RamMsg::Accounts(l) => self.ram_list = l,
                 RamMsg::Log(s) => self.say(s),
+                RamMsg::Pid(pid, name) => {
+                    self.names.insert(pid, name);
+                    self.refresh_quiet();
+                }
+                RamMsg::Lock(l) => self.multi = Some(l),
+                RamMsg::LaunchDone => {
+                    self.refresh_clients();
+                    if !self.settings.dock {
+                        self.tile();
+                    }
+                }
             }
         }
         while let Ok(k) = self.hotkeys.try_recv() {
             self.hotkey(k);
+        }
+        self.run_events();
+        if self.last_refresh.elapsed() > Duration::from_secs(3) {
+            self.refresh_quiet();
         }
         let wants_live =
             self.live && matches!(self.page, Page::Home | Page::Placement | Page::Patterns);
@@ -1915,11 +2356,13 @@ impl App {
                 }
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(if wants_live || self.running {
-            300
-        } else {
-            1000
-        }));
+        ctx.request_repaint_after(Duration::from_millis(
+            if wants_live || self.running || self.settings.dock {
+                300
+            } else {
+                1000
+            },
+        ));
     }
 
     fn capture_alts(&mut self, ctx: &egui::Context) {
@@ -2246,8 +2689,16 @@ fn apply_theme(ctx: &egui::Context) {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.own_hwnd.is_none() {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = frame.window_handle() {
+                if let RawWindowHandle::Win32(w) = h.as_raw() {
+                    self.own_hwnd = Some(crate::geom::Hwnd(w.hwnd.get()));
+                }
+            }
+        }
         self.tick(&ctx);
         egui::Panel::top("top")
             .frame(
@@ -2265,6 +2716,21 @@ impl eframe::App for App {
                 self.rail(ui);
             });
         let ppp = ctx.pixels_per_point();
+        if self.settings.dock {
+            let w = self.settings.client_w as f32 / ppp + 24.0;
+            egui::Panel::left("dock")
+                .exact_size(w)
+                .resizable(false)
+                .frame(egui::Frame::new().fill(PANEL).inner_margin(12))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("dockscroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.dock_column(ui));
+                });
+        } else {
+            self.dock_rect = None;
+        }
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12))
             .show(ui, |ui| {
@@ -2282,6 +2748,13 @@ impl eframe::App for App {
                     });
             });
         self.dock_tick(ppp);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.control.stop();
+        for c in &self.clients {
+            let _ = self.platform.set_topmost(c.hwnd, false);
+        }
     }
 }
 

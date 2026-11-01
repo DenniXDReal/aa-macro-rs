@@ -55,21 +55,25 @@ pub fn make_dpi_aware() {
 }
 
 /// Hold named kernel objects so Roblox's single-instance check passes and
-/// more clients can open. Keep the returned handles alive.
-pub fn hold_singleton(names: &[String]) -> Result<Vec<SingletonHandle>> {
+/// more clients can open. Keep the returned handles alive. The flag is true
+/// when the object already existed (an open Roblox, or RAM's own lock).
+pub fn hold_singleton(names: &[String]) -> Result<(Vec<SingletonHandle>, bool)> {
     let mut out = vec![];
+    let mut existed = false;
     for n in names {
         let handle = unsafe { CreateMutexW(None, true, &HSTRING::from(n.as_str())) }
             .with_context(|| format!("CreateMutex {n}"))?;
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            log::warn!("{n} already exists - a Roblox client is probably already open; close all Roblox first");
+            existed = true;
         }
         out.push(SingletonHandle(handle));
     }
-    Ok(out)
+    Ok((out, existed))
 }
 
 pub struct SingletonHandle(HANDLE);
+// A kernel handle is just a number; closing it from another thread is fine.
+unsafe impl Send for SingletonHandle {}
 impl Drop for SingletonHandle {
     fn drop(&mut self) {
         unsafe {
@@ -81,6 +85,36 @@ impl Drop for SingletonHandle {
 pub struct Win32Platform;
 
 impl Win32Platform {
+    /// The docked app keeps one Roblox client topmost. When input goes to a
+    /// different client of the same game, hand "topmost" over to it so it
+    /// really is in front for the clicks.
+    fn take_topmost(&self, hwnd: Hwnd) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOPMOST,
+        };
+        let topmost = |x: Hwnd| unsafe {
+            (GetWindowLongPtrW(h(x), GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0) != 0
+        };
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(h(hwnd), Some(&mut pid));
+        }
+        let Some(exe) = process_exe(pid) else { return };
+        let others: Vec<Hwnd> = self
+            .list_windows(&exe)
+            .into_iter()
+            .map(|i| i.hwnd)
+            .filter(|x| *x != hwnd && topmost(*x))
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+        for o in others {
+            let _ = self.set_topmost(o, false);
+        }
+        let _ = self.set_topmost(hwnd, true);
+    }
+
     pub fn new() -> Self {
         Win32Platform
     }
@@ -240,6 +274,7 @@ impl Platform for Win32Platform {
 
     fn focus(&self, hwnd: Hwnd) -> Result<()> {
         let hw = h(hwnd);
+        self.take_topmost(hwnd);
         unsafe {
             if IsIconic(hw).as_bool() {
                 let _ = ShowWindow(hw, SW_RESTORE);
@@ -311,6 +346,29 @@ impl Platform for Win32Platform {
             .map(w)
     }
 
+    fn set_owner(&self, hwnd: Hwnd, owner: Option<Hwnd>) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_HWNDPARENT};
+        unsafe {
+            SetWindowLongPtrW(h(hwnd), GWLP_HWNDPARENT, owner.map(|o| o.0).unwrap_or(0));
+        }
+        Ok(())
+    }
+
+    fn kill_process(&self, exe: &str) -> Result<u32> {
+        if exe.contains(['\\', '/', '"', '&', '|', '<', '>']) {
+            bail!("bad process name");
+        }
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", exe])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .context("taskkill")?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text.matches("SUCCESS").count() as u32)
+    }
+
     fn raise(&self, hwnd: Hwnd) -> Result<()> {
         use windows::Win32::UI::WindowsAndMessaging::{HWND_TOP, SWP_NOMOVE, SWP_NOSIZE};
         unsafe {
@@ -325,6 +383,40 @@ impl Platform for Win32Platform {
             )
         }
         .context("raise")
+    }
+
+    fn set_topmost(&self, hwnd: Hwnd, on: bool) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        unsafe {
+            SetWindowPos(
+                h(hwnd),
+                Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
+        .context("topmost")
+    }
+
+    fn place_below(&self, hwnd: Hwnd, above: Hwnd) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{SWP_NOMOVE, SWP_NOSIZE};
+        unsafe {
+            SetWindowPos(
+                h(hwnd),
+                Some(h(above)),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
+        .context("place below")
     }
 
     fn lower(&self, hwnd: Hwnd) -> Result<()> {

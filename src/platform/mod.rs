@@ -62,6 +62,23 @@ pub trait Platform: Send + Sync {
     fn raise(&self, _hwnd: Hwnd) -> Result<()> {
         Ok(())
     }
+    /// Make `hwnd` owned by `owner` (an owned window always stays above its
+    /// owner). `None` removes the owner.
+    fn set_owner(&self, _hwnd: Hwnd, _owner: Option<Hwnd>) -> Result<()> {
+        Ok(())
+    }
+    /// Close every process with this exe name (force).
+    fn kill_process(&self, _exe: &str) -> Result<u32> {
+        Ok(0)
+    }
+    /// Keep `hwnd` above every normal window (`false` drops that again).
+    fn set_topmost(&self, _hwnd: Hwnd, _on: bool) -> Result<()> {
+        Ok(())
+    }
+    /// Put `hwnd` right behind `above` in the z-order.
+    fn place_below(&self, _hwnd: Hwnd, _above: Hwnd) -> Result<()> {
+        Ok(())
+    }
     /// Send `hwnd` behind every other window (stays rendered, still capturable).
     fn lower(&self, _hwnd: Hwnd) -> Result<()> {
         Ok(())

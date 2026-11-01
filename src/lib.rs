@@ -22,6 +22,7 @@ pub mod input;
 pub mod keys;
 pub mod layout;
 pub mod movement;
+pub mod multi;
 pub mod placement;
 pub mod platform;
 pub mod secrets;

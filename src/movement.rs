@@ -51,6 +51,9 @@ pub enum Step {
         timeout_ms: u64,
         #[serde(default = "left")]
         button: String,
+        /// Click this far from the pattern's centre (e.g. a toggle beside a label).
+        #[serde(default)]
+        offset: [i32; 2],
     },
     /// Wait until one of `patterns` is on screen.
     WaitFor {
@@ -267,8 +270,11 @@ fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) 
                 fallback,
                 timeout_ms,
                 button: b,
+                offset,
             } => out.push(Action::ClickWhen {
-                probe: env.probe(&[v.fill(pattern)], None),
+                probe: env
+                    .probe(&[v.fill(pattern)], None)
+                    .shifted(offset[0], offset[1]),
                 timeout_ms: *timeout_ms,
                 fallback: fallback.map(|[x, y]| Point::new(x, y)),
                 button: button(b),
@@ -361,6 +367,7 @@ fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) 
 }
 
 /// Built-in + user routes.
+#[derive(Clone)]
 pub struct Routes {
     pub maps: BTreeMap<String, Route>,
     pub lobby: BTreeMap<String, Route>,
@@ -370,6 +377,17 @@ pub struct Routes {
 }
 
 impl Routes {
+    /// Route for a map, matching names loosely ("ruined city" = "Ruined City").
+    pub fn find_map(&self, name: &str) -> Option<&Route> {
+        let k = crate::vision::key(name);
+        self.maps.get(name).or_else(|| {
+            self.maps
+                .iter()
+                .find(|(m, _)| crate::vision::key(m) == k)
+                .map(|(_, r)| r)
+        })
+    }
+
     pub fn user_dir_default() -> PathBuf {
         std::env::current_exe()
             .ok()

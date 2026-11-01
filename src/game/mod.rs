@@ -2,6 +2,9 @@
 //! input arbiter can wait on. Shared by the Movement tester and the game loop.
 
 pub mod placing;
+pub mod run;
+#[cfg(test)]
+pub mod sim;
 
 use crate::geom::{Hwnd, Point, Rect};
 use crate::input::Probe;
@@ -38,6 +41,22 @@ impl LiveScreen {
                 .and_then(|p| p.find_in(&frame, region))
                 .map(|h| h.center())
         })
+    }
+
+    /// Captured pattern names (normalised) starting with `prefix`.
+    pub fn with_prefix(&self, prefix: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .pats
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.pats.contains_key(&key(name))
     }
 
     /// Names in `names` that you haven't captured yet.
