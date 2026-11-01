@@ -436,32 +436,56 @@ impl RunCtx {
             return Ok(());
         }
         self.log(format!("party: inviting {} alt(s)", alts.len()));
+        // 1. click + once, then stop looking for it
         self.click_when(self.main, "party_plus", 5000)?;
-        self.sleep(800)?;
-        // click every Invite in the list (each turns into 'Invited')
+        // 2. wait for the first Invite button
+        if self.wait_any(self.main, &["party_invite"], 8000)?.is_none() {
+            self.log("party: no Invite button showed up - carrying on without a party");
+            return Ok(());
+        }
+        // 3. spam-click every Invite until none is left (each turns into Invited)
+        let invite = Self::names(&["party_invite"]);
         let mut sent = 0;
-        for _ in 0..alts.len() + 3 {
-            match self.wait_any(self.main, &["party_invite"], 2500)? {
-                Some((_, p)) => {
-                    self.click(self.main, p, "invite")?;
+        let mut none_since: Option<Instant> = None;
+        while sent < 30 {
+            self.check()?;
+            match main.find(&invite, None) {
+                Some(p) => {
+                    none_since = None;
+                    self.arb
+                        .run(Batch::new(self.main, "invite").click(p.x, p.y))
+                        .map_err(|e| format!("invite: {e}"))?;
                     sent += 1;
+                    self.sleep(300)?;
                 }
-                None => break,
+                None => {
+                    let t = *none_since.get_or_insert_with(Instant::now);
+                    // 0 Invite left for a moment = done
+                    if t.elapsed() >= Duration::from_millis((1200.0 * self.speed.max(0.05)) as u64)
+                    {
+                        break;
+                    }
+                    self.sleep(200)?;
+                }
             }
         }
-        // swap to each alt and accept
+        let invited = !main.has("party_invited")
+            || main.find(&Self::names(&["party_invited"]), None).is_some();
+        if invited {
+            self.log(format!(
+                "party: {sent} invite click(s), no Invite left, Invited shown"
+            ));
+        } else {
+            self.log("party: no Invite left but no 'Invited' either - trying the alts anyway");
+        }
+        // 4. swap to each alt and accept
         for h in &alts {
             match self.wait_any(*h, &["party_accept"], 10000)? {
                 Some((_, p)) => self.click(*h, p, "accept party")?,
                 None => self.log("party: an alt never got the invite"),
             }
-            self.sleep(400)?;
         }
-        // close the party list again
-        if let Some((_, p)) = self.wait_any(self.main, &["party_plus"], 500)? {
-            self.click(self.main, p, "close party")?;
-        }
-        self.log(format!("party: {sent} invite(s) sent"));
+        self.log("party: done - going to the game mode");
         Ok(())
     }
 

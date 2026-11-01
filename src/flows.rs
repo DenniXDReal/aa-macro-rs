@@ -41,7 +41,7 @@ pub const FLOWS: &[Flow] = &[
     },
     Flow {
         name: "Party (alts)",
-        steps: "All clients join your private server > main clicks the party + (top right) > Invite next to each alt > each alt clicks Accept on the Party Invite pop-up.",
+        steps: "All clients in your private server > main clicks the party + once > waits for Invite buttons > clicks every Invite until none are left (they turn Invited) > swaps to each alt and clicks Accept > goes to the game mode.",
         needs: &[
             n("party_plus", "icon", "Main: the green + under '@you's Party' (top right)"),
             n("party_invite", "text", "Main: yellow 'Invite' next to an alt's name"),
