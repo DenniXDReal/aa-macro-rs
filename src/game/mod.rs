@@ -1,6 +1,8 @@
 //! Live game context: what a client's screen shows right now, as probes the
 //! input arbiter can wait on. Shared by the Movement tester and the game loop.
 
+pub mod placing;
+
 use crate::geom::{Hwnd, Point, Rect};
 use crate::input::Probe;
 use crate::movement::RouteEnv;

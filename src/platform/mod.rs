@@ -50,6 +50,10 @@ pub trait Platform: Send + Sync {
     /// Client-area picture of the window, also when covered by other windows.
     fn capture_client(&self, hwnd: Hwnd) -> Result<Frame>;
 
+    /// Mouse cursor, screen coords.
+    fn cursor(&self) -> Option<crate::geom::Point> {
+        None
+    }
     /// This app's own main window (for docking Roblox into it).
     fn own_window(&self) -> Option<Hwnd> {
         None

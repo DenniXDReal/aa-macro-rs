@@ -280,6 +280,10 @@ impl Platform for Win32Platform {
         }
     }
 
+    fn cursor(&self) -> Option<Point> {
+        cursor()
+    }
+
     fn own_window(&self) -> Option<Hwnd> {
         use windows::Win32::System::Threading::GetCurrentProcessId;
         let me = unsafe { GetCurrentProcessId() };
@@ -509,7 +513,7 @@ pub fn cursor() -> Option<Point> {
     Some(Point::new(p.x, p.y))
 }
 
-/// F1..F4 as global hotkeys (work while Roblox has focus). Each press sends
+/// F1..F4 and F6 as global hotkeys (work while Roblox has focus). Each press sends
 /// its number (1-4) down `tx`. The thread lives for the whole app.
 pub fn spawn_hotkeys(tx: std::sync::mpsc::Sender<u8>) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT, VK_F1};
@@ -517,7 +521,8 @@ pub fn spawn_hotkeys(tx: std::sync::mpsc::Sender<u8>) {
     std::thread::Builder::new()
         .name("hotkeys".into())
         .spawn(move || unsafe {
-            for i in 0..4u32 {
+            // F1-F4 run controls, F6 hover capture
+            for i in [0u32, 1, 2, 3, 5] {
                 if RegisterHotKey(None, (i + 1) as i32, MOD_NOREPEAT, VK_F1.0 as u32 + i).is_err() {
                     log::warn!("F{} is used by another app - hotkey not available", i + 1);
                 }

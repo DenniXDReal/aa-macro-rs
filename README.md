@@ -34,6 +34,16 @@ The macro asks RAM to launch your main + alts straight into your private server.
 4. **+ Add** your accounts (the first one is the main), then **Launch all**. It launches the main first, then each alt 8 s apart.
 5. Party: the main clicks **+** (top right) → **Invite** on each alt, and each alt presses **Accept**. This needs the party patterns in the Patterns checklist.
 
+### Hover capture (F6)
+
+On the Patterns page, the box at the top shows the **next missing** pattern. In Roblox, put the mouse on the middle of that button's text and press **F6**. The app finds the label (bright text with a dark outline, matched by colour) and saves it under that name, then moves on to the next one. Type a name first to capture something that isn't in the checklist.
+
+### Placement
+
+The same system as the old AHK version and Spiral v10: **custom spots first, then an expanding square spiral** from the centre (±15 px jitter). One try = unit key (1–6) → click the spot → **Q**. **Each client that places units has its own spot set per map**: turn clients on under *Clients that place units* and pick the client above the picture. 2–3 accounts can place at the same time because each try is a ~300 ms turn on the input controller. Optional: capture a pattern named `unit_panel` (something that only shows when a unit's panel is open). Then only confirmed placements count; without it every try counts.
+
+**Camera top-down** (Placement page, numbers in Settings): zoom in 10 notches to first person, look down, zoom out 20.
+
 ### Movement
 
 Built-in per-map walks (32 maps, imported from AA Spiral v10's default routes) and lobby walks to each mode (Summer Event, Story, Legend, Raid, Infinity Castle, Challenge). Edit the steps on the Movement page and **Save as my route**. Your version goes in `routes/` and wins over the built-in one. **Test on main** walks it right away.

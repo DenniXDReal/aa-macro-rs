@@ -405,6 +405,115 @@ pub fn find_image(frame: &Frame, area: Rect, t: &Frame, tol: u8, max_bad: f32) -
     })
 }
 
+/// The label box around `at` (client coords) - used by hover capture.
+///
+/// AA labels are bright text with a dark outline, so a "text pixel" is a
+/// bright pixel (gray > 165) with a dark pixel (gray < 75) within 2 px. From
+/// the cursor it grows: rows while they hold text (gaps up to 2 px), then
+/// columns (gaps up to 12 px, so the words of one label stay together).
+pub fn box_around(frame: &Frame, at: Point) -> Option<Rect> {
+    let win = Rect::new(at.x - 160, at.y - 40, 320, 80).intersect(&Rect::new(
+        0,
+        0,
+        frame.width as i32,
+        frame.height as i32,
+    ))?;
+    let (r, g) = gray(frame, win);
+    let (w, h) = (r.w as usize, r.h as usize);
+    let rgb = |x: usize, y: usize| {
+        frame
+            .rgb(r.x + x as i32, r.y + y as i32)
+            .unwrap_or((0, 0, 0))
+    };
+    let dark: Vec<bool> = g.iter().map(|v| *v < 75).collect();
+    let outlined = |x: usize, y: usize| {
+        g[y * w + x] > 165
+            && (y.saturating_sub(2)..(y + 3).min(h))
+                .any(|yy| (x.saturating_sub(2)..(x + 3).min(w)).any(|xx| dark[yy * w + xx]))
+    };
+    // Text colour = average of the outlined bright pixels right under the cursor.
+    let (cx, cy) = (
+        (at.x - r.x).clamp(0, r.w - 1) as usize,
+        (at.y - r.y).clamp(0, r.h - 1) as usize,
+    );
+    let mut cands: Vec<(i32, i32, i32)> = vec![];
+    for y in cy.saturating_sub(8)..(cy + 9).min(h) {
+        for x in cx.saturating_sub(8)..(cx + 9).min(w) {
+            if outlined(x, y) {
+                let (a, b, c) = rgb(x, y);
+                cands.push((a as i32, b as i32, c as i32));
+            }
+        }
+    }
+    if cands.len() < 3 {
+        return None;
+    }
+    let close = |p: (i32, i32, i32), q: (i32, i32, i32)| {
+        (p.0 - q.0).abs() + (p.1 - q.1).abs() + (p.2 - q.2).abs() < 110
+    };
+    // dominant colour: the candidate with the most look-alikes (frames lose to the label)
+    let col = *cands
+        .iter()
+        .max_by_key(|p| cands.iter().filter(|q| close(**p, **q)).count())
+        .unwrap();
+    let mut text = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            if outlined(x, y) {
+                let (a, b, c) = rgb(x, y);
+                text[y * w + x] = close((a as i32, b as i32, c as i32), col);
+            }
+        }
+    }
+    let is_text = |x: usize, y: usize| text[y * w + x];
+    let row_count = |y: usize| {
+        (cx.saturating_sub(40)..(cx + 40).min(w))
+            .filter(|x| is_text(*x, y))
+            .count()
+    };
+    let start = (0..=8)
+        .flat_map(|d| [cy.checked_sub(d), Some(cy + d)])
+        .flatten()
+        .find(|y| *y < h && row_count(*y) >= 2)?;
+    let grow =
+        |from: usize, dir: i32, limit: usize, gap: usize, has: &dyn Fn(usize) -> bool| -> usize {
+            let (mut last, mut miss, mut i) = (from as i32, 0, from as i32);
+            loop {
+                i += dir;
+                if i < 0 || i as usize >= limit {
+                    return last as usize;
+                }
+                if has(i as usize) {
+                    last = i;
+                    miss = 0;
+                } else {
+                    miss += 1;
+                    if miss > gap {
+                        return last as usize;
+                    }
+                }
+            }
+        };
+    let row_has = |y: usize| row_count(y) >= 2;
+    let y0 = grow(start, -1, h, 1, &row_has).max(start.saturating_sub(16));
+    let y1 = grow(start, 1, h, 1, &row_has).min(start + 16);
+    let col_has = |x: usize| (y0..=y1).filter(|y| is_text(x, *y)).count() >= 1;
+    let x_start = (0..=30)
+        .flat_map(|d| [cx.checked_sub(d), Some(cx + d)])
+        .flatten()
+        .find(|x| *x < w && col_has(*x))?;
+    let x0 = grow(x_start, -1, w, 10, &col_has);
+    let x1 = grow(x_start, 1, w, 10, &col_has);
+    let b = Rect::new(
+        r.x + x0 as i32 - 2,
+        r.y + y0 as i32 - 2,
+        (x1 - x0) as i32 + 5,
+        (y1 - y0) as i32 + 5,
+    )
+    .intersect(&Rect::new(0, 0, frame.width as i32, frame.height as i32))?;
+    (b.w >= 6 && b.h >= 6 && b.h <= 60).then_some(b)
+}
+
 /// Named patterns loaded from a folder (`<name>.json`, + `<name>.png` for images).
 #[derive(Default)]
 pub struct Library {
@@ -648,6 +757,31 @@ mod tests {
     }
 
     #[test]
+    fn hover_box_finds_the_label_under_the_cursor() {
+        // dark frame, a 3-word white label at (300..420, 200..216), another label far away
+        let mut f = Frame::solid(800, 599, 25, 25, 30);
+        let mut paint = |x0: i32, x1: i32, y0: i32, y1: i32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = ((y as u32 * 800 + x as u32) * 4) as usize;
+                    f.bgra[i..i + 3].copy_from_slice(&[240, 240, 240]);
+                }
+            }
+        };
+        paint(300, 340, 200, 216); // "Play"
+        paint(348, 380, 200, 216); // "Here" (8 px word gap)
+        paint(388, 420, 202, 214);
+        paint(600, 640, 205, 215); // unrelated, 180 px away
+        let b = box_around(&f, Point::new(355, 207)).expect("box");
+        assert!(b.x <= 300 && b.x >= 296, "{b:?}");
+        assert!(b.right() >= 420 && b.right() <= 425, "{b:?}");
+        assert!(b.y <= 200 && b.bottom() >= 216, "{b:?}");
+        assert!(b.right() < 600);
+        // nothing near the cursor
+        assert!(box_around(&Frame::solid(800, 599, 25, 25, 30), Point::new(100, 100)).is_none());
+    }
+
+    #[test]
     fn key_normalises() {
         assert_eq!(key("Vote  Start!"), "vote_start");
         assert_eq!(key("Return to Lobby"), "return_to_lobby");
@@ -678,5 +812,42 @@ mod bench {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         println!("full-client search: {ms:.1} ms, hit {:?}", hit.at);
         assert_eq!(hit.at, Point::new(600, 500));
+    }
+}
+
+#[cfg(test)]
+mod real_capture {
+    /// AA_TEST_CAPTURE=/path/instance2.png cargo test -- --ignored real_hover
+    #[test]
+    #[ignore]
+    fn real_hover() {
+        let Ok(p) = std::env::var("AA_TEST_CAPTURE") else {
+            return;
+        };
+        let f = crate::capture::Frame::load_png(std::path::Path::new(&p)).unwrap();
+        let pts: Vec<(&str, i32, i32)> = if p.contains("instance1") {
+            vec![
+                ("title", 400, 257),
+                ("claim", 400, 344),
+                ("ok", 400, 482),
+                ("dungeon", 36, 416),
+            ]
+        } else {
+            vec![
+                ("play", 85, 311),
+                ("items", 33, 311),
+                ("upd", 680, 34),
+                ("units", 35, 259),
+            ]
+        };
+        for (name, x, y) in pts {
+            let b = super::box_around(&f, crate::geom::Point::new(x, y));
+            println!("{name}: {b:?}");
+            if let Some(b) = b {
+                f.crop(b.x as u32, b.y as u32, b.w as u32, b.h as u32)
+                    .save_png(std::path::Path::new(&format!("/tmp/hover_{name}.png")))
+                    .unwrap();
+            }
+        }
     }
 }

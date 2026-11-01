@@ -122,6 +122,7 @@ pub struct App {
     map: String,
     new_map: String,
     place_slot: u8,
+    show_spiral: bool,
 
     // movement
     routes: Routes,
@@ -230,6 +231,7 @@ impl App {
             map,
             new_map: String::new(),
             place_slot: 0,
+            show_spiral: true,
             route_text: String::new(),
             routes,
             stages: Stages::builtin(),
@@ -348,6 +350,7 @@ impl App {
             2 => self.start(),
             3 => self.stop(),
             4 => self.toggle_pause(),
+            6 => self.hover_capture(),
             _ => {}
         }
     }
@@ -432,6 +435,78 @@ impl App {
         self.docked_ok = p
             .geometry(main.hwnd)
             .is_some_and(|g| (g.client.x, g.client.y) == (target.x, target.y));
+    }
+
+    /// Next checklist pattern nobody captured yet (your stage first).
+    fn next_missing(&self) -> Option<String> {
+        let r = &self.settings.run;
+        crate::flows::stage_needs(r.mode, &r.map, &r.act)
+            .into_iter()
+            .map(|(n, _)| n)
+            .chain(
+                crate::flows::FLOWS
+                    .iter()
+                    .flat_map(|f| f.needs.iter().map(|n| n.name.to_string())),
+            )
+            .find(|n| self.lib.get(n).is_none())
+    }
+
+    /// F6: save the label under the mouse (in any Roblox client) as a pattern.
+    fn hover_capture(&mut self) {
+        let p = self.platform.clone();
+        let Some(cur) = p.cursor() else {
+            self.say("hover capture needs Windows");
+            return;
+        };
+        let hit = self.clients.iter().find_map(|c| {
+            p.geometry(c.hwnd)
+                .filter(|g| g.client.contains(cur))
+                .map(|g| (c.clone(), g))
+        });
+        let Some((client, geo)) = hit else {
+            self.say("F6: put the mouse on a label inside a Roblox client first");
+            return;
+        };
+        let frame = match p.capture_client(client.hwnd) {
+            Ok(f) => f,
+            Err(e) => {
+                self.say(format!("F6: capture failed: {e}"));
+                return;
+            }
+        };
+        let at = geo.screen_to_client(cur);
+        let Some(bx) = crate::vision::box_around(&frame, at) else {
+            self.say(format!(
+                "F6: no label found at ({}, {}) - point at the middle of the text",
+                at.x, at.y
+            ));
+            return;
+        };
+        let name = if self.pat_name.trim().is_empty() {
+            self.next_missing()
+        } else {
+            Some(self.pat_name.trim().to_string())
+        };
+        let Some(name) = name else {
+            self.say("F6: checklist complete - type a name on the Patterns page to capture something else");
+            return;
+        };
+        match crate::vision::Pattern::text_from(&frame, &name, bx, self.pat_margin, None)
+            .and_then(|pt| self.lib.save(pt))
+        {
+            Ok(_) => {
+                self.pat_name.clear();
+                let next = self
+                    .next_missing()
+                    .map(|n| format!(" - next: {n}"))
+                    .unwrap_or_else(|| " - checklist complete".into());
+                self.say(format!(
+                    "F6: saved '{name}' ({}x{} at {}, {}){next}",
+                    bx.w, bx.h, bx.x, bx.y
+                ));
+            }
+            Err(e) => self.say(format!("F6: {e}")),
+        }
     }
 
     fn main_hwnd(&self) -> Option<WinInfo> {
@@ -1591,6 +1666,29 @@ impl App {
                         .changed();
                 }
             });
+        });
+        if changed {
+            self.dirty();
+        }
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.label(RichText::new("CAMERA (TOP-DOWN)").size(11.0).color(MUTED));
+            let c = &mut self.settings.camera;
+            ui.horizontal(|ui| {
+                ui.label("Zoom in (notches)");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut c.zoom_in).range(0..=40))
+                    .changed();
+                ui.label("Look down (px)");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut c.look_down_px).range(0..=1500))
+                    .changed();
+                ui.label("Zoom out (notches)");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut c.zoom_out).range(0..=60))
+                    .changed();
+            });
+            ui.label(RichText::new("Zoom fully in (first person), look at the floor, zoom back out = top-down view. Try it with Placement > Camera top-down.").size(11.0).color(MUTED));
         });
         if changed {
             self.dirty();

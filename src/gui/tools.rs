@@ -208,7 +208,15 @@ impl App {
         ui.heading("Placement designer");
         ui.horizontal(|ui| {
             ui.label("Map:");
-            let maps: Vec<String> = self.placements.maps.keys().cloned().collect();
+            let mut maps: Vec<String> = self
+                .placements
+                .maps
+                .keys()
+                .map(|k| k.split(" @").next().unwrap_or(k).to_string())
+                .collect();
+            maps.extend(self.routes.maps.keys().cloned());
+            maps.sort();
+            maps.dedup();
             ComboBox::from_id_salt("map")
                 .width(180.0)
                 .selected_text(self.map.clone())
@@ -244,12 +252,11 @@ impl App {
                     }
                 });
             if ui.button("Undo").clicked() {
-                self.placements.undo(&self.map);
+                self.placements.undo(&self.spot_key());
                 self.save_placements();
             }
             if ui.button("Clear map").clicked() {
-                self.placements.clear(&self.map);
-                self.placements.maps.entry(self.map.clone()).or_default();
+                self.placements.clear(&self.spot_key());
                 self.save_placements();
             }
             if ui
@@ -260,8 +267,50 @@ impl App {
                 self.hover_test();
             }
         });
-        ui.small("Left click = add spot. Right click = remove nearest. Units fill spots in number order (reserved slot spots first).");
-        let spots = self.placements.spots(&self.map).to_vec();
+        ui.horizontal(|ui| {
+            ui.label("Clients that place units:");
+            for i in 0..self.clients.len().max(1) {
+                let n = i + 1;
+                let mut on = self.settings.placers.contains(&n);
+                if super::toggle(ui, &mut on, &super::client_name(i, &self.settings)) {
+                    if on {
+                        self.settings.placers.push(n);
+                        self.settings.placers.sort();
+                    } else {
+                        self.settings.placers.retain(|x| *x != n);
+                    }
+                    self.dirty();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            if super::toggle(
+                ui,
+                &mut self.settings.spiral_fallback,
+                "Spiral when custom spots run out",
+            ) {
+                self.dirty();
+            }
+            super::toggle(ui, &mut self.show_spiral, "show spiral");
+            if ui
+                .button("Camera top-down")
+                .on_hover_text("zoom in, look down, zoom out on the selected client (in a stage)")
+                .clicked()
+            {
+                self.camera_test();
+            }
+            if ui
+                .button("Test place units")
+                .on_hover_text(
+                    "places your enabled units on the selected client's spots (in a stage)",
+                )
+                .clicked()
+            {
+                self.place_test();
+            }
+        });
+        ui.small("Left click = add spot. Right click = remove nearest. Each placing client has its own spots (pick it in the client box above the picture). Units fill spots in number order (reserved slot spots first), then the spiral.");
+        let spots = self.placements.spots(&self.spot_key()).to_vec();
         let n = spots.len();
         if let Some((resp, rect, scale)) = self.client_view(ui) {
             let painter = ui.painter_at(rect);
@@ -292,18 +341,122 @@ impl App {
                     );
                 }
             }
+            if self.show_spiral {
+                for (i, p) in crate::game::placing::spiral_spots(30, self.sel as u64 + 1)
+                    .iter()
+                    .enumerate()
+                {
+                    let c = rect.min + Vec2::new(p.x as f32, p.y as f32) * scale;
+                    painter.circle_stroke(c, 5.0, Stroke::new(1.0, Color32::from_white_alpha(140)));
+                    if i < 9 {
+                        painter.text(
+                            c,
+                            Align2::CENTER_CENTER,
+                            format!("{}", i + 1),
+                            FontId::proportional(9.0),
+                            Color32::WHITE,
+                        );
+                    }
+                }
+            }
             if let Some(pos) = resp.interact_pointer_pos() {
                 let p = to_client(pos, rect, scale);
                 if resp.clicked() {
-                    self.placements.add(&self.map, p, self.place_slot);
+                    self.placements.add(&self.spot_key(), p, self.place_slot);
                     self.save_placements();
                 } else if resp.secondary_clicked() {
-                    self.placements.remove_near(&self.map, p, 14);
+                    self.placements.remove_near(&self.spot_key(), p, 14);
                     self.save_placements();
                 }
             }
         }
-        ui.label(format!("{n} spot(s) on {}", self.map));
+        ui.label(format!(
+            "{n} custom spot(s) for {} on {}",
+            super::client_name(self.sel, &self.settings),
+            self.map
+        ));
+    }
+
+    /// Spot-set key for the map + client chosen on the Placement page.
+    pub(super) fn spot_key(&self) -> String {
+        crate::game::placing::spots_key(&self.map, self.sel + 1)
+    }
+
+    pub(super) fn camera_test(&mut self) {
+        let Some(info) = self.clients.get(self.sel).cloned() else {
+            return;
+        };
+        let b = crate::game::placing::camera_batch(info.hwnd, &self.settings.camera);
+        let arb = self.arbiter();
+        let tx = self.log_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(match arb.run(b) {
+                Ok(_) => "camera set top-down".into(),
+                Err(e) => format!("camera: {e}"),
+            });
+        });
+    }
+
+    /// Place every enabled unit on the selected client (custom spots, then spiral).
+    pub(super) fn place_test(&mut self) {
+        use crate::game::placing::{place_slot, spiral_spots, Keys};
+        let Some(info) = self.clients.get(self.sel).cloned() else {
+            return;
+        };
+        let keys = match Keys::from(&self.settings.keybinds) {
+            Ok(k) => k,
+            Err(e) => {
+                self.say(e);
+                return;
+            }
+        };
+        let key = self.spot_key();
+        let mut jobs = vec![];
+        for (i, u) in self
+            .settings
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| u.enabled && u.place > 0)
+        {
+            let slot = i + 1;
+            let mut spots: Vec<Point> = self
+                .placements
+                .for_slot(&key, slot as u8)
+                .iter()
+                .map(|s| Point::new(s.x, s.y))
+                .collect();
+            if self.settings.spiral_fallback {
+                spots.extend(spiral_spots(60, self.sel as u64 * 7 + slot as u64));
+            }
+            jobs.push((slot, u.place as u32, spots));
+        }
+        if jobs.is_empty() {
+            self.say("turn on at least one unit (Home > Control) with a placement count");
+            return;
+        }
+        let screen = crate::game::LiveScreen::new(self.platform.clone(), info.hwnd, &self.lib);
+        let has_panel = self.lib.get("unit_panel").is_some();
+        let arb = self.arbiter();
+        let tx = self.log_tx.clone();
+        std::thread::spawn(move || {
+            let confirm =
+                || has_panel.then(|| screen.find(&["unit_panel".to_string()], None).is_some());
+            let mut used: Vec<Point> = vec![];
+            for (slot, count, spots) in jobs {
+                let free: Vec<Point> = spots.into_iter().filter(|p| !used.contains(p)).collect();
+                match place_slot(&arb, info.hwnd, &keys, slot, count, &free, &confirm) {
+                    Ok(done) => {
+                        let _ = tx.send(format!("slot {slot}: placed {}/{count}", done.len()));
+                        used.extend(done);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("slot {slot}: stopped - {e}"));
+                        return;
+                    }
+                }
+            }
+        });
     }
 
     pub(super) fn save_placements(&mut self) {
@@ -317,7 +470,7 @@ impl App {
             self.say("no client selected");
             return;
         };
-        let spots = self.placements.spots(&self.map).to_vec();
+        let spots = self.placements.spots(&self.spot_key()).to_vec();
         let arb = self.arbiter();
         let tx = self.log_tx.clone();
         std::thread::spawn(move || {
@@ -337,6 +490,16 @@ impl App {
     pub(super) fn page_patterns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Patterns");
         ui.small("Drag a box around button text / an icon on the picture, name it, Save. Close pop-ups first.");
+        egui::Frame::new().fill(CARD_HI).corner_radius(10).inner_margin(10).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("Hover capture (F6)").strong());
+            ui.label("In Roblox, put the mouse on the middle of a button's text and press F6. The label is found and saved as the next missing name below (or the name you typed). No dragging.");
+            match self.next_missing() {
+                Some(n) => ui.label(egui::RichText::new(format!("Next: {n}")).color(ACCENT).strong()),
+                None => ui.label(egui::RichText::new("Checklist complete").color(GOOD)),
+            };
+        });
+        ui.add_space(6.0);
         ui.strong("Checklist - capture these names");
         let mut pick: Option<(String, bool)> = None;
         let mine = crate::flows::stage_needs(

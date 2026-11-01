@@ -31,6 +31,12 @@ pub struct Settings {
     pub run: RunSettings,
     pub keybinds: Keybinds,
     pub webhook: crate::webhook::WebhookSettings,
+    pub camera: crate::game::placing::CameraSettings,
+    /// Clients that place units (1 = main, 2 = second client...). Each has
+    /// its own spot set per map.
+    pub placers: Vec<usize>,
+    /// Use the spiral when a map has no custom spots (or they run out).
+    pub spiral_fallback: bool,
     /// Dock the main client into the app's preview box; alts stack behind it.
     pub dock: bool,
     /// Roblox Account Manager web server port.
@@ -246,6 +252,9 @@ impl Default for Settings {
             run: RunSettings::default(),
             keybinds: Keybinds::default(),
             webhook: crate::webhook::WebhookSettings::default(),
+            camera: crate::game::placing::CameraSettings::default(),
+            placers: vec![1],
+            spiral_fallback: true,
             dock: true,
             ram_port: 7963,
             accounts: vec![],

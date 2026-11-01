@@ -84,8 +84,6 @@ mod tests {
         assert_eq!(r, Rect::new(205, 169, 816, 638));
     }
 
-    use super::*;
-
     #[test]
     fn four_on_1080p_overlap_vertically() {
         let work = Rect::new(0, 0, 1920, 1040);
