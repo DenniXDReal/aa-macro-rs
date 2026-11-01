@@ -361,12 +361,15 @@ pub fn place_slot(
     spots: &[Point],
     confirm: &dyn Fn() -> Option<bool>,
     delay_ms: u64,
+    before_each: &dyn Fn(),
 ) -> Result<Vec<Point>, InputError> {
     let mut placed = vec![];
     for (i, at) in spots.iter().enumerate() {
         if placed.len() as u32 >= count {
             break;
         }
+        // e.g. a card pick pop-up that blocks the screen
+        before_each();
         if i > 0 && delay_ms > 0 {
             // let the game catch up so the next look / click is right
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -467,7 +470,7 @@ mod tests {
             .map(|h| {
                 let (a, k, s) = (arb.handle(), keys.clone(), spots.clone());
                 std::thread::spawn(move || {
-                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0).unwrap()
+                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0, &|| {}).unwrap()
                 })
             })
             .collect();

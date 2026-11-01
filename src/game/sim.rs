@@ -499,6 +499,36 @@ mod tests {
         }
     }
 
+    /// A card pop-up while placing: the middle card gets picked, then
+    /// placing carries on.
+    #[test]
+    fn card_popup_while_placing() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0 cards*/
+            scr(vec![
+                el("choose_card", 360, 100, None),
+                el("card_mid", 400, 294, Some(1)),
+            ]),
+            /*1 stage*/ scr(vec![]),
+        ]));
+        let mut s = Settings::default();
+        s.run.mode = Mode::SummerHunt;
+        for u in s.units.iter_mut() {
+            u.enabled = false;
+        }
+        s.units[0].enabled = true;
+        s.units[0].place = 2;
+        s.place_delay_ms = 0;
+        let (c, _rx, _arb) = ctx(sim.clone(), s);
+        let placed = c.place_all("").unwrap();
+        assert_eq!(placed.len(), 2);
+        assert_eq!(
+            sim.clicks.lock().unwrap().first().map(|s| s.as_str()),
+            Some("card_mid")
+        );
+        assert_eq!(sim.screen_now(), 1);
+    }
+
     #[test]
     fn missing_button_is_reported_not_hung() {
         let sim = Arc::new(Sim::new(vec![

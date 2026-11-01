@@ -167,7 +167,7 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
     out.push(step("Vote start", &["vote_start"], true));
     out.push(step(
         &format!(
-            "Place {units} unit slot(s) on {} client(s), checking the UPG [0] badge",
+            "Place {units} unit slot(s) on {} client(s), checking the UPG [0] badge, picking cards that pop up",
             s.placers.len().max(1)
         ),
         &["unit_placed"],
@@ -668,7 +668,7 @@ impl RunCtx {
         let s = &self.settings;
         let keys = Keys::from(&s.keybinds)?;
         let map = route_map(map);
-        let mut handles = vec![];
+        let mut work = vec![];
         for n in s.placers.iter().copied() {
             let Some((h, scr)) = self.clients.get(n.saturating_sub(1)).cloned() else {
                 continue;
@@ -699,41 +699,68 @@ impl RunCtx {
             }
             // farm units first
             jobs.sort_by_key(|(slot, _, _)| !s.units[slot - 1].farm);
-            let (arb, keys, tx) = (self.arb.clone(), keys.clone(), self.tx.clone());
-            let delay = (s.place_delay_ms as f32 * self.speed) as u64;
-            handles.push(std::thread::spawn(move || {
-                // "UPG [0]" badge = the unit really went down
-                let badge = ["unit_placed".to_string()];
-                let can = scr.has("unit_placed");
-                let confirm = || can.then(|| scr.find(&badge, None).is_some());
-                let mut used: Vec<Point> = vec![];
-                let mut out = vec![];
-                for (slot, count, spots) in jobs {
-                    let free: Vec<Point> =
-                        spots.into_iter().filter(|p| !used.contains(p)).collect();
-                    match place_slot(&arb, h, &keys, slot, count, &free, &confirm, delay) {
-                        Ok(done) => {
-                            let _ = tx.send(Event::Log(format!(
-                                "client {n}: slot {slot} placed {}/{count}",
-                                done.len()
-                            )));
-                            used.extend(done.iter().copied());
-                            out.extend(done.into_iter().map(|p| (h, slot, p)));
+            work.push((n, h, scr, jobs));
+        }
+        let delay = (s.place_delay_ms as f32 * self.speed) as u64;
+        let placing: Vec<Hwnd> = work.iter().map(|w| w.1).collect();
+        // clients that don't place: the first placer watches their card pop-ups
+        let watchers: Vec<Hwnd> = self
+            .clients
+            .iter()
+            .map(|c| c.0)
+            .filter(|h| !placing.contains(h))
+            .collect();
+        let out = std::thread::scope(|sc| {
+            let mut handles = vec![];
+            for (wi, (n, h, scr, jobs)) in work.into_iter().enumerate() {
+                let keys = keys.clone();
+                let watchers = if wi == 0 { watchers.clone() } else { vec![] };
+                handles.push(sc.spawn(move || {
+                    // "UPG [0]" badge = the unit really went down
+                    let badge = ["unit_placed".to_string()];
+                    let can = scr.has("unit_placed");
+                    let confirm = || can.then(|| scr.find(&badge, None).is_some());
+                    // card pick (Summer Event) can pop up any time while placing
+                    let cards = || {
+                        let _ = self.handle_cards(h);
+                        for w in &watchers {
+                            let _ = self.handle_cards(*w);
                         }
-                        Err(e) => {
-                            let _ =
-                                tx.send(Event::Log(format!("client {n}: placing stopped - {e}")));
-                            break;
+                    };
+                    let mut used: Vec<Point> = vec![];
+                    let mut out = vec![];
+                    for (slot, count, spots) in jobs {
+                        let free: Vec<Point> =
+                            spots.into_iter().filter(|p| !used.contains(p)).collect();
+                        match place_slot(
+                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards,
+                        ) {
+                            Ok(done) => {
+                                self.log(format!(
+                                    "client {n}: slot {slot} placed {}/{count}",
+                                    done.len()
+                                ));
+                                used.extend(done.iter().copied());
+                                out.extend(done.into_iter().map(|p| (h, slot, p)));
+                            }
+                            Err(e) => {
+                                self.log(format!("client {n}: placing stopped - {e}"));
+                                break;
+                            }
                         }
                     }
-                }
-                out
-            }));
+                    out
+                }));
+            }
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        if !watchers.is_empty() {
+            self.to_main()?;
         }
-        Ok(handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
-            .collect())
+        Ok(out)
     }
 
     /// Upgrade by priority until VICTORY / DEFEAT shows. Returns true on a win.

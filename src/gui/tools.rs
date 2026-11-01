@@ -566,7 +566,17 @@ impl App {
             let mut used: Vec<Point> = vec![];
             for (slot, count, spots) in jobs {
                 let free: Vec<Point> = spots.into_iter().filter(|p| !used.contains(p)).collect();
-                match place_slot(&arb, info.hwnd, &keys, slot, count, &free, &confirm, delay) {
+                match place_slot(
+                    &arb,
+                    info.hwnd,
+                    &keys,
+                    slot,
+                    count,
+                    &free,
+                    &confirm,
+                    delay,
+                    &|| {},
+                ) {
                     Ok(done) => {
                         let _ = tx.send(format!("slot {slot}: placed {}/{count}", done.len()));
                         used.extend(done);
