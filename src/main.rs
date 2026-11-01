@@ -50,6 +50,17 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PatternCmd,
     },
+    /// Check GitHub for a newer build and install it.
+    Update {
+        /// Save this GitHub token first (fine-grained, read-only Contents on the repo).
+        #[arg(long)]
+        token: Option<String>,
+        /// Only check, don't install.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Print the build version.
+    Version,
     /// Hold Roblox's single-instance lock so more clients can open.
     /// Start this BEFORE opening the first Roblox and keep it running.
     Unlock,
@@ -100,6 +111,7 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     platform::win32::make_dpi_aware();
 
+    aa_macro::update::cleanup_old();
     let cli = Cli::parse();
     let path = cli.config.unwrap_or_else(Settings::default_path);
     let settings = Settings::load_or_create(&path)?;
@@ -115,6 +127,11 @@ fn main() -> Result<()> {
         Cmd::Capture => capture(p.as_ref(), &settings),
         Cmd::Ping { rounds } => ping(p, &settings, rounds),
         Cmd::Pattern { cmd } => pattern(p.as_ref(), &settings, cmd),
+        Cmd::Update { token, check } => update(&settings, token, check),
+        Cmd::Version => {
+            println!("aa-macro {}", aa_macro::update::version_label());
+            Ok(())
+        }
         Cmd::Unlock => unlock(&settings),
     }
 }
@@ -442,6 +459,36 @@ fn pattern(p: &dyn Platform, s: &Settings, cmd: PatternCmd) -> Result<()> {
                     pt.size().1,
                     pt.search
                 );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn update(s: &Settings, token: Option<String>, check_only: bool) -> Result<()> {
+    use aa_macro::secrets::Secrets;
+    use aa_macro::update;
+    let mut sec = Secrets::load(&Secrets::default_path());
+    if let Some(t) = token {
+        sec.set(update::TOKEN_KEY, &t)?;
+        println!("token saved (encrypted)");
+    }
+    let Some(tok) = sec.get(update::TOKEN_KEY) else {
+        bail!("no GitHub token yet - run `aa-macro update --token <token>` (see README: Updates)");
+    };
+    println!("this build: {}", update::version_label());
+    match update::check(&s.update_repo, &tok)? {
+        None => println!("up to date"),
+        Some(a) => {
+            println!(
+                "new build {} ({}) published {}",
+                a.build,
+                &a.sha[..7],
+                a.published
+            );
+            if !check_only {
+                let exe = update::install(&a, &tok)?;
+                println!("installed - restart aa-macro to use it ({})", exe.display());
             }
         }
     }

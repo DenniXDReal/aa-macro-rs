@@ -11,6 +11,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      AA_BUILD_SHA: ${{ github.sha }}
+      AA_BUILD_NUM: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +43,7 @@ jobs:
         with:
           tag_name: latest
           name: Latest build
-          body: Built from ${{ github.sha }}. Download aa-macro-windows.zip, unzip, run aa-macro.exe from a terminal (see README).
+          body: "Built from ${{ github.sha }} (build ${{ github.run_number }}). Download aa-macro-windows.zip, unzip, double-click aa-macro.exe. Already installed? The app updates itself (Settings → Updates)." 
           prerelease: true
           make_latest: true
           files: aa-macro-windows.zip

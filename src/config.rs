@@ -27,6 +27,10 @@ pub struct Settings {
     pub instances: Vec<InstanceProfile>,
     /// Hotbar slots 1-6 (shared by every instance for now).
     pub units: Vec<UnitSlot>,
+    /// GitHub repo the updater reads releases from.
+    pub update_repo: String,
+    /// Check for a new build when the app opens.
+    pub auto_update_check: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +154,8 @@ impl Default for Settings {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
+            update_repo: "DenniXDReal/aa-macro-rs".into(),
+            auto_update_check: true,
             instances: (1..=3)
                 .map(|i| InstanceProfile {
                     label: format!("Client {i}"),

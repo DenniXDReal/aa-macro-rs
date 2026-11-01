@@ -1,0 +1,85 @@
+//! What each game flow needs to see. The Patterns page shows these as a
+//! checklist so you capture exactly the names the game loop looks for.
+
+pub struct Need {
+    pub name: &'static str,
+    pub kind: &'static str, // "text" or "icon"
+    pub hint: &'static str,
+}
+
+pub struct Flow {
+    pub name: &'static str,
+    pub steps: &'static str,
+    pub needs: &'static [Need],
+}
+
+const fn n(name: &'static str, kind: &'static str, hint: &'static str) -> Need {
+    Need { name, kind, hint }
+}
+
+pub const FLOWS: &[Flow] = &[
+    Flow {
+        name: "Lobby",
+        steps: "Lobby buttons used by every mode.",
+        needs: &[
+            n("play_button", "icon", "Left menu: the Play button (controller icon + 'Play')"),
+            n("areas_button", "icon", "Right menu: the Areas button"),
+            n("unit_hotbar", "text", "Bottom: the 'Lv.' text of the first unit card (proves you're in lobby or stage)"),
+        ],
+    },
+    Flow {
+        name: "Summer Hunt",
+        steps: "Play > hold Shift+W into the Summer Hunt entrance > Play Here > Open (or Open (Friends Only) for a party host) > Start. Find Match is never used (it shows a captcha).",
+        needs: &[
+            n("join_matchmaking", "text", "Dialog title 'Join Matchmaking?'"),
+            n("play_here", "text", "'Play Here' under the green controller"),
+            n("open_portal", "text", "Dialog title 'Open Portal?'"),
+            n("open_button", "text", "Green 'Open' button"),
+            n("open_friends_only", "text", "Yellow 'Open (Friends Only)' button (party host)"),
+            n("waiting_for_players", "text", "Portal lobby: 'Waiting for players...'"),
+            n("start_button", "text", "Portal lobby: green 'Start'"),
+            n("portal_join_e", "text", "Follower: the 'Join' prompt with the E key at the portal"),
+            n("captcha", "text", "Captcha dialog title - the macro pauses and pings you, it never solves it"),
+        ],
+    },
+    Flow {
+        name: "In stage",
+        steps: "Loaded in > place units on your spots > upgrade by priority > watch for the end screen.",
+        needs: &[
+            n("wave_label", "text", "Top left: the word 'Wave' (not the number)"),
+            n("vote_start", "text", "Vote / skip button at stage start, if the mode shows one"),
+            n("unit_upgrade", "text", "Open unit panel: the 'Upgrade' button text"),
+            n("unit_sell", "text", "Open unit panel: 'Sell' text (proves a placement worked)"),
+        ],
+    },
+    Flow {
+        name: "End screen",
+        steps: "VICTORY / DEFEAT > Next > Replay (or Return to lobby).",
+        needs: &[
+            n("victory", "text", "Big 'VICTORY' title"),
+            n("defeat", "text", "Big red 'DEFEAT' title"),
+            n("next_button", "text", "Green 'Next' under the rewards"),
+            n("replay", "text", "Yellow 'Replay'"),
+            n("return_to_lobby", "text", "Green 'Return to lobby'"),
+            n("disconnected", "text", "Roblox 'Disconnected' / 'Reconnect' dialog"),
+        ],
+    },
+];
+
+pub fn all_names() -> impl Iterator<Item = &'static str> {
+    FLOWS.iter().flat_map(|f| f.needs.iter().map(|n| n.name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_unique_and_already_normalised() {
+        let mut seen = std::collections::HashSet::new();
+        for n in all_names() {
+            assert!(seen.insert(n), "duplicate {n}");
+            assert_eq!(crate::vision::key(n), n, "{n} isn't a normalised key");
+        }
+    }
+}

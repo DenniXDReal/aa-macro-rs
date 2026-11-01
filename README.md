@@ -24,6 +24,18 @@ Settings, patterns and placements are saved next to the exe (`aa-macro.json`, `p
 
 Testing without Roblox: `set AA_FAKE_CLIENTS=a.png;b.png` and then `aa-macro` uses screenshots as fake clients.
 
+## Updates (automatic)
+
+The repo is private, so the app needs a read-only token once:
+
+1. GitHub → your avatar → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens** → **Generate new token**.
+2. Name it `aa-macro updater` and give it a long expiry. **Repository access: Only select repositories → aa-macro-rs**.
+3. **Permissions → Repository permissions → Contents: Read-only**. Nothing else. Generate, then copy it.
+4. In the app: **Settings → Updates → paste → Save token**. It's stored encrypted with Windows DPAPI in `secrets.dat` and only works on your Windows user.
+
+From then on the app checks on start (toggle in Settings). When a new build is out, a banner shows **Update now**, then **Restart now**. It swaps the exe and keeps your settings, patterns and placements.
+CLI: `aa-macro update --token <token>` once, then `aa-macro update` or `aa-macro update --check`. `aa-macro version` shows the build.
+
 ## Command-line tools
 
 All the CLI commands below still work from a terminal.

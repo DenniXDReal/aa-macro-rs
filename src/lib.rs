@@ -13,6 +13,7 @@
 pub mod capture;
 pub mod config;
 pub mod control;
+pub mod flows;
 pub mod geom;
 pub mod gui;
 pub mod input;
@@ -20,4 +21,6 @@ pub mod keys;
 pub mod layout;
 pub mod placement;
 pub mod platform;
+pub mod secrets;
+pub mod update;
 pub mod vision;

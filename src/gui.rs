@@ -3,11 +3,14 @@
 use crate::capture::Frame;
 use crate::config::{Mode, Role, Settings, Upgrade};
 use crate::control::Control;
+use crate::flows::FLOWS;
 use crate::geom::{Point, Rect};
 use crate::input::{Arbiter, ArbiterHandle, ArbiterOptions, Batch};
 use crate::layout;
 use crate::placement::Placements;
 use crate::platform::{Platform, WinInfo};
+use crate::secrets::Secrets;
+use crate::update::{self, Available};
 use crate::vision::{self, Hit, Library, Pattern};
 use eframe::egui::{
     self, Align2, Color32, ColorImage, ComboBox, DragValue, FontId, Pos2, Sense, Slider, Stroke,
@@ -70,6 +73,24 @@ pub struct App {
     log: Vec<String>,
     log_tx: Sender<String>,
     log_rx: Receiver<String>,
+
+    // updates
+    secrets: Secrets,
+    token_input: String,
+    upd: Upd,
+    upd_tx: Sender<Upd>,
+    upd_rx: Receiver<Upd>,
+}
+
+#[derive(Clone)]
+enum Upd {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(Available),
+    Installing,
+    Installed(PathBuf),
+    Failed(String),
 }
 
 impl App {
@@ -84,6 +105,7 @@ impl App {
             .cloned()
             .unwrap_or_else(|| "Summer Hunt".into());
         let (log_tx, log_rx) = mpsc::channel();
+        let (upd_tx, upd_rx) = mpsc::channel();
         let mut app = Self {
             settings,
             settings_path,
@@ -116,7 +138,15 @@ impl App {
             log: vec![],
             log_tx,
             log_rx,
+            secrets: Secrets::load(&Secrets::default_path()),
+            token_input: String::new(),
+            upd: Upd::Idle,
+            upd_tx,
+            upd_rx,
         };
+        if app.settings.auto_update_check && app.secrets.has(update::TOKEN_KEY) {
+            app.check_update();
+        }
         app.refresh_clients();
         app.page = match std::env::var("AA_START_PAGE").as_deref() {
             Ok("units") => Page::Units,
@@ -137,6 +167,80 @@ impl App {
         self.log.push(s);
         if self.log.len() > 300 {
             self.log.drain(..100);
+        }
+    }
+
+    fn check_update(&mut self) {
+        let Some(tok) = self.secrets.get(update::TOKEN_KEY) else {
+            self.upd = Upd::Failed("add a GitHub token first (Settings > Updates)".into());
+            return;
+        };
+        self.upd = Upd::Checking;
+        let (tx, repo) = (self.upd_tx.clone(), self.settings.update_repo.clone());
+        std::thread::spawn(move || {
+            let r = match update::check(&repo, &tok) {
+                Ok(None) => Upd::UpToDate,
+                Ok(Some(a)) => Upd::Available(a),
+                Err(e) => Upd::Failed(e.to_string()),
+            };
+            let _ = tx.send(r);
+        });
+    }
+
+    fn install_update(&mut self, a: Available) {
+        let Some(tok) = self.secrets.get(update::TOKEN_KEY) else {
+            return;
+        };
+        self.upd = Upd::Installing;
+        let tx = self.upd_tx.clone();
+        std::thread::spawn(move || {
+            let r = match update::install(&a, &tok) {
+                Ok(p) => Upd::Installed(p),
+                Err(e) => Upd::Failed(e.to_string()),
+            };
+            let _ = tx.send(r);
+        });
+    }
+
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let mut act: Option<Upd> = None;
+        match &self.upd {
+            Upd::Available(a) => {
+                ui.horizontal(|ui| {
+                    ui.colored_label(GOOD, format!("New build {} is out.", a.build));
+                    if ui.button("Update now").clicked() {
+                        act = Some(Upd::Available(a.clone()));
+                    }
+                });
+            }
+            Upd::Installing => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Downloading update…");
+                });
+            }
+            Upd::Installed(p) => {
+                ui.horizontal(|ui| {
+                    ui.colored_label(GOOD, "Update installed.");
+                    if ui.button("Restart now").clicked() {
+                        act = Some(Upd::Installed(p.clone()));
+                    }
+                });
+            }
+            _ => {}
+        }
+        match act {
+            Some(Upd::Available(a)) => self.install_update(a),
+            Some(Upd::Installed(p)) => {
+                self.settings.save(&self.settings_path).ok();
+                match update::restart(&p) {
+                    Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(e) => self.say(format!(
+                        "restart failed: {e} - start aa-macro again yourself"
+                    )),
+                }
+            }
+            _ => {}
         }
     }
 
@@ -647,6 +751,49 @@ impl App {
             self.update_preview(&ctx);
         }
         ui.separator();
+        ui.strong("Checklist - capture these names");
+        let mut pick: Option<(&'static str, bool)> = None;
+        for flow in FLOWS {
+            let have = flow
+                .needs
+                .iter()
+                .filter(|n| self.lib.get(n.name).is_some())
+                .count();
+            let col = if have == flow.needs.len() { GOOD } else { WARN };
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{}  {}/{}", flow.name, have, flow.needs.len()))
+                    .color(col),
+            )
+            .id_salt(flow.name)
+            .show(ui, |ui| {
+                ui.small(flow.steps);
+                for need in flow.needs {
+                    ui.horizontal(|ui| {
+                        let ok = self.lib.get(need.name).is_some();
+                        ui.colored_label(
+                            if ok { GOOD } else { WARN },
+                            if ok { "OK " } else { "missing" },
+                        );
+                        ui.monospace(need.name);
+                        ui.small(format!("({}) {}", need.kind, need.hint));
+                        if ui
+                            .small_button(if ok { "redo" } else { "capture" })
+                            .clicked()
+                        {
+                            pick = Some((need.name, need.kind == "icon"));
+                        }
+                    });
+                }
+            });
+        }
+        if let Some((name, icon)) = pick {
+            self.pat_name = name.to_string();
+            self.pat_image = icon;
+            self.say(format!(
+                "name set to '{name}' - drag a box around it on the picture, then Save pattern"
+            ));
+        }
+        ui.separator();
         ui.strong(format!("Saved ({})", self.lib.len()));
         let names: Vec<String> = self.lib.names().map(String::from).collect();
         let mut remove = None;
@@ -807,6 +954,80 @@ impl App {
         if changed {
             self.dirty();
         }
+        ui.add_space(14.0);
+        ui.heading("Updates");
+        ui.label(format!("This build: {}", update::version_label()));
+        let has_tok = self.secrets.has(update::TOKEN_KEY);
+        ui.horizontal(|ui| {
+            ui.label("GitHub token");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.token_input)
+                    .password(true)
+                    .desired_width(260.0)
+                    .hint_text(if has_tok {
+                        "saved (encrypted)"
+                    } else {
+                        "github_pat_…"
+                    }),
+            );
+            if ui.button("Save token").clicked() {
+                let t = self.token_input.clone();
+                match self.secrets.set(update::TOKEN_KEY, &t) {
+                    Ok(()) => {
+                        self.token_input.clear();
+                        self.say(if t.trim().is_empty() {
+                            "token removed"
+                        } else {
+                            "token saved (encrypted)"
+                        });
+                    }
+                    Err(e) => self.say(format!("saving token failed: {e}")),
+                }
+            }
+        });
+        if ui
+            .checkbox(
+                &mut self.settings.auto_update_check,
+                "Check for updates when the app opens",
+            )
+            .changed()
+        {
+            self.dirty();
+        }
+        ui.horizontal(|ui| {
+            let busy = matches!(self.upd, Upd::Checking | Upd::Installing);
+            if ui
+                .add_enabled(!busy, egui::Button::new("Check now"))
+                .clicked()
+            {
+                self.check_update();
+            }
+            match &self.upd {
+                Upd::Idle => {}
+                Upd::Checking => {
+                    ui.spinner();
+                }
+                Upd::UpToDate => {
+                    ui.colored_label(GOOD, "Up to date");
+                }
+                Upd::Available(a) => {
+                    ui.colored_label(
+                        GOOD,
+                        format!("Build {} available - see the banner at the top", a.build),
+                    );
+                }
+                Upd::Installing => {
+                    ui.label("Installing…");
+                }
+                Upd::Installed(_) => {
+                    ui.colored_label(GOOD, "Installed - restart from the banner");
+                }
+                Upd::Failed(e) => {
+                    ui.colored_label(WARN, e);
+                }
+            }
+        });
+        ui.small("Token: GitHub > Settings > Developer settings > Fine-grained tokens > Generate. Repository access: only aa-macro-rs. Permissions: Contents = Read-only.");
         ui.add_space(8.0);
         ui.small(format!("Settings: {}", self.settings_path.display()));
         ui.small(format!("Patterns: {}", self.lib.dir.display()));
@@ -910,6 +1131,15 @@ impl eframe::App for App {
         while let Ok(m) = self.log_rx.try_recv() {
             self.say(m);
         }
+        while let Ok(u) = self.upd_rx.try_recv() {
+            if let Upd::Failed(e) = &u {
+                self.say(format!("update: {e}"));
+            }
+            self.upd = u;
+        }
+        if matches!(self.upd, Upd::Checking | Upd::Installing) {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
         if self.live && self.last_cap.elapsed() > Duration::from_millis(300) {
             self.capture(&ctx);
         }
@@ -930,7 +1160,7 @@ impl eframe::App for App {
         egui::Panel::left("nav").exact_size(150.0).show(ui, |ui| {
             ui.add_space(8.0);
             ui.heading("AA Macro");
-            ui.small(env!("CARGO_PKG_VERSION"));
+            ui.small(update::version_label());
             ui.add_space(10.0);
             for (p, l) in [
                 (Page::Home, "Home"),
@@ -961,6 +1191,7 @@ impl eframe::App for App {
                     });
             });
         egui::CentralPanel::default_margins().show(ui, |ui| {
+            self.update_banner(ui);
             egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                 Page::Home => self.page_home(ui),
                 Page::Units => self.page_units(ui),
