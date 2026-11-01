@@ -48,6 +48,7 @@ pub const FLOWS: &[Flow] = &[
             n("party_invited", "text", "Main: grey 'Invited' (invite already sent)"),
             n("party_invite_popup", "text", "Alt: 'Party Invite' title of the pop-up"),
             n("party_accept", "text", "Alt: green 'Accept'"),
+            n("party_close", "icon", "Main: the button that closes the party menu once everyone joined"),
         ],
     },
     Flow {

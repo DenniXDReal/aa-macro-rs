@@ -88,8 +88,8 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
     let mut out = vec![];
     if s.run.own_team && s.run.party_invite {
         out.push(step(
-            "Party: main + > Invite each alt, alts Accept",
-            &["party_plus", "party_invite", "party_accept"],
+            "Party: main + > spam Invite until none left > each alt Accept (back to main after each) > close party menu > game mode",
+            &["party_plus", "party_invite", "party_invited", "party_accept", "party_close"],
             true,
         ));
     }
@@ -121,7 +121,7 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
             "open_button"
         };
         out.push(step("Open Portal? > Open", &["open_portal", open], false));
-        if s.run.own_team {
+        if s.run.own_team && !s.run.party_invite {
             out.push(step(
                 "Alts walk in and press E at the portal",
                 &["portal_join_e"],
@@ -345,7 +345,8 @@ impl RunCtx {
             if self.wait_any(self.main, &["open_portal"], 5000)?.is_some() {
                 self.click_when(self.main, open, 4000)?;
             }
-            if s.run.own_team {
+            // in a party the alts come along by themselves - they don't move
+            if s.run.own_team && !s.run.party_invite {
                 self.alts_join_portal()?;
                 self.to_main()?;
             }
@@ -460,6 +461,62 @@ impl RunCtx {
             return Ok(());
         }
         // 3. spam-click every Invite until none is left (each turns into Invited)
+        let sent = self.spam_invites()?;
+        let invited = !main.has("party_invited")
+            || main.find(&Self::names(&["party_invited"]), None).is_some();
+        self.log(if invited {
+            format!("party: {sent} invite click(s), no Invite left, Invited shown")
+        } else {
+            "party: no Invite left but no 'Invited' either - trying the alts anyway".into()
+        });
+        // 4. one alt at a time: swap to it, Accept, swap back to the main
+        //    (and re-invite there if an Invite came back). Alts that missed
+        //    the invite get a second round.
+        let mut waiting: Vec<Hwnd> = alts.clone();
+        for round in 1..=2 {
+            let mut missed = vec![];
+            for (i, h) in waiting.iter().enumerate() {
+                self.log(format!(
+                    "party: alt {} of {} - accepting",
+                    i + 1,
+                    waiting.len()
+                ));
+                match self.wait_any(*h, &["party_accept"], 10000)? {
+                    Some((_, p)) => self.click(*h, p, "accept party")?,
+                    None => missed.push(*h),
+                }
+                self.to_main()?;
+                // the main's list may show Invite again (invite expired / not sent)
+                self.spam_invites()?;
+            }
+            if missed.is_empty() {
+                break;
+            }
+            self.log(format!(
+                "party: {} alt(s) didn't get the invite{}",
+                missed.len(),
+                if round == 1 { " - inviting again" } else { "" }
+            ));
+            waiting = missed;
+        }
+        // 5. back to the main, close the party menu, then Play / Areas / Create lobby
+        self.to_main()?;
+        if main.has("party_close") {
+            match self.wait_any(self.main, &["party_close"], 3000)? {
+                Some((_, p)) => self.click(self.main, p, "close party menu")?,
+                None => self.log("party: close button not seen - menu left open"),
+            }
+        } else {
+            self.log("party: capture party_close to close the party menu");
+        }
+        self.log("party: done - back on the main, going to the game mode");
+        Ok(())
+    }
+
+    /// On the main: click every Invite button until none is left for a
+    /// moment. Returns how many were clicked.
+    fn spam_invites(&self) -> R<u32> {
+        let main = self.screen(self.main);
         let invite = Self::names(&["party_invite"]);
         let mut sent = 0;
         let mut none_since: Option<Instant> = None;
@@ -485,26 +542,7 @@ impl RunCtx {
                 }
             }
         }
-        let invited = !main.has("party_invited")
-            || main.find(&Self::names(&["party_invited"]), None).is_some();
-        if invited {
-            self.log(format!(
-                "party: {sent} invite click(s), no Invite left, Invited shown"
-            ));
-        } else {
-            self.log("party: no Invite left but no 'Invited' either - trying the alts anyway");
-        }
-        // 4. swap to each alt and accept
-        for h in &alts {
-            match self.wait_any(*h, &["party_accept"], 10000)? {
-                Some((_, p)) => self.click(*h, p, "accept party")?,
-                None => self.log("party: an alt never got the invite"),
-            }
-        }
-        // 5. back to the main for Play / Areas / Create lobby
-        self.to_main()?;
-        self.log("party: done - back on the main, going to the game mode");
-        Ok(())
+        Ok(sent)
     }
 
     /// Bring the main client back to the front (after working on alts).
@@ -906,6 +944,7 @@ mod tests {
             assert!(all.iter().any(|a| a == n), "summer needs {n}");
         }
         s.run.own_team = true;
+        s.run.party_invite = false; // no party: alts walk into the portal
         let all: Vec<String> = plan(&s, &routes)
             .iter()
             .flat_map(|x| x.needs.clone())
