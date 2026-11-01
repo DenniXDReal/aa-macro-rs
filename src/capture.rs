@@ -11,6 +11,12 @@ pub struct Frame {
     pub bgra: Vec<u8>,
 }
 
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Frame({}x{})", self.width, self.height)
+    }
+}
+
 impl Frame {
     pub fn new(width: u32, height: u32, bgra: Vec<u8>) -> Self {
         debug_assert_eq!(bgra.len(), (width * height * 4) as usize);
@@ -57,6 +63,18 @@ impl Frame {
             out.extend_from_slice(&self.bgra[s..s + (w * 4) as usize]);
         }
         Frame::new(w, h, out)
+    }
+
+    pub fn load_png(path: &Path) -> Result<Frame> {
+        let img = image::open(path)
+            .with_context(|| format!("opening {}", path.display()))?
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        let mut bgra = img.into_raw();
+        for p in bgra.chunks_exact_mut(4) {
+            p.swap(0, 2);
+        }
+        Ok(Frame::new(w, h, bgra))
     }
 
     pub fn save_png(&self, path: &Path) -> Result<()> {

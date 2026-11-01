@@ -23,6 +23,24 @@ Run these from a terminal in the folder with `aa-macro.exe`:
 
 The first run writes `aa-macro.json` next to the exe (settings).
 
+## Patterns (Phase 2): teach it what buttons look like
+
+Patterns are **yours**, captured from your own game. They live in `patterns/` next to the exe.
+
+1. Get to the screen with the button (e.g. the vote screen) with **no pop-ups covering it**, then run `aa-macro capture`.
+2. Open `captures/instance1.png` in **Paint**. Hover the top-left corner of the button text: Paint shows `x, y` at the bottom left. Drag a selection over the text: Paint shows its `w × h`.
+3. Save it:
+   ```
+   aa-macro pattern add "Vote Start" --rect 330,52,140,32
+   ```
+   * Text and labels: the default black/white pattern. Check `patterns/vote_start.preview.png` and make sure the text is readable. If it isn't, add `--threshold 150` (or another value from 0 to 255).
+   * Coloured icons: add `--image`.
+   * It searches 40 px around the crop later. Use `--margin 100` for buttons that move.
+4. Test on a live client: `aa-macro pattern test` (all patterns) or `aa-macro pattern test "Vote Start" --instance 2`.
+   `--from captures/x.png` works on saved screenshots, and `--everywhere` searches the whole client.
+
+Speed: a pattern search in its own box takes well under 1 ms. A worst-case whole-client search takes about 20 ms.
+
 ### Phase 1 test checklist
 
 1. Close all Roblox. Run `aa-macro unlock` in one terminal.
@@ -47,7 +65,7 @@ All coordinates are **client space** (800×599 viewport, (0,0) top-left).
 ## Roadmap
 
 1. ✅ Platform, input arbiter, capture, tiling, unlock, CLI, Windows CI
-2. FindText + OCR + pattern-capture tool (you capture your own patterns)
+2. ✅ Pattern matcher (text + colour) and `pattern add/test`. OCR is next (2b)
 3. Story / Legend / Raid loop, placement, upgrades
 4. Dungeon, Infinity Castle, Challenge
 5. Independent + Party (host/follower) multi modes

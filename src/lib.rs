@@ -18,3 +18,4 @@ pub mod input;
 pub mod keys;
 pub mod layout;
 pub mod platform;
+pub mod vision;
