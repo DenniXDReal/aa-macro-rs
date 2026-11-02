@@ -115,7 +115,13 @@ pub fn launch_each(
         match launch(n) {
             Ok(m) => log(format!("{n}: {m}")),
             Err(e) => {
-                log(format!("{n}: launch failed - {e:#}"));
+                let why = format!("{e:#}");
+                let why = if why.trim().is_empty() {
+                    "no reason given".to_string()
+                } else {
+                    why
+                };
+                log(format!("{n}: launch failed - {why}"));
                 continue;
             }
         }

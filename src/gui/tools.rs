@@ -12,20 +12,31 @@ use eframe::egui::{Align2, DragValue, FontId, Pos2, Slider, StrokeKind};
 
 impl App {
     pub(super) fn say(&mut self, s: impl Into<String>) {
-        let s = s.into();
-        if self
-            .log
-            .last()
-            .is_some_and(|l| l == &s || l.starts_with(&format!("{s} (x")))
-        {
-            let last = self.log.last_mut().unwrap();
-            let n = last
+        let msg = s.into();
+        let stamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        let body = |l: &str| {
+            l.split_once("] ")
+                .map(|x| x.1.to_string())
+                .unwrap_or_default()
+        };
+        // same line again: bump the count (and the time) instead of a new line
+        if let Some(last) = self.log.last_mut() {
+            let b = body(last);
+            let base = b
                 .rsplit_once(" (x")
-                .and_then(|(_, r)| r.trim_end_matches(')').parse::<u32>().ok())
-                .unwrap_or(1);
-            *last = format!("{s} (x{})", n + 1);
-            return;
+                .filter(|(_, r)| r.ends_with(')'))
+                .map(|(a, _)| a.to_string())
+                .unwrap_or(b.clone());
+            if base == msg {
+                let n = b
+                    .rsplit_once(" (x")
+                    .and_then(|(_, r)| r.trim_end_matches(')').parse::<u32>().ok())
+                    .unwrap_or(1);
+                *last = format!("[{stamp}] {msg} (x{})", n + 1);
+                return;
+            }
         }
+        let s = format!("[{stamp}] {msg}");
         log::info!("{s}");
         self.log.push(s);
         if self.log.len() > 300 {

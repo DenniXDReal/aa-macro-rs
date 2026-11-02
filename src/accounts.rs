@@ -182,6 +182,8 @@ fn explain(msg: &str) -> String {
         format!("{msg} - tick it in RAM: Settings > Web Server")
     } else if msg.contains("Invalid Account") {
         format!("{msg} - log that account in again inside RAM")
+    } else if msg.trim().is_empty() {
+        "RAM said no without a reason - in RAM tick Settings > Web Server > Allow LaunchAccount, and check the account is logged in there".into()
     } else {
         msg.to_string()
     }

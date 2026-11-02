@@ -2252,7 +2252,16 @@ impl App {
             self.say("follow: mark one account as Main first");
             return;
         }
-        self.say(format!("launching {} account(s)…", names.len()));
+        self.say(format!(
+            "launching {} account(s) {} - main first, alts {}s later",
+            names.len(),
+            if builtin {
+                "with the built-in manager"
+            } else {
+                "through Roblox Account Manager"
+            },
+            self.settings.follow_delay_s
+        ));
         std::thread::spawn(move || {
             let log = |s: String| {
                 let _ = tx.send(RamMsg::Log(s));
@@ -2278,7 +2287,7 @@ impl App {
             let mut launch = |n: &str| -> anyhow::Result<String> {
                 let is_main = main.as_deref() == Some(n);
                 // main first, then give it time to load in before any alt
-                if !is_main && main_in_batch && !waited && !main_failed.get() {
+                if !is_main && main_in_batch && !waited {
                     log(format!(
                         "waiting {}s for {} to load in before the alts",
                         delay.as_secs(),
@@ -2286,12 +2295,17 @@ impl App {
                     ));
                     std::thread::sleep(delay);
                     waited = true;
+                    log("waited - launching the alts now".into());
                 }
-                if follow && !is_main {
+                // can't follow a main that didn't launch: use the server link instead
+                let follow_now = follow && !main_failed.get();
+                if follow && main_failed.get() && !is_main {
+                    log(format!(
+                        "{n}: the main didn't launch - joining by the private server link instead"
+                    ));
+                }
+                if follow_now && !is_main {
                     let m = main.as_deref().unwrap_or_default();
-                    if main_failed.get() {
-                        anyhow::bail!("the main didn't launch, so there's nothing to follow");
-                    }
                     if !builtin {
                         return ram.follow(n, m).map(|r| format!("{r} (following {m})"));
                     }
@@ -2311,7 +2325,7 @@ impl App {
                     id = crate::rbx::whoami(&cookie)?.0;
                 }
                 log(format!("{n}: finding the server…"));
-                let target = if follow && !is_main {
+                let target = if follow_now && !is_main {
                     let m = main.as_deref().unwrap_or_default();
                     let uid = logins
                         .get(m)

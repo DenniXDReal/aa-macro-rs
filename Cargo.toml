@@ -26,6 +26,7 @@ ureq = { version = "3", features = ["platform-verifier"] }
 zip = { version = "9.2.1", default-features = false, features = ["deflate"] }
 base64 = "0.23.1"
 raw-window-handle = "0.6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
