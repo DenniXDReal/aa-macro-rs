@@ -191,7 +191,7 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         ));
     } else {
         out.push(step(
-            "Next on every alt, then the main: Next > Replay, wait for Vote start, repeat from Teleport to Spawn",
+            "Main: Next > Replay, wait for Vote start, repeat from Teleport to Spawn",
             &["replay"],
             false,
         ));
@@ -1042,46 +1042,8 @@ impl RunCtx {
 
     /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
     pub fn after_end(&self) -> R<bool> {
-        // alts only get Return to lobby (no Replay): click Next on every alt
-        // first, then the main does Next + Replay for everyone
-        let alts: Vec<Hwnd> = self
-            .clients
-            .iter()
-            .map(|c| c.0)
-            .filter(|h| *h != self.main)
-            .collect();
-        // no waiting per alt: sweep all alts, click Next wherever it shows,
-        // until no alt has a Next left for a moment
-        if !alts.is_empty() {
-            let next = Self::names(&["next_button"]);
-            let mut quiet_since: Option<Instant> = None;
-            let mut dl = self.control.deadline(self.secs(20.0));
-            loop {
-                self.check()?;
-                let mut any = false;
-                for h in &alts {
-                    if let Some(p) = self.screen(*h).find(&next, None) {
-                        self.click(*h, p, "alt next")?;
-                        any = true;
-                    }
-                }
-                if any {
-                    quiet_since = None;
-                } else {
-                    let t = *quiet_since.get_or_insert_with(Instant::now);
-                    if t.elapsed() >= Duration::from_secs_f64(self.secs(1.5)) {
-                        break;
-                    }
-                }
-                if dl.expired() {
-                    break;
-                }
-                self.sleep(200)?;
-            }
-        }
-        if !alts.is_empty() {
-            self.to_main()?;
-        }
+        // straight to the main: Next, then Replay (alts aren't touched)
+        self.to_main()?;
         let main = self.screen(self.main);
         let lobby = self.settings.run.return_to_lobby;
         let want = if lobby { "return_to_lobby" } else { "replay" };
