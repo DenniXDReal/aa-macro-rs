@@ -193,7 +193,8 @@ impl App {
                     "no tp_spawn_button - label +178,+7".to_string(),
                 ),
             };
-            say(format!("{how} - clicking {},{}", p.x, p.y));
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            say(format!("{how} - waited 3 s, clicking {},{}", p.x, p.y));
             if let Err(e) = click(p, "tp") {
                 return say(format!("click failed: {e}"));
             }
