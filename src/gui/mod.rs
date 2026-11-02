@@ -281,7 +281,7 @@ impl App {
             name_tries: Default::default(),
             admin_needed: false,
             run_rx: None,
-            notifier: crate::webhook::Notifier::start(),
+            notifier: crate::webhook::Notifier::start(Some(log_tx.clone())),
             hook_input: String::new(),
             running: false,
             paused: false,

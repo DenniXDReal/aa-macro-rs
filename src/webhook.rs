@@ -105,12 +105,17 @@ pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Val
     if has_image {
         embed["image"] = serde_json::json!({"url": "attachment://screenshot.png"});
     }
-    serde_json::json!({
+    let mut p = serde_json::json!({
         "username": "Anime Adventure Macro",
         "content": mention,
         "embeds": [embed],
         "allowed_mentions": {"users": if mention.is_empty() { vec![] } else { vec![ping_user.trim().to_string()] }},
-    })
+    });
+    if has_image {
+        // tell Discord which uploaded file the embed's attachment:// means
+        p["attachments"] = serde_json::json!([{"id": 0, "filename": "screenshot.png"}]);
+    }
+    p
 }
 
 fn png(frame: &Frame) -> Result<Vec<u8>> {
@@ -167,7 +172,10 @@ pub fn send(url: &str, ping_user: &str, m: &Message) -> Result<()> {
     .map_err(|e| anyhow!("Discord unreachable: {e}"))?;
     let code = resp.status().as_u16();
     if !(200..300).contains(&code) {
-        bail!("Discord refused the webhook (HTTP {code})");
+        let mut resp = resp;
+        let why = resp.body_mut().read_to_string().unwrap_or_default();
+        let why: String = why.chars().take(200).collect();
+        bail!("Discord refused the webhook (HTTP {code}) {why}");
     }
     Ok(())
 }
@@ -179,14 +187,40 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    pub fn start() -> Self {
+    /// `report` gets a line for every message (sent / failed) for the app's log.
+    pub fn start(report: Option<mpsc::Sender<String>>) -> Self {
         let (tx, rx): (SyncSender<(String, String, Message)>, Receiver<_>) = mpsc::sync_channel(16);
         std::thread::Builder::new()
             .name("webhook".into())
             .spawn(move || {
-                for (url, ping, m) in rx {
-                    if let Err(e) = send(&url, &ping, &m) {
-                        log::warn!("webhook: {e}");
+                let say = |s: String| {
+                    log::info!("{s}");
+                    if let Some(r) = &report {
+                        let _ = r.send(s);
+                    }
+                };
+                for (url, ping, mut m) in rx {
+                    let mut res = send(&url, &ping, &m);
+                    if res.is_err() && m.screenshot.is_some() {
+                        // the picture is the usual trouble maker: send without it
+                        let first = res
+                            .as_ref()
+                            .err()
+                            .map(|e| e.to_string())
+                            .unwrap_or_default();
+                        m.screenshot = None;
+                        res = send(&url, &ping, &m);
+                        if res.is_ok() {
+                            say(format!(
+                                "Discord: '{}' sent without the screenshot ({first})",
+                                m.title
+                            ));
+                        }
+                    } else if res.is_ok() {
+                        say(format!("Discord: '{}' sent", m.title));
+                    }
+                    if let Err(e) = res {
+                        say(format!("Discord: '{}' failed - {e}", m.title));
                     }
                     std::thread::sleep(Duration::from_millis(700)); // stay under Discord's rate limit
                 }
@@ -242,9 +276,11 @@ mod tests {
             "attachment://screenshot.png"
         );
         assert_eq!(p["embeds"][0]["color"], 0x4ADE80);
+        assert_eq!(p["attachments"][0]["filename"], "screenshot.png");
         let p2 = payload(&m, "@everyone", false);
         assert_eq!(p2["content"], "");
         assert!(p2["embeds"][0].get("image").is_none());
+        assert!(p2.get("attachments").is_none());
     }
 
     #[test]
