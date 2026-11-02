@@ -443,20 +443,16 @@ impl RunCtx {
             }
             *last = Some(Instant::now());
         }
-        // close the unit panel first so it doesn't cover the cards
-        match scr
+        // close the unit panel first if one is open (its X is on screen);
+        // no panel = straight to the screenshot
+        if let Some(p) = scr
             .has("unit_close")
-            .then(|| scr.find(&Self::names(&["unit_close"]), None))
+            .then(|| scr.find_wide(&Self::names(&["unit_close"])))
             .flatten()
         {
-            Some(p) => self.click(h, p, "close unit panel")?,
-            None => {
-                if let Ok(keys) = Keys::from(&self.settings.keybinds) {
-                    let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
-                }
-            }
+            self.click(h, p, "close unit panel")?;
+            self.sleep(400)?;
         }
-        self.sleep(400)?;
         let Some(f) = scr.frame() else {
             return Ok(false);
         };
