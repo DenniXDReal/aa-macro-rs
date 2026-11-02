@@ -37,6 +37,9 @@ pub struct Settings {
     pub idle_click: bool,
     /// Where that click goes (client px) - pick a spot with nothing on it.
     pub idle_click_at: (i32, i32),
+    /// Every this many minutes, 5 clicks on each alt so it isn't kicked for
+    /// being idle (0 = off).
+    pub afk_every_min: u64,
     /// When the loop is stuck for good: close all Roblox, relaunch the
     /// accounts (main first) and start again.
     pub auto_relaunch: bool,
@@ -398,6 +401,7 @@ impl Default for Settings {
             idle_click: true,
             next_below_title: 205,
             auto_relaunch: true,
+            afk_every_min: 5,
             idle_click_at: (400, 110),
             spot_memory: true,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],

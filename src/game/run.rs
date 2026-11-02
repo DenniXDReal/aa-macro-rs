@@ -1189,6 +1189,51 @@ impl RunCtx {
         }
     }
 
+    /// Every few minutes: a few clicks (+ Cancel) on each alt, so Roblox's
+    /// 20-minute idle kick never hits an alt that's just standing there.
+    fn anti_afk(&self, finished: &std::sync::atomic::AtomicBool) {
+        use std::sync::atomic::Ordering;
+        let every = Duration::from_secs_f64(self.secs(self.settings.afk_every_min as f64 * 60.0));
+        if self.settings.afk_every_min == 0 {
+            return;
+        }
+        let Ok(keys) = Keys::from(&self.settings.keybinds) else {
+            return;
+        };
+        let mut last = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            if finished.load(Ordering::Relaxed) || self.control.is_stopped() {
+                return;
+            }
+            if self.control.is_paused() || last.elapsed() < every {
+                continue;
+            }
+            last = Instant::now();
+            let (x, y) = self.settings.idle_click_at;
+            let alts: Vec<Hwnd> = self
+                .clients
+                .iter()
+                .map(|c| c.0)
+                .filter(|h| *h != self.main)
+                .collect();
+            for h in alts {
+                let mut b = Batch::new(h, "anti-AFK");
+                for _ in 0..5 {
+                    b = b.click(x, y).wait(150);
+                }
+                b = b.then(Action::KeyTap {
+                    key: keys.cancel,
+                    hold_ms: 40,
+                });
+                match self.arb.run(b) {
+                    Ok(_) => self.log("anti-AFK: clicked on an alt"),
+                    Err(e) => self.log(format!("anti-AFK: {e}")),
+                }
+            }
+        }
+    }
+
     /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
     fn one_round(&self, in_lobby: &mut bool, map: &mut String) -> R<()> {
         if *in_lobby {
@@ -1215,64 +1260,73 @@ impl RunCtx {
 
     /// The whole loop until Stop / an error.
     pub fn run(&self) {
-        let res = (|| -> R<()> {
-            let mut in_lobby = true;
-            let mut map = String::new();
-            if self.settings.run.own_team
-                && self.settings.run.party_invite
-                && self.clients.len() > 1
-            {
-                self.party_up()?;
-            }
-            let mut fails = 0;
-            let mut blocked_told = false;
-            loop {
-                match self.one_round(&mut in_lobby, &mut map) {
-                    Ok(()) => {
-                        fails = 0;
-                        blocked_told = false;
-                    }
-                    Err(e) if e == "stopped" || e.starts_with("stopped after") => return Err(e),
-                    Err(e) if e.contains("input blocked") => {
-                        // locked PC / screen off: not the game's fault - wait, don't give up
-                        if !blocked_told {
-                            let _ = self.tx.send(Event::Attention(
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        let res = std::thread::scope(|sc| {
+            // alts that sit idle get kicked after 20 min: poke them every few minutes
+            sc.spawn(|| self.anti_afk(&finished));
+            let r = (|| -> R<()> {
+                let mut in_lobby = true;
+                let mut map = String::new();
+                if self.settings.run.own_team
+                    && self.settings.run.party_invite
+                    && self.clients.len() > 1
+                {
+                    self.party_up()?;
+                }
+                let mut fails = 0;
+                let mut blocked_told = false;
+                loop {
+                    match self.one_round(&mut in_lobby, &mut map) {
+                        Ok(()) => {
+                            fails = 0;
+                            blocked_told = false;
+                        }
+                        Err(e) if e == "stopped" || e.starts_with("stopped after") => {
+                            return Err(e)
+                        }
+                        Err(e) if e.contains("input blocked") => {
+                            // locked PC / screen off: not the game's fault - wait, don't give up
+                            if !blocked_told {
+                                let _ = self.tx.send(Event::Attention(
                                 "Input is blocked (PC locked, screen off or a UAC prompt) - the macro waits and carries on once it's unlocked".into(),
                             ));
-                            blocked_told = true;
+                                blocked_told = true;
+                            }
+                            self.sleep(10_000)?;
+                            let at = self.where_am_i();
+                            match at {
+                                "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
+                                "lobby" => in_lobby = true,
+                                _ => in_lobby = false,
+                            }
                         }
-                        self.sleep(10_000)?;
-                        let at = self.where_am_i();
-                        match at {
-                            "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
-                            "lobby" => in_lobby = true,
-                            _ => in_lobby = false,
-                        }
-                    }
-                    Err(e) => {
-                        fails += 1;
-                        if fails > 3 {
-                            return Err(format!("{e} (3 tries in a row)"));
-                        }
-                        // find out where we are and carry on from there
-                        let at = self.where_am_i();
-                        self.log(format!(
-                            "hiccup: {e} - on screen: {} - carrying on",
-                            if at.is_empty() { "unknown" } else { at }
-                        ));
-                        match at {
-                            "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
-                            "lobby" => in_lobby = true,
-                            _ => {
-                                in_lobby = false;
-                                self.sleep(3000)?;
+                        Err(e) => {
+                            fails += 1;
+                            if fails > 3 {
+                                return Err(format!("{e} (3 tries in a row)"));
+                            }
+                            // find out where we are and carry on from there
+                            let at = self.where_am_i();
+                            self.log(format!(
+                                "hiccup: {e} - on screen: {} - carrying on",
+                                if at.is_empty() { "unknown" } else { at }
+                            ));
+                            match at {
+                                "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
+                                "lobby" => in_lobby = true,
+                                _ => {
+                                    in_lobby = false;
+                                    self.sleep(3000)?;
+                                }
                             }
                         }
                     }
+                    self.sleep(500)?;
                 }
-                self.sleep(500)?;
-            }
-        })();
+            })();
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            r
+        });
         let _ = self.tx.send(Event::Done(match res {
             Ok(()) => "finished".into(),
             Err(e) => e,

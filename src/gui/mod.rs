@@ -2713,6 +2713,16 @@ impl App {
                         .on_hover_text("only used when the Next button itself isn't recognised")
                         .changed();
                     ui.end_row();
+                    ui.label("Anti-AFK on alts");
+                    ui.horizontal(|ui| {
+                        ui.label("5 clicks every");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut s.afk_every_min).range(0..=19).suffix(" min"))
+                            .on_hover_text("0 = off. Roblox kicks after 20 min idle")
+                            .changed();
+                        ui.label("(at the keep-alive spot)");
+                    });
+                    ui.end_row();
                     ui.label("When stuck");
                     changed |= toggle(
                         ui,
