@@ -32,6 +32,11 @@ pub struct Settings {
     pub place_shape: crate::game::placing::Shape,
     /// How far the shape spreads out (1.0 = AHK / v10 size).
     pub shape_scale: f32,
+    /// Once every unit is upgraded: click an empty spot every 5 s until the
+    /// end (keeps the PC awake, no AFK kick).
+    pub idle_click: bool,
+    /// Where that click goes (client px) - pick a spot with nothing on it.
+    pub idle_click_at: (i32, i32),
     /// Skip spots where units failed to go down before (per map + client).
     pub spot_memory: bool,
     /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
@@ -384,6 +389,8 @@ impl Default for Settings {
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.5,
+            idle_click: true,
+            idle_click_at: (400, 110),
             spot_memory: true,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),

@@ -2614,6 +2614,14 @@ impl App {
                         )
                         .changed();
                     ui.end_row();
+                    ui.label("Keep-alive click");
+                    ui.horizontal(|ui| {
+                        changed |= toggle(ui, &mut s.idle_click, "every 5 s once all units are upgraded");
+                        ui.label("at");
+                        changed |= ui.add(egui::DragValue::new(&mut s.idle_click_at.0).range(0..=799)).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut s.idle_click_at.1).range(0..=598)).changed();
+                    });
+                    ui.end_row();
                     ui.label("Delay after switching account (ms)");
                     if ui
                         .add(egui::DragValue::new(&mut s.swap_delay_ms).range(0..=10000))

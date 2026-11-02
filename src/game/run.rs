@@ -913,6 +913,7 @@ impl RunCtx {
         order.sort_by_key(|(h, slot, _)| (!unit(h, *slot).farm, unit(h, *slot).priority));
         let mut done: Vec<u32> = vec![0; order.len()];
         let mut maxed: Vec<bool> = vec![false; order.len()];
+        let mut last_idle = Instant::now();
         let end = Self::names(&["victory", "defeat"]);
         let mut dl = self.control.deadline(self.secs(60.0 * 40.0));
         let mut i = 0usize;
@@ -926,7 +927,8 @@ impl RunCtx {
                 return Err("no end screen after 40 min".into());
             }
             if order.is_empty() {
-                self.sleep(1500)?;
+                self.idle_click(&mut last_idle, &keys)?;
+                self.sleep(1000)?;
                 continue;
             }
             // skip the ones already finished; all finished = just watch the end
@@ -939,6 +941,8 @@ impl RunCtx {
                     }
             };
             if (0..order.len()).all(|k| finished(k, &done, &maxed)) {
+                // everything upgraded: keep the PC and Roblox busy until the end
+                self.idle_click(&mut last_idle, &keys)?;
                 self.sleep(1000)?;
                 continue;
             }
@@ -1006,6 +1010,32 @@ impl RunCtx {
             }
             self.sleep(400)?;
         }
+    }
+
+    /// Every 5 s once there's nothing left to upgrade: a click on an empty
+    /// spot (then Cancel, in case it opened a unit) on every client, so the PC
+    /// doesn't idle into sleep and Roblox doesn't kick for AFK.
+    fn idle_click(&self, last: &mut Instant, keys: &Keys) -> R<()> {
+        if !self.settings.idle_click || last.elapsed() < Duration::from_secs_f64(self.secs(5.0)) {
+            return Ok(());
+        }
+        *last = Instant::now();
+        let (x, y) = self.settings.idle_click_at;
+        let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
+        for h in self.main_last(all) {
+            self.arb
+                .run(
+                    Batch::new(h, "idle click")
+                        .click(x, y)
+                        .wait(150)
+                        .then(Action::KeyTap {
+                            key: keys.cancel,
+                            hold_ms: 40,
+                        }),
+                )
+                .map_err(|e| format!("idle click: {e}"))?;
+        }
+        Ok(())
     }
 
     /// The unit panel's level ("UPG [n]"): Windows OCR first (nothing to
