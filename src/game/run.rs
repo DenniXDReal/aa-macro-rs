@@ -480,8 +480,21 @@ impl RunCtx {
                     i + 1,
                     waiting.len()
                 ));
-                match self.wait_any(*h, &["party_accept"], 10000)? {
-                    Some((_, p)) => self.click(*h, p, "accept party")?,
+                match self.wait_any(*h, &["party_accept"], 15000)? {
+                    Some((_, _)) => {
+                        // click_when re-clicks if the pop-up is still there
+                        if let Err(e) = self.click_when(*h, "party_accept", 3000) {
+                            self.log(format!("party: {e}"));
+                        }
+                        self.sleep(1000)?;
+                        if self
+                            .screen(*h)
+                            .find(&Self::names(&["party_accept"]), None)
+                            .is_some()
+                        {
+                            missed.push(*h);
+                        }
+                    }
                     None => missed.push(*h),
                 }
             }
@@ -978,14 +991,17 @@ impl RunCtx {
             .map(|(l, _)| l)
     }
 
+    /// VICTORY / DEFEAT on any client (main first) - an alt can see the
+    /// end first, then everyone goes to the end screen handling.
     fn end_screen(&self, end: &[String]) -> R<Option<bool>> {
-        for n in end {
-            if self
-                .screen(self.main)
-                .find(std::slice::from_ref(n), None)
-                .is_some()
-            {
-                return Ok(Some(n == "victory"));
+        let mut order: Vec<Hwnd> = vec![self.main];
+        order.extend(self.clients.iter().map(|c| c.0).filter(|h| *h != self.main));
+        for h in order {
+            let scr = self.screen(h);
+            for n in end {
+                if scr.find(std::slice::from_ref(n), None).is_some() {
+                    return Ok(Some(n == "victory"));
+                }
             }
         }
         Ok(None)
@@ -1003,7 +1019,7 @@ impl RunCtx {
             .collect();
         for h in &alts {
             let mut n = 0;
-            while n < 3 {
+            while n < 6 {
                 match self.wait_any(*h, &["next_button"], if n == 0 { 4000 } else { 1500 })? {
                     Some((_, p)) => {
                         self.click(*h, p, "alt next")?;

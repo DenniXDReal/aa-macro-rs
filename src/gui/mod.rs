@@ -2304,6 +2304,16 @@ impl App {
                         )
                         .changed();
                     ui.end_row();
+                    ui.label("Delay after switching account (ms)");
+                    if ui
+                        .add(egui::DragValue::new(&mut s.swap_delay_ms).range(0..=10000))
+                        .on_hover_text("wait after swapping to another Roblox before clicking there (lag spikes)")
+                        .changed()
+                    {
+                        changed = true;
+                        input_changed = true;
+                    }
+                    ui.end_row();
                     ui.label("Delay between placements (ms)");
                     changed |= ui
                         .add(egui::DragValue::new(&mut s.place_delay_ms).range(0..=10000))

@@ -24,6 +24,8 @@ pub struct Settings {
     pub click_hold_ms: u64,
     /// Pause after every click the game loop / routes make (menus, settings).
     pub step_delay_ms: u64,
+    /// Pause after switching to another account before clicking there.
+    pub swap_delay_ms: u64,
     /// Pause between unit placements so the game can register each one.
     pub place_delay_ms: u64,
     /// Shape tried when a map has no (or not enough) custom spots.
@@ -373,6 +375,7 @@ impl Default for Settings {
             click_mode: crate::input::ClickMode::Safe,
             step_delay_ms: 800,
             place_delay_ms: 2000,
+            swap_delay_ms: 1200,
             place_shape: Default::default(),
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),

@@ -308,13 +308,14 @@ pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
 /// "UPG [0]" panel on success) on screen so it can be checked.
 pub fn place_open_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
     let key = keys.units[(slot.clamp(1, 6)) - 1];
+    // slow enough for Roblox to show the unit ghost before the click
     Batch::new(hwnd, format!("place slot {slot}"))
-        .then(Action::KeyTap { key, hold_ms: 40 })
-        .wait(60)
+        .then(Action::KeyTap { key, hold_ms: 50 })
+        .wait(250)
         .move_to(at.x, at.y)
-        .wait(90)
+        .wait(250)
         .click(at.x, at.y)
-        .wait(60)
+        .wait(350)
 }
 
 pub fn cancel_batch(hwnd: Hwnd, keys: &Keys) -> Batch {
@@ -466,6 +467,7 @@ mod tests {
                 click_hold_ms: 1,
                 max_lease_ms: 400,
                 click_mode: crate::input::ClickMode::Single,
+                swap_delay_ms: 0,
             },
         );
         let keys = Keys::from(&Keybinds::default()).unwrap();

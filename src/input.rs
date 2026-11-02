@@ -243,6 +243,9 @@ pub struct ArbiterOptions {
     pub click_hold_ms: u64,
     pub max_lease_ms: u64,
     pub click_mode: ClickMode,
+    /// Pause after switching to another client, before its first input
+    /// (Roblox needs a moment to catch up after a window swap).
+    pub swap_delay_ms: u64,
 }
 
 /// How a click is sent. Roblox sometimes drops a click (no hover yet, or
@@ -266,6 +269,7 @@ impl Default for ArbiterOptions {
             click_hold_ms: 40,
             max_lease_ms: 400,
             click_mode: ClickMode::Safe,
+            swap_delay_ms: 1200,
         }
     }
 }
@@ -459,7 +463,11 @@ impl Runner<'_> {
             Ok(())
         }
         check(&geo, &b.actions)?;
+        let swapped = self.p.foreground() != Some(b.window);
         self.focus(b.window)?;
+        if swapped && self.opts.swap_delay_ms > 0 {
+            self.sleep(self.opts.swap_delay_ms, b.window)?;
+        }
         for a in &b.actions {
             if self.ctl.is_stopped() {
                 return Err(InputError::Stopped);
@@ -728,6 +736,7 @@ mod tests {
             click_hold_ms: 1,
             max_lease_ms: 400,
             click_mode: crate::input::ClickMode::Single,
+            swap_delay_ms: 0,
         };
         let arb = Arbiter::start(mock.clone(), ctl.clone(), opts);
         (mock, ctl, arb)
@@ -756,6 +765,7 @@ mod tests {
                     click_hold_ms: 1,
                     max_lease_ms: 2000,
                     click_mode: mode,
+                    swap_delay_ms: 0,
                 },
             );
             let mut probe = Probe::new("btn", || Some(Point::new(10, 10)));
