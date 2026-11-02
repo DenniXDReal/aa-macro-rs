@@ -807,6 +807,9 @@ impl RunCtx {
                     let mut used: Vec<Point> = vec![];
                     let mut out = vec![];
                     for (slot, count, spots) in jobs {
+                        if over.load(std::sync::atomic::Ordering::Relaxed) {
+                            break; // VICTORY / DEFEAT: no more placing
+                        }
                         let free: Vec<Point> =
                             spots.into_iter().filter(|p| !used.contains(p)).collect();
                         // BUFF units: turn Auto ability on while the panel is open

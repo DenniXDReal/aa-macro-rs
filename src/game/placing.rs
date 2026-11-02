@@ -370,13 +370,13 @@ pub fn place_slot(
         if placed.len() as u32 >= count {
             break;
         }
-        // card pop-ups, and stop when the stage already ended
-        if !before_each() {
-            break;
-        }
         if i > 0 && delay_ms > 0 {
             // let the game catch up so the next look / click is right
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+        // right before placing: card pop-ups, and stop if the stage ended
+        if !before_each() {
+            break;
         }
         arb.run(place_open_batch(hwnd, keys, slot, *at))?;
         // the badge pops up a moment after the click
