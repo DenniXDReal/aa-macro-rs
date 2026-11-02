@@ -420,18 +420,29 @@ impl RunCtx {
         let scr = self.screen(h);
         // card screen: your choose_card capture, or OCR reading "Choose a card"
         let mut weather = String::new();
+        let mut shift: Option<String> = None;
         let seen =
             if scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some() {
                 true
-            } else if let Some(w) = ocr_due(h)
-                .then(|| scr.frame().and_then(|f| scr.ocr_card_screen(&f)))
-                .flatten()
-            {
-                weather = w;
-                true
+            } else if ocr_due(h) {
+                match scr.frame().map(|f| scr.ocr_events(&f)) {
+                    Some((Some(w), _)) => {
+                        weather = w;
+                        true
+                    }
+                    Some((None, s)) => {
+                        shift = s;
+                        false
+                    }
+                    None => false,
+                }
             } else {
                 false
             };
+        if let Some(w) = shift {
+            self.weather_shift(h, &w)?;
+            return Ok(false);
+        }
         if !seen {
             return Ok(false);
         }
@@ -491,6 +502,50 @@ impl RunCtx {
             self.sleep(300)?;
         }
         Ok(true)
+    }
+
+    /// Weather shift banner: close the unit panel (if open) and keep a
+    /// screenshot (cards/ folder). Once per 30 s.
+    fn weather_shift(&self, h: Hwnd, weather: &str) -> R<()> {
+        {
+            static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+            let mut l = LAST.lock().unwrap();
+            if l.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+                return Ok(());
+            }
+            *l = Some(Instant::now());
+        }
+        let scr = self.screen(h);
+        if let Some(p) = scr
+            .has("unit_close")
+            .then(|| scr.find_wide(&Self::names(&["unit_close"])))
+            .flatten()
+        {
+            self.click(h, p, "close unit panel")?;
+            self.sleep(400)?;
+        }
+        self.log(format!(
+            "weather shift: {}",
+            if weather.is_empty() { "?" } else { weather }
+        ));
+        if let Some(f) = scr.frame() {
+            let dir = super::cardlog::dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let w: String = weather.chars().filter(|c| c.is_alphanumeric()).collect();
+            let path = dir.join(format!(
+                "weather-{}{}.png",
+                chrono::Local::now().format("%Y%m%d-%H%M%S"),
+                if w.is_empty() {
+                    String::new()
+                } else {
+                    format!("-{w}")
+                }
+            ));
+            if f.save_png(&path).is_ok() {
+                self.log(format!("weather shift saved: {}", path.display()));
+            }
+        }
+        Ok(())
     }
 
     /// Card screen on any client (alts first); back to the main after an alt.

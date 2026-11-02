@@ -30,6 +30,16 @@ mod level_tests {
         );
         assert_eq!(card_screen_text("Choose a Card"), Some(String::new()));
         assert_eq!(card_screen_text("Wave 23 DEFEAT"), None);
+        use super::weather_shift_text;
+        assert_eq!(
+            weather_shift_text("WEATHER SHIFT Sunny"),
+            Some("sunny".into())
+        );
+        assert_eq!(
+            weather_shift_text("Weather changed to Rainy!"),
+            Some("rainy".into())
+        );
+        assert_eq!(weather_shift_text("Weather: Rainy"), None);
     }
 }
 
@@ -70,6 +80,30 @@ pub fn card_screen_text(text: &str) -> Option<String> {
         })
         .unwrap_or_default();
     Some(weather)
+}
+
+/// OCR text -> Some(weather) when a weather shift banner is up
+/// ("Weather Shift", "Weather changed to ...").
+pub fn weather_shift_text(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    let i = t.find("weather")?;
+    let rest = &t[i + 7..];
+    if !(rest.contains("shift") || rest.contains("chang") || t[..i].contains("shift")) {
+        return None;
+    }
+    let w = rest
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| {
+            !w.is_empty()
+                && ![
+                    "shift", "shifted", "changed", "change", "to", "is", "now", "the",
+                ]
+                .contains(w)
+        })
+        .next()
+        .unwrap_or("")
+        .to_string();
+    Some(w)
 }
 
 /// "UPG [3]" -> Ok(3), "MAX" -> Err(()), junk -> None. Tolerates the
@@ -165,6 +199,15 @@ impl LiveScreen {
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let text = self.platform.ocr(frame, all)?;
         card_screen_text(&text)
+    }
+
+    /// One OCR read of the whole screen: (card screen weather, weather shift).
+    pub fn ocr_events(&self, frame: &crate::capture::Frame) -> (Option<String>, Option<String>) {
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        match self.platform.ocr(frame, all) {
+            Some(t) => (card_screen_text(&t), weather_shift_text(&t)),
+            None => (None, None),
+        }
     }
 
     /// Is `name` in an already captured picture (no new capture)?
