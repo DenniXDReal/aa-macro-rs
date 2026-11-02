@@ -376,6 +376,9 @@ pub struct UnitSlot {
     pub buff: bool,
     /// Farm unit (money maker): placed first, upgraded early.
     pub farm: bool,
+    /// Hill unit: only goes on high ground - its good / bad spots are
+    /// remembered separately from ground units.
+    pub hill: bool,
     /// Alternate this slot's upgrades with placement instead of waiting.
     pub upg_immediately: bool,
 }
@@ -390,6 +393,7 @@ impl Default for UnitSlot {
             priority: 1,
             buff: false,
             farm: false,
+            hill: false,
             upg_immediately: false,
         }
     }

@@ -31,16 +31,16 @@ use std::time::{Duration, Instant};
 pub const APP_NAME: &str = "Anime Adventure Macro";
 pub const APP_BY: &str = "By DenniXD";
 
-// ---- theme ----
-const BG: Color32 = Color32::from_rgb(13, 10, 24);
-const PANEL: Color32 = Color32::from_rgb(19, 15, 33);
-const CARD: Color32 = Color32::from_rgb(27, 21, 46);
-const CARD_HI: Color32 = Color32::from_rgb(36, 28, 62);
-const LINE: Color32 = Color32::from_rgb(52, 42, 86);
-const PURPLE: Color32 = Color32::from_rgb(139, 92, 246);
-const PURPLE_DIM: Color32 = Color32::from_rgb(88, 62, 170);
-const TEXT: Color32 = Color32::from_rgb(232, 228, 245);
-const MUTED: Color32 = Color32::from_rgb(150, 142, 178);
+// ---- theme: minimal - black, dark blue, dark purple, purple, white ----
+const BG: Color32 = Color32::from_rgb(6, 6, 12); // near black
+const PANEL: Color32 = Color32::from_rgb(10, 12, 26); // dark blue
+const CARD: Color32 = Color32::from_rgb(18, 14, 34); // dark purple
+const CARD_HI: Color32 = Color32::from_rgb(28, 20, 52);
+const LINE: Color32 = Color32::from_rgb(34, 30, 62);
+const PURPLE: Color32 = Color32::from_rgb(150, 110, 255);
+const PURPLE_DIM: Color32 = Color32::from_rgb(76, 52, 150);
+const TEXT: Color32 = Color32::from_rgb(245, 244, 250); // white
+const MUTED: Color32 = Color32::from_rgb(138, 136, 170);
 const ACCENT: Color32 = PURPLE;
 const GOOD: Color32 = Color32::from_rgb(74, 222, 128);
 const WARN: Color32 = Color32::from_rgb(251, 191, 36);
@@ -1663,6 +1663,7 @@ impl App {
                                     ui.horizontal(|ui| {
                                         changed |= tag(ui, &mut u.farm, "FARM");
                                         changed |= tag(ui, &mut u.buff, "BUFF");
+                                        changed |= tag(ui, &mut u.hill, "HILL");
                                     });
                                     changed |= stepper(ui, "Placement", &mut u.place, 0, 10);
                                     changed |= stepper(ui, "Priority", &mut u.priority, 1, 6);
@@ -3121,7 +3122,7 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(CARD)
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(12)
+        .corner_radius(8)
         .inner_margin(12)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -3387,9 +3388,9 @@ fn apply_theme(ctx: &egui::Context) {
     v.selection.stroke = Stroke::new(1.0, PURPLE);
     v.hyperlink_color = PURPLE;
     v.window_stroke = Stroke::new(1.0, LINE);
-    v.window_corner_radius = CornerRadius::same(12);
-    v.menu_corner_radius = CornerRadius::same(10);
-    let r = CornerRadius::same(8);
+    v.window_corner_radius = CornerRadius::same(8);
+    v.menu_corner_radius = CornerRadius::same(6);
+    let r = CornerRadius::same(6);
     v.widgets.noninteractive.bg_fill = CARD;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
     v.widgets.noninteractive.corner_radius = r;
@@ -3397,8 +3398,8 @@ fn apply_theme(ctx: &egui::Context) {
     v.widgets.inactive.weak_bg_fill = CARD_HI;
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
     v.widgets.inactive.corner_radius = r;
-    v.widgets.hovered.bg_fill = Color32::from_rgb(50, 39, 86);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(50, 39, 86);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(40, 30, 78);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(40, 30, 78);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, PURPLE_DIM);
     v.widgets.hovered.corner_radius = r;
     v.widgets.active.bg_fill = PURPLE_DIM;

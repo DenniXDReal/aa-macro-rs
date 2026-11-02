@@ -79,14 +79,25 @@ impl SpotMemory {
         let _ = self.save();
     }
 
-    /// A unit went down here: it's a good spot.
+    /// A unit went down here: it's a good spot (kept as 0 fails, so hill
+    /// units can try known-good spots first).
     pub fn placed(&mut self, set: &str, p: Point) {
-        if let Some((key, _)) = self.entry(set, p) {
-            if let Some(m) = self.maps.get_mut(set) {
-                m.remove(&key);
-            }
-            let _ = self.save();
-        }
+        let key = self.entry(set, p).map(|e| e.0).unwrap_or_else(|| k(p));
+        self.maps.entry(set.to_string()).or_default().insert(key, 0);
+        let _ = self.save();
+    }
+
+    /// Spots where a unit went down before.
+    pub fn good_spots(&self, set: &str) -> Vec<Point> {
+        self.maps
+            .get(set)
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, n)| **n == 0)
+                    .filter_map(|(s, _)| parse(s))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn bad_count(&self, set: &str) -> usize {

@@ -868,6 +868,24 @@ impl RunCtx {
                 .run(camera_batch(h, &s.camera))
                 .map_err(|e| format!("camera: {e}"))?;
         }
+        // first time on this map: keep a top-down picture of it (maps/)
+        // for planning exact unit spots later
+        if !map.is_empty() {
+            let dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("maps")))
+                .unwrap_or_else(|| std::path::PathBuf::from("maps"));
+            let path = dir.join(format!("{}.png", crate::vision::key(&route_map(&map))));
+            if !path.exists() {
+                self.sleep(800)?;
+                if let Some(f) = self.screen(self.main).frame() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if f.save_png(&path).is_ok() {
+                        self.log(format!("map picture saved: {}", path.display()));
+                    }
+                }
+            }
+        }
         for h in self.main_last(self.movers()) {
             self.tp_spawn(h)?;
         }
@@ -959,13 +977,28 @@ impl RunCtx {
                 }
                 // skip spots that failed before on this map (spot memory)
                 if s.spot_memory {
+                    // hill units learn their own spots (high ground only)
+                    let mkey = if u.hill {
+                        format!("{key} hill")
+                    } else {
+                        key.clone()
+                    };
                     let mem = self.memory.lock().unwrap();
+                    // hill units: try spots that worked for hill units first
+                    if u.hill {
+                        let good = mem.good_spots(&mkey);
+                        spots.sort_by_key(|p| {
+                            !good
+                                .iter()
+                                .any(|g| (g.x - p.x).abs() <= 10 && (g.y - p.y).abs() <= 10)
+                        });
+                    }
                     let before = spots.len();
-                    spots.retain(|p| !mem.is_bad(&key, *p));
-                    if spots.len() < before && slot == 1 {
+                    spots.retain(|p| !mem.is_bad(&mkey, *p));
+                    if spots.len() < before {
                         self.log(format!(
-                            "{key}: skipping {} spot(s) that failed before",
-                            mem.bad_count(&key)
+                            "{mkey}: skipping {} spot(s) that failed before",
+                            mem.bad_count(&mkey)
                         ));
                     }
                 }
@@ -1043,7 +1076,11 @@ impl RunCtx {
                                     .log(format!("client {n}: slot {slot} auto ability not seen")),
                             }
                         };
-                        let set = spots_key(&map, n);
+                        let set = if units[slot - 1].hill {
+                            format!("{} hill", spots_key(&map, n))
+                        } else {
+                            spots_key(&map, n)
+                        };
                         let remember = s.spot_memory && scr.has("unit_placed");
                         let good = |p: Point| {
                             auto(p);
