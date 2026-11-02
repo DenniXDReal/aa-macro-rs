@@ -245,16 +245,21 @@ type R<T> = Result<T, String>;
 
 /// OCR of the whole screen costs a moment: at most every 2 s per client.
 fn ocr_due(h: Hwnd) -> bool {
-    static LAST: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new(Vec::new());
+    ocr_due_for(h, 0)
+}
+
+/// Same, per purpose (0 = cards / weather, 1 = VICTORY / DEFEAT).
+fn ocr_due_for(h: Hwnd, what: u8) -> bool {
+    static LAST: std::sync::Mutex<Vec<(Hwnd, u8, Instant)>> = std::sync::Mutex::new(Vec::new());
     let mut v = LAST.lock().unwrap();
-    match v.iter_mut().find(|e| e.0 == h) {
-        Some(e) if e.1.elapsed() < Duration::from_secs(2) => false,
+    match v.iter_mut().find(|e| e.0 == h && e.1 == what) {
+        Some(e) if e.2.elapsed() < Duration::from_secs(2) => false,
         Some(e) => {
-            e.1 = Instant::now();
+            e.2 = Instant::now();
             true
         }
         None => {
-            v.push((h, Instant::now()));
+            v.push((h, what, Instant::now()));
             true
         }
     }
@@ -1313,6 +1318,12 @@ impl RunCtx {
                     return Ok(Some(n == "victory"));
                 }
             }
+            // OCR reads VICTORY / DEFEAT too (no capture needed)
+            if ocr_due_for(h, 1) {
+                if let Some(r) = scr.frame().and_then(|f| scr.ocr_end(&f)) {
+                    return Ok(Some(r));
+                }
+            }
         }
         Ok(None)
     }
@@ -1378,6 +1389,21 @@ impl RunCtx {
                 self.sleep(800)?;
                 continue;
             }
+            // only OCR sees VICTORY / DEFEAT: Next's usual spot
+            if let Some(f) = main.frame() {
+                if main.ocr_end(&f).is_some() {
+                    let p = Point::new(318, 397);
+                    if blind % 5 == 0 {
+                        self.log("end screen read by OCR - clicking Next's usual spot");
+                    }
+                    blind += 1;
+                    self.arb
+                        .run(Batch::new(self.main, "next (ocr)").click(p.x, p.y))
+                        .map_err(|e| format!("next: {e}"))?;
+                    self.sleep(800)?;
+                    continue;
+                }
+            }
             // already left the end screen (e.g. the click took on the first try)
             if clicked && main.find_wide(&end).is_none() {
                 break;
@@ -1418,6 +1444,8 @@ impl RunCtx {
             )
             .is_some()
         {
+            "end"
+        } else if main.frame().and_then(|f| main.ocr_end(&f)).is_some() {
             "end"
         } else if main
             .find(&Self::names(&["play_button", "areas_button"]), None)

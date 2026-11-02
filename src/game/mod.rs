@@ -201,6 +201,20 @@ impl LiveScreen {
         card_screen_text(&text)
     }
 
+    /// VICTORY (true) / DEFEAT (false) read with OCR from the upper middle.
+    pub fn ocr_end(&self, frame: &crate::capture::Frame) -> Option<bool> {
+        let area = Rect::new(150, 60, 500, 220);
+        let t = self.platform.ocr(frame, area)?.to_lowercase();
+        let flat: String = t.chars().filter(|c| c.is_alphabetic()).collect();
+        if flat.contains("victory") {
+            Some(true)
+        } else if flat.contains("defeat") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// One OCR read of the whole screen: (card screen weather, weather shift).
     pub fn ocr_events(&self, frame: &crate::capture::Frame) -> (Option<String>, Option<String>) {
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
