@@ -48,6 +48,8 @@ pub struct Settings {
     /// Clients that place units (1 = main, 2 = second client...). Each has
     /// its own spot set per map.
     pub placers: Vec<usize>,
+    /// Client number -> team it places with (missing = the team in use).
+    pub placer_teams: std::collections::BTreeMap<usize, usize>,
     /// Use the spiral when a map has no custom spots (or they run out).
     pub spiral_fallback: bool,
     /// Dock the main client into the app's preview box; alts stack behind it.
@@ -247,6 +249,12 @@ impl Settings {
         }
         self.teams.remove(i);
         self.mode_teams.retain(|_, t| *t != i);
+        self.placer_teams.retain(|_, t| *t != i);
+        for t in self.placer_teams.values_mut() {
+            if *t > i {
+                *t -= 1;
+            }
+        }
         for t in self.mode_teams.values_mut() {
             if *t > i {
                 *t -= 1;
@@ -261,6 +269,18 @@ impl Settings {
         };
         self.team = next.min(self.teams.len() - 1);
         self.units = self.teams[self.team].units.clone();
+    }
+
+    /// Unit slots client `n` (1 = first) places with.
+    pub fn units_for(&self, n: usize) -> Vec<UnitSlot> {
+        match self.placer_teams.get(&n) {
+            Some(&t) if t != self.team && t < self.teams.len() => {
+                let mut u = self.teams[t].units.clone();
+                u.resize_with(6, UnitSlot::default);
+                u
+            }
+            _ => self.units.clone(),
+        }
     }
 
     /// Picking a mode loads the team linked to it (if any).
@@ -360,6 +380,7 @@ impl Default for Settings {
             webhook: crate::webhook::WebhookSettings::default(),
             camera: crate::game::placing::CameraSettings::default(),
             placers: vec![1],
+            placer_teams: Default::default(),
             spiral_fallback: true,
             teams: vec![],
             team: 0,
@@ -484,5 +505,28 @@ mod tests {
         let again = Settings::load_or_create(&p).unwrap();
         assert_eq!(s.process_name, again.process_name);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    use super::*;
+
+    #[test]
+    fn two_clients_two_teams() {
+        let mut s = Settings::default();
+        s.ensure(0);
+        s.fix_teams();
+        s.units[0].name = "Main team unit".into();
+        s.add_team("Second");
+        s.units[0].name = "Alt team unit".into();
+        s.switch_team(0);
+        s.placers = vec![1, 2];
+        s.placer_teams.insert(2, 1);
+        assert_eq!(s.units_for(1)[0].name, "Main team unit");
+        assert_eq!(s.units_for(2)[0].name, "Alt team unit");
+        s.remove_team(1);
+        assert!(s.placer_teams.is_empty());
+        assert_eq!(s.units_for(2)[0].name, "Main team unit");
     }
 }

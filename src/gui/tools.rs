@@ -196,6 +196,65 @@ impl App {
         self.arbiter.as_ref().unwrap().handle()
     }
 
+    /// Which clients place units, each with its own team (two accounts
+    /// spam-placing two different loadouts at once).
+    pub(super) fn placers_ui(&mut self, ui: &mut egui::Ui) {
+        self.settings.fix_teams();
+        let mut changed = false;
+        ui.label(
+            egui::RichText::new("Clients that place units - each can use its own team")
+                .color(MUTED),
+        );
+        for i in 0..self.clients.len().max(1) {
+            let n = i + 1;
+            ui.horizontal(|ui| {
+                let mut on = self.settings.placers.contains(&n);
+                if super::toggle(ui, &mut on, &self.client_label(i)) {
+                    if on {
+                        self.settings.placers.push(n);
+                        self.settings.placers.sort();
+                    } else {
+                        self.settings.placers.retain(|x| *x != n);
+                    }
+                    changed = true;
+                }
+                if on {
+                    ui.label("team");
+                    let cur = self.settings.placer_teams.get(&n).copied();
+                    let shown = match cur {
+                        Some(t) if t < self.settings.teams.len() => {
+                            self.settings.teams[t].name.clone()
+                        }
+                        _ => format!("in use ({})", self.settings.teams[self.settings.team].name),
+                    };
+                    ComboBox::from_id_salt(("placer-team", n))
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(cur.is_none(), "the team in use")
+                                .clicked()
+                            {
+                                self.settings.placer_teams.remove(&n);
+                                changed = true;
+                            }
+                            for (t, team) in self.settings.teams.iter().enumerate() {
+                                if ui.selectable_label(cur == Some(t), &team.name).clicked() {
+                                    self.settings.placer_teams.insert(n, t);
+                                    changed = true;
+                                }
+                            }
+                        });
+                }
+            });
+        }
+        if self.settings.placers.len() > 1 {
+            ui.small("All of these place at the same time (input takes turns). Make teams on Home > Control (+ New), then pick one per client here.");
+        }
+        if changed {
+            self.dirty();
+        }
+    }
+
     pub(super) fn read_level_test(&mut self) {
         let Some(info) = self.clients.get(self.sel).cloned() else {
             self.say("no client");
@@ -388,22 +447,7 @@ impl App {
                 self.hover_test();
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Clients that place units:");
-            for i in 0..self.clients.len().max(1) {
-                let n = i + 1;
-                let mut on = self.settings.placers.contains(&n);
-                if super::toggle(ui, &mut on, &self.client_label(i)) {
-                    if on {
-                        self.settings.placers.push(n);
-                        self.settings.placers.sort();
-                    } else {
-                        self.settings.placers.retain(|x| *x != n);
-                    }
-                    self.dirty();
-                }
-            }
-        });
+        self.placers_ui(ui);
         ui.horizontal(|ui| {
             if super::toggle(
                 ui,

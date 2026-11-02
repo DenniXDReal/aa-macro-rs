@@ -721,9 +721,10 @@ impl RunCtx {
                 continue;
             };
             let key = spots_key(&map, n);
+            // each placing client can use its own team
+            let units = s.units_for(n);
             let mut jobs = vec![];
-            for (i, u) in s
-                .units
+            for (i, u) in units
                 .iter()
                 .enumerate()
                 .filter(|(_, u)| u.enabled && u.place > 0)
@@ -745,8 +746,8 @@ impl RunCtx {
                 jobs.push((slot, u.place as u32, spots));
             }
             // farm units first
-            jobs.sort_by_key(|(slot, _, _)| !s.units[slot - 1].farm);
-            work.push((n, h, scr, jobs));
+            jobs.sort_by_key(|(slot, _, _)| !units[slot - 1].farm);
+            work.push((n, h, scr, jobs, units));
         }
         let delay = (s.place_delay_ms as f32 * self.speed) as u64;
         let placing: Vec<Hwnd> = work.iter().map(|w| w.1).collect();
@@ -762,7 +763,7 @@ impl RunCtx {
         let over = &over;
         let out = std::thread::scope(|sc| {
             let mut handles = vec![];
-            for (wi, (n, h, scr, jobs)) in work.into_iter().enumerate() {
+            for (wi, (n, h, scr, jobs, units)) in work.into_iter().enumerate() {
                 let keys = keys.clone();
                 let watchers = if wi == 0 { watchers.clone() } else { vec![] };
                 handles.push(sc.spawn(move || {
@@ -796,7 +797,7 @@ impl RunCtx {
                         let free: Vec<Point> =
                             spots.into_iter().filter(|p| !used.contains(p)).collect();
                         // BUFF units: turn Auto ability on while the panel is open
-                        let buff = s.units[slot - 1].buff;
+                        let buff = units[slot - 1].buff;
                         let auto = |_at: Point| {
                             if !buff || !scr.has("auto_ability") {
                                 return;
@@ -845,11 +846,20 @@ impl RunCtx {
     pub fn upgrade_until_end(&self, placed: &[(Hwnd, usize, Point)]) -> R<bool> {
         let s = &self.settings;
         let keys = Keys::from(&s.keybinds)?;
+        // unit settings per client (each placing client may have its own team)
+        let per: std::collections::HashMap<Hwnd, Vec<crate::config::UnitSlot>> = placed
+            .iter()
+            .map(|(h, _, _)| {
+                let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+                (*h, s.units_for(n))
+            })
+            .collect();
+        let unit = |h: &Hwnd, slot: usize| per[h][slot - 1].clone();
         let mut order: Vec<&(Hwnd, usize, Point)> = placed
             .iter()
-            .filter(|(_, slot, _)| s.units[slot - 1].upgrade != Upgrade::None)
+            .filter(|(h, slot, _)| unit(h, *slot).upgrade != Upgrade::None)
             .collect();
-        order.sort_by_key(|(_, slot, _)| (!s.units[slot - 1].farm, s.units[slot - 1].priority));
+        order.sort_by_key(|(h, slot, _)| (!unit(h, *slot).farm, unit(h, *slot).priority));
         let mut done: Vec<u32> = vec![0; order.len()];
         let mut maxed: Vec<bool> = vec![false; order.len()];
         let end = Self::names(&["victory", "defeat"]);
@@ -870,9 +880,9 @@ impl RunCtx {
             }
             // skip the ones already finished; all finished = just watch the end
             let finished = |k: usize, done: &[u32], maxed: &[bool]| {
-                let (_, slot, _) = order[k];
+                let (h, slot, _) = order[k];
                 maxed[k]
-                    || match s.units[slot - 1].upgrade {
+                    || match unit(h, *slot).upgrade {
                         Upgrade::Level(n) => done[k] >= n as u32,
                         _ => false,
                     }
@@ -894,7 +904,7 @@ impl RunCtx {
             let is_max =
                 scr.has("upgrade_max") && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
             let before = Self::read_level(scr);
-            let reached = match (s.units[slot - 1].upgrade, before) {
+            let reached = match (unit(h, *slot).upgrade, before) {
                 (Upgrade::Level(n), Some(l)) => l >= n as u32,
                 _ => false,
             };

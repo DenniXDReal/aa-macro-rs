@@ -1469,6 +1469,17 @@ impl App {
 
     fn units_grid(&mut self, ui: &mut egui::Ui) {
         self.team_bar(ui);
+        if self.clients.len() > 1 {
+            egui::CollapsingHeader::new(
+                RichText::new(format!(
+                    "Placing clients ({}) - 2 accounts with 2 teams",
+                    self.settings.placers.len()
+                ))
+                .color(MUTED),
+            )
+            .id_salt("placers-home")
+            .show(ui, |ui| self.placers_ui(ui));
+        }
         let mut changed = false;
         let keys = self.settings.keybinds.units.clone();
         let avail = ui.available_width();
