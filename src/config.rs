@@ -37,6 +37,9 @@ pub struct Settings {
     pub idle_click: bool,
     /// Where that click goes (client px) - pick a spot with nothing on it.
     pub idle_click_at: (i32, i32),
+    /// When the loop is stuck for good: close all Roblox, relaunch the
+    /// accounts (main first) and start again.
+    pub auto_relaunch: bool,
     /// Where Next sits below the VICTORY / DEFEAT title (px), for when the
     /// Next pattern isn't recognised.
     pub next_below_title: i32,
@@ -394,6 +397,7 @@ impl Default for Settings {
             shape_scale: 1.5,
             idle_click: true,
             next_below_title: 205,
+            auto_relaunch: true,
             idle_click_at: (400, 110),
             spot_memory: true,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],

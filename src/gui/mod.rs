@@ -171,6 +171,11 @@ pub struct App {
 
     // game loop
     run_rx: Option<Receiver<crate::game::run::Event>>,
+    /// Auto-relaunch after the loop got stuck: when it began / when the
+    /// launch finished, and how many times this session.
+    relaunch: Option<Instant>,
+    relaunch_launched: Option<Instant>,
+    relaunches: Vec<Instant>,
     /// Spots where units didn't go down (skipped next time).
     memory: Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
 
@@ -297,6 +302,9 @@ impl App {
             name_logs: Default::default(),
             admin_needed: false,
             run_rx: None,
+            relaunch: None,
+            relaunch_launched: None,
+            relaunches: vec![],
             memory: Arc::new(std::sync::Mutex::new(crate::spotmem::SpotMemory::load(
                 &crate::spotmem::SpotMemory::default_path(),
             ))),
@@ -470,7 +478,11 @@ impl App {
                     self.platform.keep_awake(false);
                     self.running = false;
                     self.paused = false;
-                    if why != "stopped" {
+                    let by_user = why == "stopped" || why.starts_with("stopped after");
+                    if !by_user && self.settings.auto_relaunch && self.begin_relaunch(&why) {
+                        continue;
+                    }
+                    if !by_user {
                         self.hook(crate::webhook::Kind::Problem, "Macro stopped", &why, true);
                     }
                 }
@@ -478,7 +490,72 @@ impl App {
         }
     }
 
+    /// Stuck for good: close every Roblox, launch the accounts again (main
+    /// first, alts after it loaded), then Start again. Max 5 an hour.
+    fn begin_relaunch(&mut self, why: &str) -> bool {
+        self.relaunches
+            .retain(|t| t.elapsed() < Duration::from_secs(3600));
+        if self.relaunches.len() >= 5 {
+            self.say("auto-relaunch: 5 already this hour - stopping instead");
+            return false;
+        }
+        let order: Vec<String> = accounts::launch_order(&self.settings.accounts)
+            .iter()
+            .map(|a| a.username.clone())
+            .collect();
+        if order.is_empty() {
+            self.say("auto-relaunch: no accounts on the Accounts page to launch");
+            return false;
+        }
+        self.relaunches.push(Instant::now());
+        self.relaunch = Some(Instant::now());
+        self.relaunch_launched = None;
+        self.say(format!(
+            "stuck ({why}) - closing Roblox and relaunching {} account(s)",
+            order.len()
+        ));
+        self.hook(
+            crate::webhook::Kind::Problem,
+            "Relaunching",
+            &format!("{why} - closing Roblox and relaunching everything"),
+            false,
+        );
+        let _ = self.platform.kill_process(&self.settings.process_name);
+        // the lock is ours already; launch() waits for main then alts
+        self.ram_launch(order, false);
+        true
+    }
+
+    fn relaunch_tick(&mut self) {
+        let Some(started) = self.relaunch else { return };
+        let ready = self
+            .relaunch_launched
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(45));
+        if ready || started.elapsed() > Duration::from_secs(600) {
+            self.relaunch = None;
+            self.relaunch_launched = None;
+            self.refresh_clients();
+            if self.clients.is_empty() {
+                self.say("auto-relaunch: no Roblox came up - stopped");
+                self.hook(
+                    crate::webhook::Kind::Problem,
+                    "Macro stopped",
+                    "relaunch failed: no Roblox clients",
+                    true,
+                );
+                return;
+            }
+            self.say(format!(
+                "relaunched {} client(s) - starting again",
+                self.clients.len()
+            ));
+            self.start();
+        }
+    }
+
     fn stop(&mut self) {
+        self.relaunch = None;
+        self.relaunch_launched = None;
         self.control.stop();
         if self.running {
             self.say("Stopped");
@@ -2200,18 +2277,20 @@ impl App {
             let main_failed = std::cell::Cell::new(false);
             let mut launch = |n: &str| -> anyhow::Result<String> {
                 let is_main = main.as_deref() == Some(n);
+                // main first, then give it time to load in before any alt
+                if !is_main && main_in_batch && !waited && !main_failed.get() {
+                    log(format!(
+                        "waiting {}s for {} to load in before the alts",
+                        delay.as_secs(),
+                        main.as_deref().unwrap_or_default()
+                    ));
+                    std::thread::sleep(delay);
+                    waited = true;
+                }
                 if follow && !is_main {
                     let m = main.as_deref().unwrap_or_default();
                     if main_failed.get() {
                         anyhow::bail!("the main didn't launch, so there's nothing to follow");
-                    }
-                    if main_in_batch && !waited {
-                        log(format!(
-                            "waiting {}s for {m} to load in before alts follow",
-                            delay.as_secs()
-                        ));
-                        std::thread::sleep(delay);
-                        waited = true;
                     }
                     if !builtin {
                         return ram.follow(n, m).map(|r| format!("{r} (following {m})"));
@@ -2620,6 +2699,13 @@ impl App {
                         .on_hover_text("only used when the Next button itself isn't recognised")
                         .changed();
                     ui.end_row();
+                    ui.label("When stuck");
+                    changed |= toggle(
+                        ui,
+                        &mut s.auto_relaunch,
+                        "close all Roblox, relaunch the accounts (main first) and start again",
+                    );
+                    ui.end_row();
                     ui.label("Keep-alive click");
                     ui.horizontal(|ui| {
                         changed |= toggle(ui, &mut s.idle_click, "every 5 s once all units are upgraded");
@@ -2918,6 +3004,9 @@ impl App {
                 RamMsg::Lock(l) => self.multi = Some(l),
                 RamMsg::Added(name, id, cookie) => self.add_builtin(name, id, cookie),
                 RamMsg::LaunchDone => {
+                    if self.relaunch.is_some() {
+                        self.relaunch_launched = Some(Instant::now());
+                    }
                     self.refresh_clients();
                     if !self.settings.dock {
                         self.tile();
@@ -2929,6 +3018,7 @@ impl App {
             self.hotkey(k);
         }
         self.run_events();
+        self.relaunch_tick();
         if self.last_refresh.elapsed() > Duration::from_secs(3) {
             self.refresh_quiet();
         }
