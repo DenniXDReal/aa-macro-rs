@@ -231,6 +231,9 @@ pub struct RunCtx {
 
 type R<T> = Result<T, String>;
 
+/// When a card was last picked (any client) - one pick does it for all.
+static LAST_PICK: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
 impl RunCtx {
     fn log(&self, s: impl Into<String>) {
         let _ = self.tx.send(Event::Log(s.into()));
@@ -401,9 +404,35 @@ impl RunCtx {
         if !scr.has("choose_card") || scr.find(&Self::names(&["choose_card"]), None).is_none() {
             return Ok(false);
         }
+        // one pick is enough for everyone: skip if another client just did it
+        {
+            let mut last = LAST_PICK.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
+                return Ok(false);
+            }
+            *last = Some(Instant::now());
+        }
+        // close the unit panel first so it doesn't cover the cards
+        match scr
+            .has("unit_close")
+            .then(|| scr.find(&Self::names(&["unit_close"]), None))
+            .flatten()
+        {
+            Some(p) => self.click(h, p, "close unit panel")?,
+            None => {
+                if let Ok(keys) = Keys::from(&self.settings.keybinds) {
+                    let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
+                }
+            }
+        }
+        self.sleep(400)?;
         let Some(f) = scr.frame() else {
             return Ok(false);
         };
+        // keep a picture of every different card screen (cards/ folder)
+        if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir()) {
+            self.log(format!("card screen saved: {}", path.display()));
+        }
         let (p, green) = super::cards::pick(&f);
         self.log(if green {
             "card: green one"
@@ -433,8 +462,9 @@ impl RunCtx {
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
         let mut alt_done = false;
         for h in self.main_last(all) {
-            if self.handle_cards(h)? && h != self.main {
-                alt_done = true;
+            if self.handle_cards(h)? {
+                alt_done = h != self.main;
+                break; // one pick is enough
             }
         }
         if alt_done {
