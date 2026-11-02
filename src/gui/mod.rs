@@ -2614,6 +2614,12 @@ impl App {
                         )
                         .changed();
                     ui.end_row();
+                    ui.label("Next below VICTORY/DEFEAT (px)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.next_below_title).range(50..=400))
+                        .on_hover_text("only used when the Next button itself isn't recognised")
+                        .changed();
+                    ui.end_row();
                     ui.label("Keep-alive click");
                     ui.horizontal(|ui| {
                         changed |= toggle(ui, &mut s.idle_click, "every 5 s once all units are upgraded");

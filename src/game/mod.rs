@@ -149,6 +149,20 @@ impl LiveScreen {
         self.pats.contains_key(&key(name))
     }
 
+    /// Like `find`, but over the whole picture (the button may sit somewhere
+    /// else than where you captured it, e.g. Next on a DEFEAT vs VICTORY screen).
+    pub fn find_wide(&self, names: &[String]) -> Option<Point> {
+        let frame = self.platform.capture_client(self.hwnd).ok()?;
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        names.iter().find_map(|n| {
+            self.pats.get(&key(n)).and_then(|p| {
+                p.find_in(&frame, None)
+                    .or_else(|| p.find_in(&frame, Some(all)))
+                    .map(|h| h.center())
+            })
+        })
+    }
+
     /// Names in `names` that you haven't captured yet.
     pub fn missing(&self, names: &[String]) -> Vec<String> {
         names

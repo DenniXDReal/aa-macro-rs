@@ -618,7 +618,7 @@ impl RunCtx {
         let mut dl = self.control.deadline(self.secs(90.0));
         while main.find(&gone, None).is_some() {
             if dl.expired() {
-                return Err("still in the lobby after 90 s".into());
+                return Err("the end / lobby screen is still up after 90 s".into());
             }
             self.sleep(500)?;
         }
@@ -1077,11 +1077,13 @@ impl RunCtx {
 
     /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
     pub fn after_end(&self) -> R<bool> {
-        // straight to the main: Next, then Replay (alts aren't touched)
+        // straight to the main: spam Next until Replay shows, then Replay
         self.to_main()?;
         let main = self.screen(self.main);
         let lobby = self.settings.run.return_to_lobby;
         let want = if lobby { "return_to_lobby" } else { "replay" };
+        let title = Self::names(&["victory", "defeat"]);
+        let next = Self::names(&["next_button"]);
         let end = Self::names(&[
             "victory",
             "defeat",
@@ -1089,37 +1091,58 @@ impl RunCtx {
             "replay",
             "return_to_lobby",
         ]);
-        let mut dl = self.control.deadline(self.secs(60.0));
+        let mut dl = self.control.deadline(self.secs(90.0));
         let waited = Instant::now();
         let mut clicked = false;
+        let mut blind = 0u32;
         loop {
             self.check()?;
             // the button we want: click it, then make sure the end screen goes
-            if let Some(p) = main.find(&Self::names(&[want]), None) {
+            if let Some(p) = main.find_wide(&Self::names(&[want])) {
                 self.click(self.main, p, want)?;
                 clicked = true;
                 let mut gone = self.control.deadline(self.secs(8.0));
-                while main.find(&end, None).is_some() && !gone.expired() {
+                while main.find_wide(&end).is_some() && !gone.expired() {
                     self.sleep(400)?;
                 }
-                if main.find(&end, None).is_none() {
+                if main.find_wide(&end).is_none() {
                     break;
                 }
                 self.log(format!("{want} didn't take - clicking again"));
                 continue;
             }
-            // rewards first: Next (sometimes more than once)
-            if let Some(p) = main.find(&Self::names(&["next_button"]), None) {
-                self.click(self.main, p, "next")?;
+            // Next, wherever it is on this end screen
+            if let Some(p) = main.find_wide(&next) {
+                self.arb
+                    .run(Batch::new(self.main, "next").click(p.x, p.y))
+                    .map_err(|e| format!("next: {e}"))?;
+                self.sleep(600)?;
+                continue;
+            }
+            // VICTORY / DEFEAT but no Next seen: click where Next sits under
+            // the title (spam it - one of them lands)
+            if let Some(t) = main.find_wide(&title) {
+                let p = Point::new(t.x, (t.y + self.settings.next_below_title).min(590));
+                if blind % 5 == 0 {
+                    self.log(format!(
+                        "Next not recognised - clicking under the title at {},{}",
+                        p.x, p.y
+                    ));
+                }
+                blind += 1;
+                self.arb
+                    .run(Batch::new(self.main, "next (blind)").click(p.x, p.y))
+                    .map_err(|e| format!("next: {e}"))?;
+                self.sleep(800)?;
                 continue;
             }
             // already left the end screen (e.g. the click took on the first try)
-            if clicked && main.find(&end, None).is_none() {
+            if clicked && main.find_wide(&end).is_none() {
                 break;
             }
             // no Replay on this end screen (some modes only offer the lobby)
             if !lobby && waited.elapsed() > Duration::from_secs_f64(self.secs(15.0)) {
-                if let Some(p) = main.find(&Self::names(&["return_to_lobby"]), None) {
+                if let Some(p) = main.find_wide(&Self::names(&["return_to_lobby"])) {
                     self.log("no Replay here - going back to the lobby instead");
                     self.click(self.main, p, "return to lobby")?;
                     self.sleep(8000)?;

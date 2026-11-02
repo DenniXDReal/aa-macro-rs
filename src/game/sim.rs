@@ -621,6 +621,26 @@ mod tests {
         assert!(replays >= 2, "replayed {replays}x");
     }
 
+    /// DEFEAT shows but the Next button isn't recognised: it clicks under
+    /// the title until Replay comes up.
+    #[test]
+    fn next_not_recognised_still_replays() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0 end*/
+            scr(vec![
+                el("defeat", 360, 150, None),
+                el("odd_next", 360, 355, Some(1)),
+            ]),
+            /*1 after*/ scr(vec![el("replay", 450, 500, Some(2))]),
+            /*2 loading*/ scr(vec![]),
+        ]));
+        let mut s = Settings::default();
+        s.step_delay_ms = 0;
+        let (c, _rx, _arb) = ctx(sim.clone(), s);
+        assert!(!c.after_end().unwrap());
+        assert_eq!(*sim.clicks.lock().unwrap(), vec!["odd_next", "replay"]);
+    }
+
     #[test]
     fn missing_button_is_reported_not_hung() {
         let sim = Arc::new(Sim::new(vec![

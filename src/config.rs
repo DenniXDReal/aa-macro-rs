@@ -37,6 +37,9 @@ pub struct Settings {
     pub idle_click: bool,
     /// Where that click goes (client px) - pick a spot with nothing on it.
     pub idle_click_at: (i32, i32),
+    /// Where Next sits below the VICTORY / DEFEAT title (px), for when the
+    /// Next pattern isn't recognised.
+    pub next_below_title: i32,
     /// Skip spots where units failed to go down before (per map + client).
     pub spot_memory: bool,
     /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
@@ -390,6 +393,7 @@ impl Default for Settings {
             place_shape: Default::default(),
             shape_scale: 1.5,
             idle_click: true,
+            next_below_title: 205,
             idle_click_at: (400, 110),
             spot_memory: true,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
