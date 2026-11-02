@@ -4,6 +4,7 @@
 //! Pages: Home (live view, mode, units, alts, session), Accounts (Roblox
 //! Account Manager), Movement (routes), Placement, Patterns, Settings.
 
+mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
 mod tools;
 
 use crate::accounts::{self, AccountRole, AccountSlot, Ram};
@@ -118,6 +119,8 @@ pub struct App {
     pat_margin: i32,
     pat_preview: Option<TextureHandle>,
     detect_map: String,
+    /// TEMPORARY (debug_tp): where the TP click would land.
+    tp_dbg_click: Option<Point>,
     hits: Vec<(String, Rect, Option<Hit>)>,
 
     // placement
@@ -261,6 +264,7 @@ impl App {
             pat_margin: 40,
             pat_preview: None,
             detect_map: String::new(),
+            tp_dbg_click: None,
             hits: vec![],
             map,
             new_map: String::new(),

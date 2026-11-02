@@ -752,6 +752,7 @@ impl App {
 
     pub(super) fn page_patterns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Patterns");
+        self.debug_tp_card(ui); // TEMPORARY
         ui.small("Drag a box around button text / an icon on the picture, name it, Save. Close pop-ups first.");
         egui::Frame::new().fill(CARD_HI).corner_radius(10).inner_margin(10).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -989,6 +990,7 @@ impl App {
                     );
                 }
             }
+            self.debug_tp_overlay(&painter, &to_screen); // TEMPORARY
             if let Some(c) = self.crop {
                 painter.rect_stroke(
                     to_screen(c),
