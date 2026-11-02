@@ -191,7 +191,7 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         ));
     } else {
         out.push(step(
-            "Replay, wait for Vote start, repeat from Teleport to Spawn",
+            "Next on every alt, then the main: Next > Replay, wait for Vote start, repeat from Teleport to Spawn",
             &["replay"],
             false,
         ));
@@ -993,6 +993,29 @@ impl RunCtx {
 
     /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
     pub fn after_end(&self) -> R<bool> {
+        // alts only get Return to lobby (no Replay): click Next on every alt
+        // first, then the main does Next + Replay for everyone
+        let alts: Vec<Hwnd> = self
+            .clients
+            .iter()
+            .map(|c| c.0)
+            .filter(|h| *h != self.main)
+            .collect();
+        for h in &alts {
+            let mut n = 0;
+            while n < 3 {
+                match self.wait_any(*h, &["next_button"], if n == 0 { 4000 } else { 1500 })? {
+                    Some((_, p)) => {
+                        self.click(*h, p, "alt next")?;
+                        n += 1;
+                    }
+                    None => break,
+                }
+            }
+        }
+        if !alts.is_empty() {
+            self.to_main()?;
+        }
         let main = self.screen(self.main);
         let lobby = self.settings.run.return_to_lobby;
         let want = if lobby { "return_to_lobby" } else { "replay" };
