@@ -149,7 +149,12 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
     out.push(step("Camera top-down", &[], true));
     out.push(step(
         "Settings > Teleport to Spawn > close",
-        &["settings_button", "tp_spawn", "settings_close"],
+        &[
+            "settings_button",
+            "tp_spawn",
+            "tp_spawn_button",
+            "settings_close",
+        ],
         true,
     ));
     let walk = if fixed {

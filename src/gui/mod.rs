@@ -2191,10 +2191,14 @@ impl App {
                     .collect()
             };
             let mut waited = false;
+            let main_failed = std::cell::Cell::new(false);
             let mut launch = |n: &str| -> anyhow::Result<String> {
                 let is_main = main.as_deref() == Some(n);
                 if follow && !is_main {
                     let m = main.as_deref().unwrap_or_default();
+                    if main_failed.get() {
+                        anyhow::bail!("the main didn't launch, so there's nothing to follow");
+                    }
                     if main_in_batch && !waited {
                         log(format!(
                             "waiting {}s for {m} to load in before alts follow",
@@ -2208,7 +2212,11 @@ impl App {
                     }
                 }
                 if !builtin {
-                    return ram.launch(n, link.as_deref());
+                    let r = ram.launch(n, link.as_deref());
+                    if is_main && r.is_err() {
+                        main_failed.set(true);
+                    }
+                    return r;
                 }
                 // built-in account manager
                 let (cookie, mut id) = logins.get(n).cloned().ok_or_else(|| {
@@ -2217,7 +2225,7 @@ impl App {
                 if id == 0 {
                     id = crate::rbx::whoami(&cookie)?.0;
                 }
-                log(format!("{n}: login ok, finding the server…"));
+                log(format!("{n}: finding the server…"));
                 let target = if follow && !is_main {
                     let m = main.as_deref().unwrap_or_default();
                     let uid = logins
@@ -2247,6 +2255,9 @@ impl App {
                     ));
                 }
                 crate::rbx::launch(&cookie, id, &target, &|u| p.open_uri(u))?;
+                if is_main {
+                    main_failed.set(false);
+                }
                 Ok(match &target {
                     crate::rbx::Target::Follow { .. } => "launched, following the main".into(),
                     crate::rbx::Target::Private { .. } => "launched into the private server".into(),

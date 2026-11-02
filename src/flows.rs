@@ -74,7 +74,8 @@ pub const FLOWS: &[Flow] = &[
         needs: &[
             n("vote_start", "text", "Vote Start button at the start of a stage"),
             n("settings_button", "icon", "Settings cog (bottom left) - optional, it clicks (26, 570) without it"),
-            n("tp_spawn", "text", "The words 'Teleport back to Spawn' in settings (F6 on the text, not the arrow) - the macro clicks the arrow button 178 px to its right"),
+            n("tp_spawn", "text", "The words 'Teleport back to Spawn' in settings (F6 on the text) - used to find the row"),
+            n("tp_spawn_button", "icon", "The arrow button you click for Teleport back to Spawn (where to click; without it the macro clicks 178 px right of the label)"),
             n("settings_close", "icon", "X that closes settings - optional, it clicks (583, 147) without it"),
             n("unit_placed", "text", "'UPG [0]' badge that shows on a unit you just placed"),
             n("upgrade_max", "text", "'MAX' on a unit's panel when it can't upgrade any more (for MAX units)"),

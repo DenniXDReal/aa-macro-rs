@@ -71,7 +71,8 @@ fn csrf(cookie: &str) -> Result<String> {
         .post("https://auth.roblox.com/v1/authentication-ticket/")
         .header("Cookie", &cookie_header(cookie))
         .header("Referer", "https://www.roblox.com/")
-        .send_empty()
+        .header("Content-Type", "application/json")
+        .send("{}".as_bytes())
         .map_err(|e| anyhow!("Roblox unreachable: {e}"))?;
     r.headers()
         .get("x-csrf-token")
@@ -88,24 +89,34 @@ fn csrf(cookie: &str) -> Result<String> {
 /// One-time ticket that logs the Roblox client in.
 pub fn auth_ticket(cookie: &str) -> Result<String> {
     let token = csrf(cookie)?;
-    let r = agent()
+    let mut r = agent()
         .post("https://auth.roblox.com/v1/authentication-ticket/")
         .header("Cookie", &cookie_header(cookie))
         .header("X-CSRF-TOKEN", &token)
         .header("Referer", "https://www.roblox.com/")
         .header("RBXAuthenticationNegotiation", "1")
-        .send_empty()
+        .header("Content-Type", "application/json")
+        .send("{}".as_bytes())
         .map_err(|e| anyhow!("Roblox unreachable: {e}"))?;
-    r.headers()
+    if let Some(t) = r
+        .headers()
         .get("rbx-authentication-ticket")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            anyhow!(
-                "Roblox gave no login ticket (HTTP {}) - cookie expired?",
-                r.status().as_u16()
-            )
-        })
+    {
+        return Ok(t.to_string());
+    }
+    let code = r.status().as_u16();
+    let body: String = r
+        .body_mut()
+        .read_to_string()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    if code == 401 {
+        bail!("Roblox says the login is expired (HTTP 401) - add the account again");
+    }
+    bail!("Roblox gave no login ticket (HTTP {code}) {body}")
 }
 
 /// User id for a username (for following the main).

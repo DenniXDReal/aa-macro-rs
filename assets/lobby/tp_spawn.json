@@ -1,12 +1,14 @@
 {
  "map": "In stage > Settings > Teleport to Spawn",
- "source": "DenniXD + the AHK macro's TpSpawn: settings cog, scroll to 'Teleport back to Spawn', click the arrow button 178 px right of that label, close settings",
+ "source": "DenniXD: scan for the settings button, wait 2 s, scan for 'Teleport back to Spawn' (tp_spawn), click its button (tp_spawn_button, or 178,7 right of the label), close settings",
  "steps": [
-  { "type": "click_pattern", "pattern": "settings_button", "timeout_ms": 3000, "fallback": [26, 570] },
-  { "type": "wait", "ms": 1500 },
+  { "type": "click_pattern", "pattern": "settings_button", "timeout_ms": 5000, "fallback": [26, 570] },
+  { "type": "wait", "ms": 2000 },
   { "type": "scroll_until", "pattern": "tp_spawn", "x": 400, "y": 300, "max": 12 },
   { "type": "wait", "ms": 800 },
-  { "type": "click_pattern", "pattern": "tp_spawn", "timeout_ms": 3000, "offset": [178, 7] },
+  { "type": "if_image", "patterns": ["tp_spawn_button"],
+    "then": [ { "type": "click_pattern", "pattern": "tp_spawn_button", "timeout_ms": 3000 } ],
+    "else": [ { "type": "click_pattern", "pattern": "tp_spawn", "timeout_ms": 3000, "offset": [178, 7] } ] },
   { "type": "wait", "ms": 1200 },
   { "type": "click_pattern", "pattern": "settings_close", "timeout_ms": 3000, "fallback": [583, 147] },
   { "type": "wait", "ms": 1000 }
