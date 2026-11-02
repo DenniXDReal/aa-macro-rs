@@ -593,11 +593,19 @@ impl App {
                 painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], st);
             }
             if self.show_spiral {
-                for (i, p) in crate::game::placing::shape_spots_scaled(
+                let nth = self
+                    .settings
+                    .placers
+                    .iter()
+                    .position(|x| *x == self.sel + 1)
+                    .unwrap_or(0);
+                for (i, p) in crate::game::placing::shape_spots_for(
                     self.settings.place_shape,
                     40,
                     self.sel as u64 + 1,
                     self.settings.shape_scale,
+                    nth,
+                    self.settings.placers.len(),
                 )
                 .iter()
                 .enumerate()
@@ -702,8 +710,8 @@ impl App {
         let arb = self.arbiter();
         let tx = self.log_tx.clone();
         std::thread::spawn(move || {
-            let confirm =
-                || has_panel.then(|| screen.find(&["unit_placed".to_string()], None).is_some());
+            use crate::movement::RouteEnv;
+            let badge = has_panel.then(|| screen.probe(&["unit_placed".to_string()], None));
             let mut used: Vec<Point> = vec![];
             for (slot, count, spots) in jobs {
                 let free: Vec<Point> = spots.into_iter().filter(|p| !used.contains(p)).collect();
@@ -714,7 +722,8 @@ impl App {
                     slot,
                     count,
                     &free,
-                    &confirm,
+                    badge.clone(),
+                    false,
                     delay,
                     &|| true,
                     &|_| {},

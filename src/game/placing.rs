@@ -123,7 +123,47 @@ impl Shape {
 /// AHK's centre of the play field (client px).
 pub const SHAPE_CENTRE: Point = Point::new(408, 320);
 /// Spots must stay off the hotbar / top UI.
-pub const SHAPE_AREA: Rect = Rect::new(20, 70, 760, 450);
+pub const SHAPE_AREA: Rect = Rect::new(12, 60, 776, 470);
+
+/// Where each placing account's shape is centred when several place at
+/// once (offset from the middle), so they don't fight over the same spots:
+/// 1st middle, 2nd left, 3rd right, 4th lower.
+pub fn account_offset(nth: usize, placers: usize) -> Point {
+    if placers <= 1 {
+        return Point::new(0, 0);
+    }
+    match nth % 4 {
+        0 => Point::new(0, -40),
+        1 => Point::new(-210, 30),
+        2 => Point::new(210, 30),
+        _ => Point::new(0, 150),
+    }
+}
+
+/// Shape spots for the `nth` (0-based) of `placers` placing accounts.
+pub fn shape_spots_for(
+    shape: Shape,
+    n: usize,
+    seed: u64,
+    scale: f32,
+    nth: usize,
+    placers: usize,
+) -> Vec<Point> {
+    let o = account_offset(nth, placers);
+    // several accounts: each gets its own (smaller) patch of the screen
+    let scale = if placers > 1 { scale * 0.75 } else { scale };
+    let mut out: Vec<Point> = vec![];
+    for p in shape_spots_scaled(shape, n * 2, seed, scale) {
+        let q = Point::new(p.x + o.x, p.y + o.y);
+        if SHAPE_AREA.contains(q) {
+            out.push(q);
+        }
+        if out.len() >= n {
+            break;
+        }
+    }
+    out
+}
 
 /// Candidate spots for `shape` (deterministic for a seed), spread out by
 /// `scale` around the middle (1.0 = the AHK / v10 size).
@@ -389,12 +429,15 @@ pub fn place_slot(
     slot: usize,
     count: u32,
     spots: &[Point],
-    confirm: &dyn Fn() -> Option<bool>,
+    badge: Option<crate::input::Probe>,
+    keep_open: bool,
     delay_ms: u64,
     before_each: &dyn Fn() -> bool,
     on_placed: &dyn Fn(Point),
     on_failed: &dyn Fn(Point),
 ) -> Result<Vec<Point>, InputError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     let mut placed = vec![];
     for (i, at) in spots.iter().enumerate() {
         if placed.len() as u32 >= count {
@@ -408,24 +451,43 @@ pub fn place_slot(
         if !before_each() {
             break;
         }
-        arb.run(place_open_batch(hwnd, keys, slot, *at))?;
-        // the badge pops up a moment after the click
-        let mut ok = confirm();
-        for _ in 0..4 {
-            if ok != Some(false) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            ok = confirm();
+        // one input turn for key + click + badge check + close, so other
+        // accounts can't cut in between (no extra window swaps)
+        let seen = Arc::new(AtomicBool::new(false));
+        let mut b = place_open_batch(hwnd, keys, slot, *at);
+        if let Some(p) = &badge {
+            let (f, s2) = (p.find.clone(), seen.clone());
+            let rec = crate::input::Probe::new(p.label.clone(), move || {
+                let r = f();
+                if r.is_some() {
+                    s2.store(true, Ordering::Relaxed);
+                }
+                r
+            });
+            b = b.then(Action::WaitFor {
+                probe: rec,
+                timeout_ms: 700,
+                required: false,
+            });
         }
-        if ok.unwrap_or(true) {
-            // its panel is still open here (e.g. turn Auto ability on)
+        if !keep_open {
+            b = b.then(Action::KeyTap {
+                key: keys.cancel,
+                hold_ms: 40,
+            });
+        }
+        arb.run(b)?;
+        let ok = badge.is_none() || seen.load(Ordering::Relaxed);
+        if ok {
+            // with keep_open its panel is still up (e.g. turn Auto ability on)
             on_placed(*at);
             placed.push(*at);
         } else {
             on_failed(*at);
         }
-        arb.run(cancel_batch(hwnd, keys))?;
+        if keep_open {
+            arb.run(cancel_batch(hwnd, keys))?;
+        }
     }
     Ok(placed)
 }
@@ -516,7 +578,8 @@ mod tests {
                         2,
                         3,
                         &s,
-                        &|| None,
+                        None,
+                        false,
                         0,
                         &|| true,
                         &|_| {},

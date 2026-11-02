@@ -41,6 +41,11 @@ pub struct Sim {
     cursor: Mutex<Point>,
     /// Names clicked, in order.
     pub clicks: Mutex<Vec<String>>,
+    /// How many Roblox windows (hwnd 1..=n) share this screen.
+    pub windows: usize,
+    fg: Mutex<Hwnd>,
+    /// (window, x, y) of every left click.
+    pub raw_clicks: Mutex<Vec<(Hwnd, i32, i32)>>,
     pub visited: Mutex<Vec<usize>>,
 }
 
@@ -60,6 +65,9 @@ impl Sim {
             state: Mutex::new((0, 0)),
             cursor: Mutex::new(Point::default()),
             clicks: Mutex::new(vec![]),
+            windows: 1,
+            fg: Mutex::new(Hwnd(1)),
+            raw_clicks: Mutex::new(vec![]),
             visited: Mutex::new(vec![0]),
         }
     }
@@ -109,23 +117,26 @@ impl Sim {
 
 impl Platform for Sim {
     fn list_windows(&self, _: &str) -> Vec<WinInfo> {
-        vec![WinInfo {
-            hwnd: Hwnd(1),
-            pid: 1,
-            title: "Roblox".into(),
-        }]
+        (1..=self.windows as isize)
+            .map(|i| WinInfo {
+                hwnd: Hwnd(i),
+                pid: i as u32,
+                title: "Roblox".into(),
+            })
+            .collect()
     }
     fn geometry(&self, hwnd: Hwnd) -> Option<Geometry> {
-        (hwnd == Hwnd(1)).then(|| Geometry {
+        (hwnd.0 >= 1 && hwnd.0 <= self.windows as isize).then(|| Geometry {
             hwnd,
             outer: Rect::new(0, 0, 800, 599),
             client: Rect::new(0, 0, 800, 599),
         })
     }
     fn foreground(&self) -> Option<Hwnd> {
-        Some(Hwnd(1))
+        Some(*self.fg.lock().unwrap())
     }
-    fn focus(&self, _: Hwnd) -> Result<()> {
+    fn focus(&self, h: Hwnd) -> Result<()> {
+        *self.fg.lock().unwrap() = h;
         Ok(())
     }
     fn is_minimized(&self, _: Hwnd) -> bool {
@@ -168,6 +179,10 @@ impl Platform for Sim {
             return Ok(());
         }
         let c = *self.cursor.lock().unwrap();
+        self.raw_clicks
+            .lock()
+            .unwrap()
+            .push((*self.fg.lock().unwrap(), c.x, c.y));
         let cur = self.screen_now();
         if let Some(e) = self.screens[cur].els.iter().find(|e| e.rect.contains(c)) {
             self.clicks.lock().unwrap().push(e.name.to_string());
@@ -655,6 +670,84 @@ mod tests {
         let all = screen.find_all_wide("party_invite");
         assert_eq!(all.len(), 3, "{all:?}");
         assert_eq!(all[2].y, 309);
+    }
+
+    /// Three accounts placing + upgrading at once: every unit goes down on
+    /// the right window, nothing deadlocks, every placed unit gets upgraded.
+    #[test]
+    fn three_accounts_place_and_upgrade_together() {
+        let mut sim = Sim::new(vec![
+            /*0 stage*/
+            Screen {
+                els: vec![],
+                auto: Some((400, 1)),
+                wheel_down: None,
+            },
+            /*1 end*/ scr(vec![el("victory", 360, 150, None)]),
+        ]);
+        sim.windows = 3;
+        let sim = Arc::new(sim);
+        let lib = sim.library();
+        let arb = Arbiter::start(
+            sim.clone(),
+            Control::new(),
+            ArbiterOptions {
+                mouse_settle_ms: 1,
+                click_hold_ms: 1,
+                max_lease_ms: 5000,
+                click_mode: crate::input::ClickMode::Single,
+                swap_delay_ms: 0,
+            },
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut s = Settings::default();
+        for u in s.units.iter_mut() {
+            u.enabled = false;
+        }
+        s.units[0].enabled = true;
+        s.units[0].place = 2;
+        s.units[0].upgrade = crate::config::Upgrade::Level(2);
+        s.units[1].enabled = true;
+        s.units[1].place = 1;
+        s.placers = vec![1, 2, 3];
+        s.place_delay_ms = 0;
+        s.step_delay_ms = 0;
+        let clients = (1..=3)
+            .map(|i| (Hwnd(i), LiveScreen::new(sim.clone(), Hwnd(i), &lib)))
+            .collect();
+        let c = RunCtx {
+            arb: arb.handle(),
+            control: Control::new(),
+            main: Hwnd(1),
+            clients,
+            settings: s,
+            routes: Routes::load(std::path::Path::new("/nonexistent")),
+            placements: Placements::default(),
+            tx,
+            speed: 0.02,
+            memory: Default::default(),
+        };
+        let t = std::time::Instant::now();
+        let placed = c.place_all("").unwrap();
+        assert_eq!(placed.len(), 9, "3 units x 3 accounts");
+        for h in 1..=3 {
+            assert_eq!(
+                placed.iter().filter(|p| p.0 == Hwnd(h)).count(),
+                3,
+                "account {h}"
+            );
+        }
+        // every click landed on the window that was in front at the time,
+        // and all three windows got their clicks
+        let clicks = sim.raw_clicks.lock().unwrap().clone();
+        for h in 1..=3 {
+            assert!(clicks.iter().filter(|c| c.0 == Hwnd(h)).count() >= 3);
+        }
+        assert!(c.upgrade_until_end(&placed).unwrap(), "won");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(60),
+            "no deadlock"
+        );
     }
 
     #[test]

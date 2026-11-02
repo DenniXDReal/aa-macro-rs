@@ -828,11 +828,14 @@ impl RunCtx {
                     .map(|p| Point::new(p.x, p.y))
                     .collect();
                 if s.spiral_fallback {
-                    spots.extend(super::placing::shape_spots_scaled(
+                    let nth = s.placers.iter().position(|x| *x == n).unwrap_or(0);
+                    spots.extend(super::placing::shape_spots_for(
                         s.place_shape,
                         80,
                         n as u64 * 31 + slot as u64,
                         s.shape_scale,
+                        nth,
+                        s.placers.len(),
                     ));
                 }
                 // skip spots that failed before on this map (spot memory)
@@ -873,9 +876,11 @@ impl RunCtx {
                 let watchers = if wi == 0 { watchers.clone() } else { vec![] };
                 handles.push(sc.spawn(move || {
                     // "UPG [0]" badge = the unit really went down
-                    let badge = ["unit_placed".to_string()];
-                    let can = scr.has("unit_placed");
-                    let confirm = || can.then(|| scr.find(&badge, None).is_some());
+                    let badge = {
+                        use crate::movement::RouteEnv;
+                        scr.has("unit_placed")
+                            .then(|| scr.probe(&["unit_placed".to_string()], None))
+                    };
                     // before every placement: stage over? card pop-up?
                     let cards = || {
                         use std::sync::atomic::Ordering;
@@ -933,8 +938,18 @@ impl RunCtx {
                             }
                         };
                         match place_slot(
-                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards,
-                            &good, &bad,
+                            &self.arb,
+                            h,
+                            &keys,
+                            slot,
+                            count,
+                            &free,
+                            badge.clone(),
+                            buff,
+                            delay,
+                            &cards,
+                            &good,
+                            &bad,
                         ) {
                             Ok(done) => {
                                 self.log(format!(

@@ -397,7 +397,7 @@ impl Default for Settings {
             place_delay_ms: 2000,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
-            shape_scale: 1.5,
+            shape_scale: 1.8,
             idle_click: true,
             next_below_title: 205,
             auto_relaunch: true,
