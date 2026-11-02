@@ -3016,6 +3016,7 @@ impl App {
                 RamMsg::Pid(pid, name) => {
                     self.names.insert(pid, name);
                     self.refresh_quiet();
+                    self.apply_account_placing();
                 }
                 RamMsg::PidLog(pid, name, log) => {
                     // never two clients with one name: first one wins
@@ -3023,6 +3024,7 @@ impl App {
                     self.name_logs.insert(pid, log);
                     if !dup {
                         self.names.insert(pid, name);
+                        self.apply_account_placing();
                     }
                 }
                 RamMsg::Lock(l) => self.multi = Some(l),

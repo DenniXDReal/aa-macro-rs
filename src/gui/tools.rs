@@ -157,6 +157,7 @@ impl App {
         }
         self.admin_needed = admin;
         self.lookup_names();
+        self.apply_account_placing();
         let find = |h: Option<crate::geom::Hwnd>| {
             h.and_then(|h| self.clients.iter().position(|c| c.hwnd == h))
         };
@@ -211,6 +212,45 @@ impl App {
 
     /// Which clients place units, each with its own team (two accounts
     /// spam-placing two different loadouts at once).
+    /// Username of client i+1 if known.
+    pub(super) fn known_names(&self) -> Vec<Option<String>> {
+        self.clients
+            .iter()
+            .map(|c| self.names.get(&c.pid).cloned())
+            .collect()
+    }
+
+    /// Store each named client's placing / team under its username.
+    pub(super) fn remember_account_placing(&mut self) {
+        for (i, n) in self.known_names().into_iter().enumerate() {
+            let Some(n) = n else { continue };
+            let no = i + 1;
+            let a = crate::config::AccountPlacing {
+                places: self.settings.placers.contains(&no),
+                team: self.settings.placer_teams.get(&no).copied(),
+            };
+            self.settings.account_placing.insert(n.to_lowercase(), a);
+        }
+        self.dirty();
+    }
+
+    /// Put saved per-account placing / teams onto the current clients.
+    pub(super) fn apply_account_placing(&mut self) {
+        let names = self.known_names();
+        let before = (
+            self.settings.placers.clone(),
+            self.settings.placer_teams.clone(),
+        );
+        self.settings.apply_account_placing(&names);
+        if (
+            self.settings.placers.clone(),
+            self.settings.placer_teams.clone(),
+        ) != before
+        {
+            self.dirty();
+        }
+    }
+
     pub(super) fn placers_ui(&mut self, ui: &mut egui::Ui) {
         self.settings.fix_teams();
         let mut changed = false;
@@ -260,10 +300,13 @@ impl App {
                 }
             });
         }
+        if changed {
+            self.remember_account_placing();
+        }
         if self.settings.placers.len() > 1 {
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new("All of these place at the same time (input takes turns). Make teams on Home > Control (+ New), then pick one per client here.")
+                    egui::RichText::new("All of these place at the same time (input takes turns). Make teams on Home > Control (+ New), then pick one per client here. Saved per account: the same account gets the same team next time, whatever window it opens in.")
                         .size(11.0)
                         .color(MUTED),
                 )

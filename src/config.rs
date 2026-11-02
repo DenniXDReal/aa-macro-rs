@@ -70,6 +70,9 @@ pub struct Settings {
     pub placers: Vec<usize>,
     /// Client number -> team it places with (missing = the team in use).
     pub placer_teams: std::collections::BTreeMap<usize, usize>,
+    /// Saved per account (username, lower case): does it place, and with
+    /// which team. Applied to whatever client number the account gets.
+    pub account_placing: std::collections::BTreeMap<String, AccountPlacing>,
     /// Use the spiral when a map has no custom spots (or they run out).
     pub spiral_fallback: bool,
     /// Dock the main client into the app's preview box; alts stack behind it.
@@ -216,6 +219,15 @@ pub enum Upgrade {
     Level(u8),
 }
 
+/// What one account does in a stage.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct AccountPlacing {
+    pub places: bool,
+    /// Team index (None = the team in use).
+    pub team: Option<usize>,
+}
+
 /// A named loadout of the 6 hotbar slots ("Summer farm", "Raid team"...).
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -272,6 +284,13 @@ impl Settings {
         self.teams.remove(i);
         self.mode_teams.retain(|_, t| *t != i);
         self.placer_teams.retain(|_, t| *t != i);
+        for a in self.account_placing.values_mut() {
+            match a.team {
+                Some(t) if t == i => a.team = None,
+                Some(t) if t > i => a.team = Some(t - 1),
+                _ => {}
+            }
+        }
         for t in self.placer_teams.values_mut() {
             if *t > i {
                 *t -= 1;
@@ -291,6 +310,32 @@ impl Settings {
         };
         self.team = next.min(self.teams.len() - 1);
         self.units = self.teams[self.team].units.clone();
+    }
+
+    /// Put each account's saved placing / team onto its current client
+    /// number. `names[i]` = username of client i+1 (if known).
+    pub fn apply_account_placing(&mut self, names: &[Option<String>]) {
+        for (i, n) in names.iter().enumerate() {
+            let Some(n) = n else { continue };
+            let Some(a) = self.account_placing.get(&n.to_lowercase()).cloned() else {
+                continue;
+            };
+            let no = i + 1;
+            if a.places && !self.placers.contains(&no) {
+                self.placers.push(no);
+                self.placers.sort();
+            } else if !a.places {
+                self.placers.retain(|x| *x != no);
+            }
+            match a.team {
+                Some(t) if t < self.teams.len() => {
+                    self.placer_teams.insert(no, t);
+                }
+                _ => {
+                    self.placer_teams.remove(&no);
+                }
+            }
+        }
     }
 
     /// Unit slots client `n` (1 = first) places with.
@@ -411,6 +456,7 @@ impl Default for Settings {
             camera: crate::game::placing::CameraSettings::default(),
             placers: vec![1],
             placer_teams: Default::default(),
+            account_placing: Default::default(),
             spiral_fallback: true,
             teams: vec![],
             team: 0,
@@ -556,8 +602,22 @@ mod team_tests {
         s.placer_teams.insert(2, 1);
         assert_eq!(s.units_for(1)[0].name, "Main team unit");
         assert_eq!(s.units_for(2)[0].name, "Alt team unit");
+        // saved per account: follows the account to another client number
+        s.account_placing.insert(
+            "altacc".into(),
+            AccountPlacing {
+                places: true,
+                team: Some(1),
+            },
+        );
+        s.placers = vec![1];
+        s.placer_teams.clear();
+        s.apply_account_placing(&[Some("Main".into()), None, Some("AltAcc".into())]);
+        assert_eq!(s.placers, vec![1, 3]);
+        assert_eq!(s.units_for(3)[0].name, "Alt team unit");
         s.remove_team(1);
         assert!(s.placer_teams.is_empty());
+        assert_eq!(s.account_placing["altacc"].team, None);
         assert_eq!(s.units_for(2)[0].name, "Main team unit");
     }
 }

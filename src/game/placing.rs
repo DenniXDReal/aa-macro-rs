@@ -152,16 +152,20 @@ pub fn shape_spots_for(
     let o = account_offset(nth, placers);
     // several accounts: each gets its own (smaller) patch of the screen
     let scale = if placers > 1 { scale * 0.75 } else { scale };
-    let mut out: Vec<Point> = vec![];
-    for p in shape_spots_scaled(shape, n * 2, seed, scale) {
-        let q = Point::new(p.x + o.x, p.y + o.y);
-        if SHAPE_AREA.contains(q) {
-            out.push(q);
-        }
-        if out.len() >= n {
-            break;
-        }
-    }
+    let mut out: Vec<Point> = shape_spots_scaled(shape, n * 2, seed, scale)
+        .into_iter()
+        .map(|p| Point::new(p.x + o.x, p.y + o.y))
+        .filter(|q| SHAPE_AREA.contains(*q))
+        .collect();
+    // always from the middle outwards to the furthest point
+    let c = if shape == Shape::Spiral {
+        SPIRAL_CENTRE
+    } else {
+        SHAPE_CENTRE
+    };
+    let c = Point::new(c.x + o.x, c.y + o.y);
+    out.sort_by_key(|p| (p.x - c.x).pow(2) + (p.y - c.y).pow(2));
+    out.truncate(n);
     out
 }
 
@@ -438,10 +442,17 @@ pub fn place_slot(
 ) -> Result<Vec<Point>, InputError> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    let mut placed = vec![];
-    for (i, at) in spots.iter().enumerate() {
+    let mut placed: Vec<Point> = vec![];
+    // reached the furthest spot and still short? start again from the
+    // middle (a spot may work now - e.g. there was no money before)
+    let rounds = 2;
+    let order: Vec<Point> = (0..rounds).flat_map(|_| spots.iter().copied()).collect();
+    for (i, at) in order.iter().enumerate() {
         if placed.len() as u32 >= count {
             break;
+        }
+        if placed.contains(at) {
+            continue;
         }
         if i > 0 && delay_ms > 0 {
             // let the game catch up so the next look / click is right
