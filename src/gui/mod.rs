@@ -1761,6 +1761,7 @@ impl App {
         let mut changed = false;
         let mut launch: Option<Vec<String>> = None;
         let mut follow: Option<String> = None;
+        let mut check: Option<String> = None;
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("ACCOUNTS").size(11.0).color(MUTED));
@@ -1853,6 +1854,9 @@ impl App {
                                 ui.label(RichText::new(&a.username).color(TEXT));
                                 if saved.get(i).copied().unwrap_or(false) {
                                     ui.label(RichText::new("login saved").size(11.0).color(GOOD));
+                                    if ui.small_button("Check").on_hover_text("asks Roblox if this login still works (doesn't start Roblox)").clicked() {
+                                        check = Some(a.username.clone());
+                                    }
                                 } else {
                                     ui.label(RichText::new("no login - add it above").size(11.0).color(BAD));
                                 }
@@ -1947,6 +1951,22 @@ impl App {
         }
         if let Some(alt) = follow {
             self.ram_launch(vec![alt], true);
+        }
+        if let Some(n) = check {
+            match self.secrets.get(&crate::rbx::cookie_key(&n)) {
+                Some(c) => {
+                    let tx = self.ram_tx.clone();
+                    self.say(format!("{n}: checking the login…"));
+                    std::thread::spawn(move || {
+                        let msg = match crate::rbx::check(&c) {
+                            Ok(m) => m,
+                            Err(e) => format!("{n}: login check failed - {e:#}"),
+                        };
+                        let _ = tx.send(RamMsg::Log(msg));
+                    });
+                }
+                None => self.say(format!("{n}: no saved login")),
+            }
         }
     }
 
@@ -2197,6 +2217,7 @@ impl App {
                 if id == 0 {
                     id = crate::rbx::whoami(&cookie)?.0;
                 }
+                log(format!("{n}: login ok, finding the server…"));
                 let target = if follow && !is_main {
                     let m = main.as_deref().unwrap_or_default();
                     let uid = logins
@@ -2214,6 +2235,17 @@ impl App {
                         },
                     }
                 };
+                if let crate::rbx::Target::Private { access, link, .. } = &target {
+                    log(format!(
+                        "{n}: private server link code {} chars, access code {}",
+                        link.len(),
+                        if access.is_empty() {
+                            "not shown (using the link code)"
+                        } else {
+                            "found"
+                        }
+                    ));
+                }
                 crate::rbx::launch(&cookie, id, &target, &|u| p.open_uri(u))?;
                 Ok(match &target {
                     crate::rbx::Target::Follow { .. } => "launched, following the main".into(),

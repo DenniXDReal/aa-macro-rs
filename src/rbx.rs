@@ -190,31 +190,40 @@ pub fn private_target(cookie: &str, place: u64, link: &str) -> Result<Target> {
             )
         })?;
         let place = d["placeId"].as_u64().unwrap_or(place);
+        let access = access_code(cookie, place, link_code);
         return Ok(Target::Private {
             place,
-            access: String::new(),
+            access,
             link: link_code.to_string(),
         });
     }
     // old link: the game page carries the access code
-    let mut r = agent()
-        .get(&format!(
-            "https://www.roblox.com/games/{place}?privateServerLinkCode={code}"
-        ))
-        .header("Cookie", &cookie_header(cookie))
-        .call()
-        .map_err(|e| anyhow!("Roblox unreachable: {e}"))?;
-    let page = r.body_mut().read_to_string().unwrap_or_default();
-    let access = page
-        .find("joinPrivateGame(")
-        .and_then(|i| page[i..].split('\'').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let access = access_code(cookie, place, &code);
     Ok(Target::Private {
         place,
         access,
         link: code,
     })
+}
+
+/// The private server's access code from its game page (empty if the page
+/// doesn't show it - Roblox then goes by the link code alone).
+fn access_code(cookie: &str, place: u64, link_code: &str) -> String {
+    let Ok(mut r) = agent()
+        .get(&format!(
+            "https://www.roblox.com/games/{place}?privateServerLinkCode={link_code}"
+        ))
+        .header("Cookie", &cookie_header(cookie))
+        .call()
+    else {
+        return String::new();
+    };
+    let page = r.body_mut().read_to_string().unwrap_or_default();
+    page.find("joinPrivateGame(")
+        .and_then(|i| page[i..].split('\'').nth(1))
+        .filter(|c| c.len() >= 30 && c.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'))
+        .unwrap_or("")
+        .to_string()
 }
 
 fn enc(s: &str) -> String {
@@ -268,7 +277,15 @@ pub fn launch(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    open(&launch_uri(&ticket, target, &tracker_for(user_id), now))
+    open(&launch_uri(&ticket, target, &tracker_for(user_id), now)).context("starting Roblox")
+}
+
+/// Check a saved login end to end without starting Roblox: who it is, and
+/// that Roblox hands out a login ticket for it.
+pub fn check(cookie: &str) -> Result<String> {
+    let (id, name) = whoami(cookie).context("reading the account")?;
+    auth_ticket(cookie).context("getting a login ticket")?;
+    Ok(format!("{name} (id {id}) - login works"))
 }
 
 #[cfg(test)]

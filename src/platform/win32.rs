@@ -475,10 +475,18 @@ impl Platform for Win32Platform {
     }
 
     fn open_uri(&self, uri: &str) -> Result<()> {
+        use std::os::windows::process::CommandExt;
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
         if !uri.starts_with("roblox-player:") {
             bail!("only roblox-player: links are opened");
+        }
+        // ShellExecute hands links to their app through COM: init it on this thread
+        unsafe {
+            use windows::Win32::System::Com::{
+                CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+            };
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         }
         let r = unsafe {
             ShellExecuteW(
@@ -490,9 +498,30 @@ impl Platform for Win32Platform {
                 SW_SHOWNORMAL,
             )
         };
-        if (r.0 as isize) <= 32 {
-            bail!("Windows couldn't open Roblox (is Roblox installed?)");
+        if (r.0 as isize) > 32 {
+            return Ok(());
         }
+        // fallback: run the registered Roblox launcher with the link
+        let out = std::process::Command::new("reg")
+            .args(["query", r"HKCR\roblox-player\shell\open\command", "/ve"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .context("reading the roblox-player handler")?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let exe = text
+            .split('"')
+            .find(|p| p.to_lowercase().ends_with(".exe"))
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Roblox isn't installed (no roblox-player handler) - ShellExecute said {}",
+                    r.0 as isize
+                )
+            })?;
+        std::process::Command::new(&exe)
+            .arg(uri)
+            .spawn()
+            .with_context(|| format!("starting {exe}"))?;
         Ok(())
     }
 

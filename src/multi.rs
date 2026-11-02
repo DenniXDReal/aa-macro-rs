@@ -115,7 +115,7 @@ pub fn launch_each(
         match launch(n) {
             Ok(m) => log(format!("{n}: {m}")),
             Err(e) => {
-                log(format!("{n}: launch failed - {e}"));
+                log(format!("{n}: launch failed - {e:#}"));
                 continue;
             }
         }
