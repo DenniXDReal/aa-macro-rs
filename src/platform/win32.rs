@@ -248,7 +248,7 @@ fn send(inputs: &[INPUT]) -> Result<()> {
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
         bail!(
-            "SendInput sent {sent}/{} (blocked by UIPI? run as the same user as Roblox)",
+            "SendInput sent {sent}/{} - input blocked (PC locked / screen off / UAC prompt, or Roblox runs as admin)",
             inputs.len()
         );
     }
@@ -472,6 +472,19 @@ impl Platform for Win32Platform {
             )
         }
         .context("raise")
+    }
+
+    fn keep_awake(&self, on: bool) {
+        use windows::Win32::System::Power::{
+            SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+        };
+        unsafe {
+            let _ = SetThreadExecutionState(if on {
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+            } else {
+                ES_CONTINUOUS
+            });
+        }
     }
 
     fn open_uri(&self, uri: &str) -> Result<()> {

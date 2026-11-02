@@ -71,6 +71,9 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// Stop Windows from sleeping / turning the screen off / locking on
+    /// idle while the macro runs (input can't reach a locked desktop).
+    fn keep_awake(&self, _on: bool) {}
     /// Open a link with whatever handles it (roblox-player: -> Roblox).
     fn open_uri(&self, _uri: &str) -> Result<()> {
         anyhow::bail!("opening links needs Windows")

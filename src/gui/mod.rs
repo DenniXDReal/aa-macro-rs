@@ -409,6 +409,7 @@ impl App {
             .spawn(move || ctx.run())
             .expect("spawn game loop");
         self.run_rx = Some(rx);
+        self.platform.keep_awake(true);
         self.running = true;
         self.paused = false;
         self.started.get_or_insert(Instant::now());
@@ -466,6 +467,7 @@ impl App {
                 Event::Done(why) => {
                     self.say(format!("game loop ended: {why}"));
                     self.run_rx = None;
+                    self.platform.keep_awake(false);
                     self.running = false;
                     self.paused = false;
                     if why != "stopped" {

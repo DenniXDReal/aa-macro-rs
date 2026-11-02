@@ -1172,10 +1172,30 @@ impl RunCtx {
                 self.party_up()?;
             }
             let mut fails = 0;
+            let mut blocked_told = false;
             loop {
                 match self.one_round(&mut in_lobby, &mut map) {
-                    Ok(()) => fails = 0,
+                    Ok(()) => {
+                        fails = 0;
+                        blocked_told = false;
+                    }
                     Err(e) if e == "stopped" || e.starts_with("stopped after") => return Err(e),
+                    Err(e) if e.contains("input blocked") => {
+                        // locked PC / screen off: not the game's fault - wait, don't give up
+                        if !blocked_told {
+                            let _ = self.tx.send(Event::Attention(
+                                "Input is blocked (PC locked, screen off or a UAC prompt) - the macro waits and carries on once it's unlocked".into(),
+                            ));
+                            blocked_told = true;
+                        }
+                        self.sleep(10_000)?;
+                        let at = self.where_am_i();
+                        match at {
+                            "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
+                            "lobby" => in_lobby = true,
+                            _ => in_lobby = false,
+                        }
+                    }
                     Err(e) => {
                         fails += 1;
                         if fails > 3 {
