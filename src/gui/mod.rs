@@ -1385,6 +1385,20 @@ impl App {
                     );
                 }
             }
+            if r.mode == Mode::InfinityCastle {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Difficulty").color(MUTED));
+                    changed |=
+                        segmented(ui, &mut r.castle_hard, &[(false, "Normal"), (true, "Hard")]);
+                });
+            }
+            if r.mode == Mode::Dungeon {
+                ui.label(
+                    RichText::new("Dungeon isn't supported yet.")
+                        .size(11.0)
+                        .color(WARN),
+                );
+            }
             if let Some(key) = stage_key(r.mode) {
                 if let Some(ms) = self.stages.modes.get(key) {
                     ui.horizontal(|ui| {

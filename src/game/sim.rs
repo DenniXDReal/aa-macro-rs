@@ -750,6 +750,32 @@ mod tests {
         );
     }
 
+    /// Infinity Castle: walk in, Cancel shows, Normal, Start above Cancel.
+    #[test]
+    fn infinity_castle_enters() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0*/ scr(vec![el("areas_x", 740, 478, Some(1))]),
+            /*1*/ scr(vec![el("castle_door", 350, 322, Some(2))]),
+            /*2*/
+            scr(vec![
+                el("mode_cancel", 380, 540, None),
+                el("castle_start", 370, 420, Some(3)),
+                el("easy", 400, 368, None),
+            ]),
+            /*3 loading*/ scr(vec![]),
+        ]));
+        let mut s = Settings::default();
+        s.run.mode = Mode::InfinityCastle;
+        s.step_delay_ms = 0;
+        let (c, _rx, _arb) = ctx(sim.clone(), s);
+        c.enter_stage().unwrap();
+        assert_eq!(sim.screen_now(), 3);
+        assert_eq!(
+            *sim.clicks.lock().unwrap(),
+            vec!["areas_x", "castle_door", "easy", "castle_start"]
+        );
+    }
+
     #[test]
     fn missing_button_is_reported_not_hung() {
         let sim = Arc::new(Sim::new(vec![

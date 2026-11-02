@@ -102,35 +102,47 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         }),
         None => out.push(step(&format!("Walk: no '{lobby}' lobby route"), &[], false)),
     }
-    match s.run.play {
-        PlayChoice::PlayHere => out.push(step(
-            "Join Matchmaking > Play Here",
-            &["join_matchmaking", "play_here"],
+    if matches!(mode, Mode::InfinityCastle | Mode::Challenge) {
+        out.push(step(
+            if mode == Mode::InfinityCastle {
+                "Entrance (Cancel shows) > Normal / Hard > Start"
+            } else {
+                "Entrance (Cancel shows) > Start"
+            },
+            &["mode_cancel"],
             false,
-        )),
-        PlayChoice::FindMatch => out.push(step(
-            "Join Matchmaking > Find Match (you type the captcha)",
-            &["join_matchmaking", "find_match", "captcha"],
-            false,
-        )),
-    }
-    if mode == Mode::SummerHunt && s.run.play == PlayChoice::PlayHere {
-        let open = if s.run.own_team {
-            "open_friends_only"
-        } else {
-            "open_button"
-        };
-        out.push(step("Open Portal? > Open", &["open_portal", open], false));
-        if s.run.own_team && !s.run.party_invite {
-            out.push(step(
-                "Alts walk in and press E at the portal",
-                &["portal_join_e"],
+        ));
+    } else {
+        match s.run.play {
+            PlayChoice::PlayHere => out.push(step(
+                "Join Matchmaking > Play Here",
+                &["join_matchmaking", "play_here"],
                 false,
-            ));
+            )),
+            PlayChoice::FindMatch => out.push(step(
+                "Join Matchmaking > Find Match (you type the captcha)",
+                &["join_matchmaking", "find_match", "captcha"],
+                false,
+            )),
         }
-        out.push(step("Portal lobby > Start", &["start_button"], false));
-    } else if s.run.play == PlayChoice::PlayHere {
-        out.push(step("Start", &["start_button"], false));
+        if mode == Mode::SummerHunt && s.run.play == PlayChoice::PlayHere {
+            let open = if s.run.own_team {
+                "open_friends_only"
+            } else {
+                "open_button"
+            };
+            out.push(step("Open Portal? > Open", &["open_portal", open], false));
+            if s.run.own_team && !s.run.party_invite {
+                out.push(step(
+                    "Alts walk in and press E at the portal",
+                    &["portal_join_e"],
+                    false,
+                ));
+            }
+            out.push(step("Portal lobby > Start", &["start_button"], false));
+        } else if s.run.play == PlayChoice::PlayHere {
+            out.push(step("Start", &["start_button"], false));
+        }
     }
     let fixed = matches!(mode, Mode::Story | Mode::Legend | Mode::Raid);
     if fixed {
@@ -337,6 +349,13 @@ impl RunCtx {
         self.arb
             .run(batch)
             .map_err(|e| format!("lobby walk: {e}"))?;
+        // Infinity Castle / Challenge: walk into the pod, no matchmaking dialog
+        if matches!(mode, Mode::InfinityCastle | Mode::Challenge) {
+            return self.enter_pod(mode, route);
+        }
+        if mode == Mode::Dungeon {
+            return Err("Dungeon isn't supported yet - pick another mode".into());
+        }
         // Join Matchmaking?
         match s.run.play {
             PlayChoice::PlayHere => self.click_when(self.main, "play_here", 6000)?,
@@ -379,6 +398,51 @@ impl RunCtx {
             }
         }
         self.click_when(self.main, "start_button", 10000)?;
+        self.log("started - loading");
+        Ok(())
+    }
+
+    /// Infinity Castle / Challenge (from the AHK macro): walk until the pod's
+    /// Cancel button shows (walk again up to 3x), castle: pick Normal / Hard,
+    /// then Start (your start_button, else the spot above Cancel).
+    fn enter_pod(&self, mode: Mode, route: &crate::movement::Route) -> R<()> {
+        let s = &self.settings;
+        let mut tries = 0;
+        loop {
+            if self
+                .wait_any(self.main, &["mode_cancel", "start_button"], 8000)?
+                .is_some()
+            {
+                break;
+            }
+            tries += 1;
+            if tries >= 3 {
+                return Err("never reached the entrance (no Cancel / Start) after 3 walks".into());
+            }
+            self.log("entrance not reached - walking again");
+            let b = route
+                .to_batch(self.main, self.screen(self.main), &vars(s))
+                .map_err(|e| e.to_string())?;
+            self.arb.run(b).map_err(|e| format!("lobby walk: {e}"))?;
+        }
+        if mode == Mode::InfinityCastle {
+            let (p, name) = if s.run.castle_hard {
+                (Point::new(485, 375), "Hard")
+            } else {
+                (Point::new(418, 375), "Normal")
+            };
+            self.log(format!("Infinity Castle: {name}"));
+            self.click(self.main, p, "castle difficulty")?;
+        }
+        let main = self.screen(self.main);
+        let start = main
+            .find_wide(&Self::names(&["start_button"]))
+            .or_else(|| {
+                main.find_wide(&Self::names(&["mode_cancel"]))
+                    .map(|c| Point::new(c.x - 10, c.y - 120))
+            })
+            .ok_or("no Start button at the entrance")?;
+        self.click(self.main, start, "start")?;
         self.log("started - loading");
         Ok(())
     }

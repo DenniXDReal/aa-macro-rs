@@ -70,6 +70,11 @@ pub const FLOWS: &[Flow] = &[
         ],
     },
     Flow {
+        name: "Infinity Castle / Challenge",
+        steps: "Walk into the pod (from the AHK macro) until its Cancel button shows > Castle: Normal or Hard > Start (your start_button, or the spot just above Cancel).",
+        needs: &[n("mode_cancel", "text", "Red 'Cancel' at the bottom once you're in the castle / challenge pod")],
+    },
+    Flow {
         name: "In stage",
         steps: "Vote Start shows > camera top-down > Settings > Teleport to Spawn > close > map walk > Vote Start > place units (1-6) > upgrade with R by priority > end screen. After Replay it waits for Vote Start and does it all again.",
         needs: &[

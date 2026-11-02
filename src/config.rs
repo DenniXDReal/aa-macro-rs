@@ -165,6 +165,8 @@ pub struct RunSettings {
     pub challenge_every_30: bool,
     /// Host invites alts through the in-game Party (+ > Invite).
     pub party_invite: bool,
+    /// Infinity Castle: Hard instead of Normal.
+    pub castle_hard: bool,
 }
 
 impl Default for RunSettings {
@@ -183,6 +185,7 @@ impl Default for RunSettings {
             auto_ability: true,
             challenge_every_30: false,
             party_invite: true,
+            castle_hard: false,
         }
     }
 }
