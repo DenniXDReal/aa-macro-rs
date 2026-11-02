@@ -493,7 +493,11 @@ impl RunCtx {
         // 1. click + once, then stop looking for it
         self.click_when(self.main, "party_plus", 5000)?;
         // 2. wait for the first Invite button
-        if self.wait_any(self.main, &["party_invite"], 8000)?.is_none() {
+        let mut dl = self.control.deadline(self.secs(8.0));
+        while main.find_all_wide("party_invite").is_empty() && !dl.expired() {
+            self.sleep(400)?;
+        }
+        if main.find_all_wide("party_invite").is_empty() {
             self.log("party: no Invite button showed up - carrying on without a party");
             return Ok(());
         }
@@ -573,30 +577,31 @@ impl RunCtx {
     /// moment. Returns how many were clicked.
     fn spam_invites(&self) -> R<u32> {
         let main = self.screen(self.main);
-        let invite = Self::names(&["party_invite"]);
         let mut sent = 0;
-        let mut none_since: Option<Instant> = None;
-        while sent < 30 {
+        let mut empty_scans = 0;
+        // scan the whole screen for every Invite (one per alt), click them all,
+        // scan again - until a couple of scans in a row find none
+        for _ in 0..10 {
             self.check()?;
-            match main.find(&invite, None) {
-                Some(p) => {
-                    none_since = None;
-                    self.arb
-                        .run(Batch::new(self.main, "invite").click(p.x, p.y))
-                        .map_err(|e| format!("invite: {e}"))?;
-                    sent += 1;
-                    self.sleep(300)?;
+            let all = main.find_all_wide("party_invite");
+            if all.is_empty() {
+                empty_scans += 1;
+                if empty_scans >= 2 {
+                    break;
                 }
-                None => {
-                    let t = *none_since.get_or_insert_with(Instant::now);
-                    // 0 Invite left for a moment = done
-                    if t.elapsed() >= Duration::from_millis((1200.0 * self.speed.max(0.05)) as u64)
-                    {
-                        break;
-                    }
-                    self.sleep(200)?;
-                }
+                self.sleep(700)?;
+                continue;
             }
+            empty_scans = 0;
+            self.log(format!("party: {} Invite button(s) on screen", all.len()));
+            for p in all {
+                self.arb
+                    .run(Batch::new(self.main, "invite").click(p.x, p.y))
+                    .map_err(|e| format!("invite: {e}"))?;
+                sent += 1;
+                self.sleep(400)?;
+            }
+            self.sleep(600)?;
         }
         Ok(sent)
     }

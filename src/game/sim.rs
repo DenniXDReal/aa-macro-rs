@@ -641,6 +641,22 @@ mod tests {
         assert_eq!(*sim.clicks.lock().unwrap(), vec!["odd_next", "replay"]);
     }
 
+    /// Three Invite buttons in a list: all three are found, wherever the
+    /// first one was captured.
+    #[test]
+    fn finds_every_invite_button() {
+        let sim = Arc::new(Sim::new(vec![scr(vec![
+            el("party_invite", 600, 120, None),
+            el("party_invite", 600, 180, None),
+            el("party_invite", 600, 300, None),
+        ])]));
+        let lib = sim.library();
+        let screen = LiveScreen::new(sim.clone(), Hwnd(1), &lib);
+        let all = screen.find_all_wide("party_invite");
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_eq!(all[2].y, 309);
+    }
+
     #[test]
     fn missing_button_is_reported_not_hung() {
         let sim = Arc::new(Sim::new(vec![

@@ -164,6 +164,35 @@ impl LiveScreen {
         })
     }
 
+    /// Every place `name` shows on the whole picture (e.g. one Invite button
+    /// per alt in the party list), top to bottom.
+    pub fn find_all_wide(&self, name: &str) -> Vec<Point> {
+        let Some(frame) = self.platform.capture_client(self.hwnd).ok() else {
+            return vec![];
+        };
+        let Some(p) = self.pats.get(&key(name)) else {
+            return vec![];
+        };
+        let mut out = vec![];
+        let mut todo = vec![Rect::new(0, 0, frame.width as i32, frame.height as i32)];
+        while let Some(r) = todo.pop() {
+            if out.len() >= 12 || r.h < 4 {
+                continue;
+            }
+            if let Some(h) = p.find_in(&frame, Some(r)) {
+                out.push(h.center());
+                // look above and below this one (list rows)
+                let above = Rect::new(r.x, r.y, r.w, (h.at.y - r.y).max(0));
+                let below_y = h.at.y + h.h;
+                let below = Rect::new(r.x, below_y, r.w, (r.y + r.h - below_y).max(0));
+                todo.push(above);
+                todo.push(below);
+            }
+        }
+        out.sort_by_key(|p| (p.y, p.x));
+        out
+    }
+
     /// Names in `names` that you haven't captured yet.
     pub fn missing(&self, names: &[String]) -> Vec<String> {
         names
