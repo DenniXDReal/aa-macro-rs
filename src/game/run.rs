@@ -587,6 +587,9 @@ impl RunCtx {
         let s = &self.settings;
         let main = self.screen(self.main);
         let gone = Self::names(&[
+            "victory",
+            "defeat",
+            "replay",
             "start_button",
             "waiting_for_players",
             "join_matchmaking",
@@ -980,18 +983,115 @@ impl RunCtx {
 
     /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
     pub fn after_end(&self) -> R<bool> {
-        if let Some((_, p)) = self.wait_any(self.main, &["next_button"], 8000)? {
-            self.click(self.main, p, "next")?;
+        let main = self.screen(self.main);
+        let lobby = self.settings.run.return_to_lobby;
+        let want = if lobby { "return_to_lobby" } else { "replay" };
+        let end = Self::names(&[
+            "victory",
+            "defeat",
+            "next_button",
+            "replay",
+            "return_to_lobby",
+        ]);
+        let mut dl = self.control.deadline(self.secs(60.0));
+        let waited = Instant::now();
+        let mut clicked = false;
+        loop {
+            self.check()?;
+            // the button we want: click it, then make sure the end screen goes
+            if let Some(p) = main.find(&Self::names(&[want]), None) {
+                self.click(self.main, p, want)?;
+                clicked = true;
+                let mut gone = self.control.deadline(self.secs(8.0));
+                while main.find(&end, None).is_some() && !gone.expired() {
+                    self.sleep(400)?;
+                }
+                if main.find(&end, None).is_none() {
+                    break;
+                }
+                self.log(format!("{want} didn't take - clicking again"));
+                continue;
+            }
+            // rewards first: Next (sometimes more than once)
+            if let Some(p) = main.find(&Self::names(&["next_button"]), None) {
+                self.click(self.main, p, "next")?;
+                continue;
+            }
+            // already left the end screen (e.g. the click took on the first try)
+            if clicked && main.find(&end, None).is_none() {
+                break;
+            }
+            // no Replay on this end screen (some modes only offer the lobby)
+            if !lobby && waited.elapsed() > Duration::from_secs_f64(self.secs(15.0)) {
+                if let Some(p) = main.find(&Self::names(&["return_to_lobby"]), None) {
+                    self.log("no Replay here - going back to the lobby instead");
+                    self.click(self.main, p, "return to lobby")?;
+                    self.sleep(8000)?;
+                    return Ok(true);
+                }
+            }
+            if dl.expired() {
+                return Err(format!("end screen: '{want}' never showed up"));
+            }
+            self.sleep(400)?;
         }
-        self.sleep(1500)?;
-        if self.settings.run.return_to_lobby {
-            self.click_when(self.main, "return_to_lobby", 10000)?;
-            self.sleep(8000)?;
-            Ok(true)
+        self.log(if lobby {
+            "back to the lobby"
         } else {
-            self.click_when(self.main, "replay", 10000)?;
-            Ok(false)
+            "replaying"
+        });
+        if lobby {
+            self.sleep(8000)?;
         }
+        Ok(lobby)
+    }
+
+    /// What's on the main's screen right now, to get back on track after a
+    /// hiccup: "end", "lobby", "stage" or "".
+    fn where_am_i(&self) -> &'static str {
+        let main = self.screen(self.main);
+        if main
+            .find(
+                &Self::names(&["victory", "defeat", "next_button", "replay"]),
+                None,
+            )
+            .is_some()
+        {
+            "end"
+        } else if main
+            .find(&Self::names(&["play_button", "areas_button"]), None)
+            .is_some()
+        {
+            "lobby"
+        } else if main.find(&Self::names(&["vote_start"]), None).is_some() {
+            "stage"
+        } else {
+            ""
+        }
+    }
+
+    /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
+    fn one_round(&self, in_lobby: &mut bool, map: &mut String) -> R<()> {
+        if *in_lobby {
+            self.enter_stage()?;
+            map.clear();
+        }
+        *map = self.stage_setup(map)?;
+        self.cards_all()?;
+        let started = Instant::now();
+        let placed = self.place_all(map)?;
+        self.log(format!(
+            "placed {} unit(s) in {:.0}s",
+            placed.len(),
+            started.elapsed().as_secs_f32()
+        ));
+        let won = self.upgrade_until_end(&placed)?;
+        let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
+        if !won && self.settings.run.stop_after_defeat {
+            return Err("stopped after a defeat".into());
+        }
+        *in_lobby = self.after_end()?;
+        Ok(())
     }
 
     /// The whole loop until Stop / an error.
@@ -1005,27 +1105,33 @@ impl RunCtx {
             {
                 self.party_up()?;
             }
+            let mut fails = 0;
             loop {
-                if in_lobby {
-                    self.enter_stage()?;
-                    map.clear();
+                match self.one_round(&mut in_lobby, &mut map) {
+                    Ok(()) => fails = 0,
+                    Err(e) if e == "stopped" || e.starts_with("stopped after") => return Err(e),
+                    Err(e) => {
+                        fails += 1;
+                        if fails > 3 {
+                            return Err(format!("{e} (3 tries in a row)"));
+                        }
+                        // find out where we are and carry on from there
+                        let at = self.where_am_i();
+                        self.log(format!(
+                            "hiccup: {e} - on screen: {} - carrying on",
+                            if at.is_empty() { "unknown" } else { at }
+                        ));
+                        match at {
+                            "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
+                            "lobby" => in_lobby = true,
+                            _ => {
+                                in_lobby = false;
+                                self.sleep(3000)?;
+                            }
+                        }
+                    }
                 }
-                map = self.stage_setup(&map)?;
-                self.cards_all()?;
-                let started = Instant::now();
-                let placed = self.place_all(&map)?;
-                self.log(format!(
-                    "placed {} unit(s) in {:.0}s",
-                    placed.len(),
-                    started.elapsed().as_secs_f32()
-                ));
-                let won = self.upgrade_until_end(&placed)?;
-                let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
-                if !won && self.settings.run.stop_after_defeat {
-                    return Err("stopped after a defeat".into());
-                }
-                in_lobby = self.after_end()?;
-                self.sleep(Duration::from_millis(500).as_millis() as u64)?;
+                self.sleep(500)?;
             }
         })();
         let _ = self.tx.send(Event::Done(match res {
