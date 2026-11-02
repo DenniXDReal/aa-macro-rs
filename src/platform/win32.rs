@@ -60,12 +60,13 @@ pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
     let a = area
         .intersect(&Rect::new(0, 0, frame.width as i32, frame.height as i32))
         .ok_or_else(|| anyhow!("OCR area outside the picture"))?;
-    const K: i32 = 4;
-    let (w, h) = (a.w * K, a.h * K);
+    // small text wants 4x; big areas less (Windows OCR caps the picture size)
+    let k = (2400 / a.w.max(a.h).max(1)).clamp(1, 4);
+    let (w, h) = (a.w * k, a.h * k);
     let mut buf = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
-            let (r, g, b) = frame.rgb(a.x + x / K, a.y + y / K).unwrap_or((0, 0, 0));
+            let (r, g, b) = frame.rgb(a.x + x / k, a.y + y / k).unwrap_or((0, 0, 0));
             let v = ((r as u32 * 38 + g as u32 * 75 + b as u32 * 15) >> 7) as u8;
             let i = ((y * w + x) * 4) as usize;
             buf[i..i + 4].copy_from_slice(&[v, v, v, 255]);

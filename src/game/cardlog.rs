@@ -39,7 +39,7 @@ pub fn fingerprint(f: &Frame) -> u128 {
 }
 
 /// Save this card screen if it looks new. Returns the file when saved.
-pub fn save_if_new(f: &Frame, folder: &Path) -> Option<PathBuf> {
+pub fn save_if_new(f: &Frame, folder: &Path, weather: &str) -> Option<PathBuf> {
     let _ = std::fs::create_dir_all(folder);
     let index = folder.join("index.txt");
     let fp = fingerprint(f);
@@ -51,7 +51,16 @@ pub fn save_if_new(f: &Frame, folder: &Path) -> Option<PathBuf> {
     if known.iter().any(|k| (k ^ fp).count_ones() <= 10) {
         return None;
     }
-    let name = format!("cards-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let w: String = weather.chars().filter(|c| c.is_alphanumeric()).collect();
+    let name = format!(
+        "cards-{}{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        if w.is_empty() {
+            String::new()
+        } else {
+            format!("-{w}")
+        }
+    );
     let a = CARD_AREA;
     let mut crop = Vec::with_capacity((a.w * a.h * 4) as usize);
     for y in a.y..a.y + a.h {
@@ -84,8 +93,8 @@ mod tests {
                 f.bgra[i..i + 3].copy_from_slice(&[40, 200, 60]);
             }
         }
-        assert!(save_if_new(&f, &dir).is_some());
-        assert!(save_if_new(&f, &dir).is_none(), "same cards again");
+        assert!(save_if_new(&f, &dir, "").is_some());
+        assert!(save_if_new(&f, &dir, "").is_none(), "same cards again");
         let mut g = Frame::solid(800, 599, 20, 20, 20);
         for y in 200..400 {
             for x in 530..670 {
@@ -94,7 +103,7 @@ mod tests {
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert!(save_if_new(&g, &dir).is_some(), "different cards");
+        assert!(save_if_new(&g, &dir, "Rainy").is_some(), "different cards");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

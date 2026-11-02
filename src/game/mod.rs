@@ -23,6 +23,13 @@ mod level_tests {
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
         assert_eq!(parse_level(""), None);
+        use super::card_screen_text;
+        assert_eq!(
+            card_screen_text("CHOOSE A CARD Weather: Rainy Tier 1"),
+            Some("Rainy".into())
+        );
+        assert_eq!(card_screen_text("Choose a Card"), Some(String::new()));
+        assert_eq!(card_screen_text("Wave 23 DEFEAT"), None);
     }
 }
 
@@ -33,6 +40,37 @@ use crate::platform::Platform;
 use crate::vision::{key, Library, Pattern};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// OCR text of a screen -> Some(weather) if it's the card pick screen.
+pub fn card_screen_text(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    let flat: String = t
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ':')
+        .collect();
+    if !(flat.contains("chooseacard")
+        || flat.contains("choosecard")
+        || (t.contains("choose") && t.contains("card")))
+    {
+        return None;
+    }
+    // "Weather: Rainy" -> "Rainy"
+    let weather = t
+        .find("weather")
+        .map(|i| {
+            text[i + 7..]
+                .trim_start_matches([':', ' '])
+                .split(|c: char| !c.is_alphanumeric() && c != ' ')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default();
+    Some(weather)
+}
 
 /// "UPG [3]" -> Ok(3), "MAX" -> Err(()), junk -> None. Tolerates the
 /// usual OCR slips ("[" read as "1", "O" for 0, missing brackets).
@@ -119,6 +157,14 @@ impl LiveScreen {
     pub fn ocr_level(&self, frame: &crate::capture::Frame) -> Option<Result<u32, ()>> {
         let text = self.platform.ocr(frame, self.level_area())?;
         parse_level(&text)
+    }
+
+    /// Card pick screen by OCR: Some(weather) when "Choose a card" is on
+    /// screen (weather "" when it isn't readable).
+    pub fn ocr_card_screen(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        let text = self.platform.ocr(frame, all)?;
+        card_screen_text(&text)
     }
 
     /// Is `name` in an already captured picture (no new capture)?

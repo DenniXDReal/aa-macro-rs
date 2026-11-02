@@ -231,6 +231,23 @@ pub struct RunCtx {
 
 type R<T> = Result<T, String>;
 
+/// OCR of the whole screen costs a moment: at most every 2 s per client.
+fn ocr_due(h: Hwnd) -> bool {
+    static LAST: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new(Vec::new());
+    let mut v = LAST.lock().unwrap();
+    match v.iter_mut().find(|e| e.0 == h) {
+        Some(e) if e.1.elapsed() < Duration::from_secs(2) => false,
+        Some(e) => {
+            e.1 = Instant::now();
+            true
+        }
+        None => {
+            v.push((h, Instant::now()));
+            true
+        }
+    }
+}
+
 /// When a card was last picked (any client) - one pick does it for all.
 static LAST_PICK: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
@@ -401,7 +418,21 @@ impl RunCtx {
     /// one, then Confirm. Returns true when it picked.
     pub fn handle_cards(&self, h: Hwnd) -> R<bool> {
         let scr = self.screen(h);
-        if !scr.has("choose_card") || scr.find(&Self::names(&["choose_card"]), None).is_none() {
+        // card screen: your choose_card capture, or OCR reading "Choose a card"
+        let mut weather = String::new();
+        let seen =
+            if scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some() {
+                true
+            } else if let Some(w) = ocr_due(h)
+                .then(|| scr.frame().and_then(|f| scr.ocr_card_screen(&f)))
+                .flatten()
+            {
+                weather = w;
+                true
+            } else {
+                false
+            };
+        if !seen {
             return Ok(false);
         }
         // one pick is enough for everyone: skip if another client just did it
@@ -430,7 +461,13 @@ impl RunCtx {
             return Ok(false);
         };
         // keep a picture of every different card screen (cards/ folder)
-        if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir()) {
+        if weather.is_empty() {
+            weather = scr.ocr_card_screen(&f).unwrap_or_default();
+        }
+        if !weather.is_empty() {
+            self.log(format!("card screen - weather: {weather}"));
+        }
+        if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir(), &weather) {
             self.log(format!("card screen saved: {}", path.display()));
         }
         let (p, green) = super::cards::pick(&f);
@@ -451,7 +488,10 @@ impl RunCtx {
             None => self.click(h, Point::new(p.x, (p.y + 120).min(580)), "confirm card")?,
         }
         let mut dl = self.control.deadline(self.secs(3.0));
-        while scr.find(&Self::names(&["choose_card"]), None).is_some() && !dl.expired() {
+        while (scr.find(&Self::names(&["choose_card"]), None).is_some()
+            || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some())
+            && !dl.expired()
+        {
             self.sleep(300)?;
         }
         Ok(true)
