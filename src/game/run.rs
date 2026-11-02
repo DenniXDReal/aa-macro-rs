@@ -220,6 +220,8 @@ pub struct RunCtx {
     pub tx: Sender<Event>,
     /// 1.0 = real timing; tests use a small value.
     pub speed: f32,
+    /// Spots that failed before (shared with the app, saved to disk).
+    pub memory: std::sync::Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
 }
 
 type R<T> = Result<T, String>;
@@ -750,11 +752,24 @@ impl RunCtx {
                     .map(|p| Point::new(p.x, p.y))
                     .collect();
                 if s.spiral_fallback {
-                    spots.extend(super::placing::shape_spots(
+                    spots.extend(super::placing::shape_spots_scaled(
                         s.place_shape,
                         80,
                         n as u64 * 31 + slot as u64,
+                        s.shape_scale,
                     ));
+                }
+                // skip spots that failed before on this map (spot memory)
+                if s.spot_memory {
+                    let mem = self.memory.lock().unwrap();
+                    let before = spots.len();
+                    spots.retain(|p| !mem.is_bad(&key, *p));
+                    if spots.len() < before && slot == 1 {
+                        self.log(format!(
+                            "{key}: skipping {} spot(s) that failed before",
+                            mem.bad_count(&key)
+                        ));
+                    }
                 }
                 jobs.push((slot, u.place as u32, spots));
             }
@@ -778,6 +793,7 @@ impl RunCtx {
             let mut handles = vec![];
             for (wi, (n, h, scr, jobs, units)) in work.into_iter().enumerate() {
                 let keys = keys.clone();
+                let map = map.clone();
                 let watchers = if wi == 0 { watchers.clone() } else { vec![] };
                 handles.push(sc.spawn(move || {
                     // "UPG [0]" badge = the unit really went down
@@ -827,8 +843,22 @@ impl RunCtx {
                                     .log(format!("client {n}: slot {slot} auto ability not seen")),
                             }
                         };
+                        let set = spots_key(&map, n);
+                        let remember = s.spot_memory && scr.has("unit_placed");
+                        let good = |p: Point| {
+                            auto(p);
+                            if remember {
+                                self.memory.lock().unwrap().placed(&set, p);
+                            }
+                        };
+                        let bad = |p: Point| {
+                            if remember {
+                                self.memory.lock().unwrap().failed(&set, p);
+                            }
+                        };
                         match place_slot(
-                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards, &auto,
+                            &self.arb, h, &keys, slot, count, &free, &confirm, delay, &cards,
+                            &good, &bad,
                         ) {
                             Ok(done) => {
                                 self.log(format!(

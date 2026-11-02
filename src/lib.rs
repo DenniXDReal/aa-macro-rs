@@ -27,6 +27,7 @@ pub mod placement;
 pub mod platform;
 pub mod robloxlog;
 pub mod secrets;
+pub mod spotmem;
 pub mod update;
 pub mod vision;
 pub mod webhook;

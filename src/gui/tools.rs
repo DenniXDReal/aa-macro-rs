@@ -469,6 +469,16 @@ impl App {
                 self.dirty();
             }
             super::toggle(ui, &mut self.show_spiral, "show shape");
+            ui.label("radius");
+            if ui
+                .add(Slider::new(&mut self.settings.shape_scale, 0.6..=2.5).step_by(0.1))
+                .on_hover_text(
+                    "how far the shape spreads out from the middle (1.0 = AHK / v10 size)",
+                )
+                .changed()
+            {
+                self.dirty();
+            }
             ui.label("delay");
             if ui
                 .add(
@@ -507,6 +517,23 @@ impl App {
                 self.read_level_test();
             }
         });
+        ui.horizontal(|ui| {
+            if super::toggle(
+                ui,
+                &mut self.settings.spot_memory,
+                "Remember spots that fail (skip them next time)",
+            ) {
+                self.dirty();
+            }
+            let key = self.spot_key();
+            let bad = self.memory.lock().unwrap().bad_count(&key);
+            ui.label(egui::RichText::new(format!("{bad} skipped on {key}")).color(MUTED));
+            if bad > 0 && ui.small_button("Forget them").clicked() {
+                self.memory.lock().unwrap().forget(&key);
+                self.say(format!("{key}: forgot the failed spots"));
+            }
+        });
+        ui.small("A spot is skipped after a unit failed to go down there twice (needs unit_placed captured - one fail can just be no money). A success there clears it.");
         ui.small("Left click = add spot. Right click = remove nearest. Each placing client has its own spots (pick it in the client box above the picture). Units fill spots in number order (reserved slot spots first), then the spiral.");
         let spots = self.placements.spots(&self.spot_key()).to_vec();
         let n = spots.len();
@@ -539,11 +566,19 @@ impl App {
                     );
                 }
             }
+            for p in self.memory.lock().unwrap().bad_spots(&self.spot_key()) {
+                let c = rect.min + Vec2::new(p.x as f32, p.y as f32) * scale;
+                let d = 5.0;
+                let st = Stroke::new(2.0, Color32::from_rgb(248, 113, 113));
+                painter.line_segment([c - Vec2::splat(d), c + Vec2::splat(d)], st);
+                painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], st);
+            }
             if self.show_spiral {
-                for (i, p) in crate::game::placing::shape_spots(
+                for (i, p) in crate::game::placing::shape_spots_scaled(
                     self.settings.place_shape,
                     40,
                     self.sel as u64 + 1,
+                    self.settings.shape_scale,
                 )
                 .iter()
                 .enumerate()
@@ -629,10 +664,11 @@ impl App {
                 .map(|s| Point::new(s.x, s.y))
                 .collect();
             if self.settings.spiral_fallback {
-                spots.extend(crate::game::placing::shape_spots(
+                spots.extend(crate::game::placing::shape_spots_scaled(
                     self.settings.place_shape,
                     60,
                     self.sel as u64 * 7 + slot as u64,
+                    self.settings.shape_scale,
                 ));
             }
             jobs.push((slot, u.place as u32, spots));
@@ -662,6 +698,7 @@ impl App {
                     &confirm,
                     delay,
                     &|| true,
+                    &|_| {},
                     &|_| {},
                 ) {
                     Ok(done) => {

@@ -164,6 +164,8 @@ pub struct App {
 
     // game loop
     run_rx: Option<Receiver<crate::game::run::Event>>,
+    /// Spots where units didn't go down (skipped next time).
+    memory: Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
 
     // webhook
     notifier: crate::webhook::Notifier,
@@ -281,6 +283,9 @@ impl App {
             name_tries: Default::default(),
             admin_needed: false,
             run_rx: None,
+            memory: Arc::new(std::sync::Mutex::new(crate::spotmem::SpotMemory::load(
+                &crate::spotmem::SpotMemory::default_path(),
+            ))),
             notifier: crate::webhook::Notifier::start(Some(log_tx.clone())),
             hook_input: String::new(),
             running: false,
@@ -383,6 +388,7 @@ impl App {
             placements: self.placements.clone(),
             tx,
             speed: 1.0,
+            memory: self.memory.clone(),
         };
         std::thread::Builder::new()
             .name("game-loop".into())

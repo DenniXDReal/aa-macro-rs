@@ -232,6 +232,7 @@ mod tests {
             placements: Placements::default(),
             tx,
             speed: 0.02,
+            memory: Default::default(),
         };
         (c, rx, arb)
     }

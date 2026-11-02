@@ -30,6 +30,10 @@ pub struct Settings {
     pub place_delay_ms: u64,
     /// Shape tried when a map has no (or not enough) custom spots.
     pub place_shape: crate::game::placing::Shape,
+    /// How far the shape spreads out (1.0 = AHK / v10 size).
+    pub shape_scale: f32,
+    /// Skip spots where units failed to go down before (per map + client).
+    pub spot_memory: bool,
     /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
     pub click_mode: crate::input::ClickMode,
     /// Multi-instance unlock object names (held while `unlock` runs).
@@ -377,6 +381,8 @@ impl Default for Settings {
             place_delay_ms: 2000,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
+            shape_scale: 1.5,
+            spot_memory: true,
             singleton_names: vec!["ROBLOX_singletonMutex".into()],
             run: RunSettings::default(),
             keybinds: Keybinds::default(),

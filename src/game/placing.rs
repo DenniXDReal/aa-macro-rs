@@ -125,6 +125,35 @@ pub const SHAPE_CENTRE: Point = Point::new(408, 320);
 /// Spots must stay off the hotbar / top UI.
 pub const SHAPE_AREA: Rect = Rect::new(20, 70, 760, 450);
 
+/// Candidate spots for `shape` (deterministic for a seed), spread out by
+/// `scale` around the middle (1.0 = the AHK / v10 size).
+pub fn shape_spots_scaled(shape: Shape, n: usize, seed: u64, scale: f32) -> Vec<Point> {
+    let c = if shape == Shape::Spiral {
+        SPIRAL_CENTRE
+    } else {
+        SHAPE_CENTRE
+    };
+    let scale = scale.clamp(0.5, 3.0);
+    let mut out: Vec<Point> = vec![];
+    for p in shape_spots(shape, n * 2, seed) {
+        let q = Point::new(
+            c.x + ((p.x - c.x) as f32 * scale).round() as i32,
+            c.y + ((p.y - c.y) as f32 * scale).round() as i32,
+        );
+        if SHAPE_AREA.contains(q)
+            && !out
+                .iter()
+                .any(|o| (o.x - q.x).abs() < 8 && (o.y - q.y).abs() < 8)
+        {
+            out.push(q);
+        }
+        if out.len() >= n {
+            break;
+        }
+    }
+    out
+}
+
 /// Candidate spots for `shape` (deterministic for a seed).
 pub fn shape_spots(shape: Shape, n: usize, seed: u64) -> Vec<Point> {
     let c = SHAPE_CENTRE;
@@ -364,6 +393,7 @@ pub fn place_slot(
     delay_ms: u64,
     before_each: &dyn Fn() -> bool,
     on_placed: &dyn Fn(Point),
+    on_failed: &dyn Fn(Point),
 ) -> Result<Vec<Point>, InputError> {
     let mut placed = vec![];
     for (i, at) in spots.iter().enumerate() {
@@ -392,6 +422,8 @@ pub fn place_slot(
             // its panel is still open here (e.g. turn Auto ability on)
             on_placed(*at);
             placed.push(*at);
+        } else {
+            on_failed(*at);
         }
         arb.run(cancel_batch(hwnd, keys))?;
     }
@@ -477,7 +509,20 @@ mod tests {
             .map(|h| {
                 let (a, k, s) = (arb.handle(), keys.clone(), spots.clone());
                 std::thread::spawn(move || {
-                    place_slot(&a, Hwnd(h), &k, 2, 3, &s, &|| None, 0, &|| true, &|_| {}).unwrap()
+                    place_slot(
+                        &a,
+                        Hwnd(h),
+                        &k,
+                        2,
+                        3,
+                        &s,
+                        &|| None,
+                        0,
+                        &|| true,
+                        &|_| {},
+                        &|_| {},
+                    )
+                    .unwrap()
                 })
             })
             .collect();
