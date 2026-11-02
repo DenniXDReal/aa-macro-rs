@@ -70,6 +70,8 @@ pub struct Settings {
     pub ram_port: u16,
     /// RAM accounts: one main + alts, launch order = main first.
     pub accounts: Vec<crate::accounts::AccountSlot>,
+    /// Built-in account manager or Roblox Account Manager.
+    pub account_source: crate::accounts::AccountSource,
     /// Alts: private server link, or follow the main into its server.
     pub alt_join: crate::accounts::AltJoin,
     /// Seconds to let the main load in before alts follow it.
@@ -401,6 +403,7 @@ impl Default for Settings {
             ram_port: 7963,
             accounts: vec![],
             alt_join: Default::default(),
+            account_source: Default::default(),
             follow_delay_s: 30,
             update_repo: "DenniXDReal/aa-macro-rs".into(),
             auto_update_check: true,

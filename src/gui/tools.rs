@@ -135,6 +135,7 @@ impl App {
         let alive: std::collections::HashSet<u32> = w.iter().map(|c| c.pid).collect();
         self.names.retain(|pid, _| alive.contains(pid));
         self.name_tries.retain(|pid, _| alive.contains(pid));
+        self.name_logs.retain(|pid, _| alive.contains(pid));
         self.clients = w;
         let admin = self
             .clients
@@ -249,7 +250,14 @@ impl App {
             });
         }
         if self.settings.placers.len() > 1 {
-            ui.small("All of these place at the same time (input takes turns). Make teams on Home > Control (+ New), then pick one per client here.");
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("All of these place at the same time (input takes turns). Make teams on Home > Control (+ New), then pick one per client here.")
+                        .size(11.0)
+                        .color(MUTED),
+                )
+                .wrap(),
+            );
         }
         if changed {
             self.dirty();

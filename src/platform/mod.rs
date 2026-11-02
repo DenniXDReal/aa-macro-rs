@@ -71,6 +71,10 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// Open a link with whatever handles it (roblox-player: -> Roblox).
+    fn open_uri(&self, _uri: &str) -> Result<()> {
+        anyhow::bail!("opening links needs Windows")
+    }
     /// Read the text in `area` of `frame` (Windows' built-in OCR).
     fn ocr(&self, _frame: &Frame, _area: Rect) -> Option<String> {
         None

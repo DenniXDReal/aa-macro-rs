@@ -24,10 +24,23 @@ pub enum AccountRole {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountSlot {
-    /// RAM username.
+    /// Roblox username.
     pub username: String,
     pub role: AccountRole,
     pub enabled: bool,
+    /// Roblox user id (built-in accounts; 0 = unknown).
+    #[serde(default)]
+    pub user_id: u64,
+}
+
+/// Who launches the accounts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AccountSource {
+    /// The macro itself (saved logins, no other app).
+    #[default]
+    BuiltIn,
+    /// Roblox Account Manager's web server.
+    Ram,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +112,12 @@ impl Ram {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect())
+    }
+
+    /// One account's login cookie (RAM: Web Server > Allow GetCookie) - only
+    /// for moving accounts into the built-in manager once.
+    pub fn cookie(&self, account: &str) -> Result<String> {
+        self.call("GetCookie", &[("Account", account)])
     }
 
     /// (username, user id) of every account in RAM.
@@ -279,16 +298,19 @@ mod tests {
                 username: "a1".into(),
                 role: AccountRole::Alt,
                 enabled: true,
+                user_id: 0,
             },
             AccountSlot {
                 username: "off".into(),
                 role: AccountRole::Alt,
                 enabled: false,
+                user_id: 0,
             },
             AccountSlot {
                 username: "m".into(),
                 role: AccountRole::Main,
                 enabled: true,
+                user_id: 0,
             },
         ];
         let o: Vec<&str> = launch_order(&s)

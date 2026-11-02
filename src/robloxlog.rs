@@ -33,13 +33,14 @@ pub fn user_id_in(text: &str) -> Option<u64> {
     best.map(|b| b.1)
 }
 
-/// The player log created closest after `started` (within 40 s).
-pub fn log_for_start(dir: &Path, started: SystemTime) -> Option<PathBuf> {
+/// The player log created closest after `started` (within 40 s), not one
+/// already matched to another client.
+pub fn log_for_start(dir: &Path, started: SystemTime, taken: &[PathBuf]) -> Option<PathBuf> {
     let mut best: Option<(Duration, PathBuf)> = None;
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
         let name = p.file_name()?.to_string_lossy().to_lowercase();
-        if !name.contains("player") || !name.ends_with(".log") {
+        if !name.contains("player") || !name.ends_with(".log") || taken.contains(&p) {
             continue;
         }
         let Ok(md) = e.metadata() else { continue };
@@ -62,13 +63,13 @@ pub fn log_for_start(dir: &Path, started: SystemTime) -> Option<PathBuf> {
     best.map(|b| b.1)
 }
 
-/// User id for a Roblox process that started at `started`.
-pub fn user_id_for(started: SystemTime) -> Option<u64> {
+/// (log file, user id) for a Roblox process that started at `started`.
+pub fn user_id_for(started: SystemTime, taken: &[PathBuf]) -> Option<(PathBuf, u64)> {
     let dir = logs_dir()?;
-    let log = log_for_start(&dir, started)?;
+    let log = log_for_start(&dir, started, taken)?;
     // Roblox keeps the file open; std opens with shared read/write on Windows
-    let bytes = std::fs::read(log).ok()?;
-    user_id_in(&String::from_utf8_lossy(&bytes))
+    let bytes = std::fs::read(&log).ok()?;
+    user_id_in(&String::from_utf8_lossy(&bytes)).map(|id| (log, id))
 }
 
 /// Username for a user id from Roblox's public API.
@@ -111,10 +112,12 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("0.1_Studio_last.log"), "userid:9").unwrap();
-        let got = log_for_start(&dir, before).unwrap();
+        let got = log_for_start(&dir, before, &[]).unwrap();
         assert!(got.to_string_lossy().contains("Player_ABCDE"));
+        // already matched to another client: not again
+        assert!(log_for_start(&dir, before, &[got]).is_none());
         // a process that started long after the log can't be it
-        assert!(log_for_start(&dir, before + Duration::from_secs(600)).is_none());
+        assert!(log_for_start(&dir, before + Duration::from_secs(600), &[]).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

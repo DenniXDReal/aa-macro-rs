@@ -474,6 +474,28 @@ impl Platform for Win32Platform {
         .context("raise")
     }
 
+    fn open_uri(&self, uri: &str) -> Result<()> {
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        if !uri.starts_with("roblox-player:") {
+            bail!("only roblox-player: links are opened");
+        }
+        let r = unsafe {
+            ShellExecuteW(
+                None,
+                &HSTRING::from("open"),
+                &HSTRING::from(uri),
+                windows::core::PCWSTR::null(),
+                windows::core::PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if (r.0 as isize) <= 32 {
+            bail!("Windows couldn't open Roblox (is Roblox installed?)");
+        }
+        Ok(())
+    }
+
     fn ocr(&self, frame: &Frame, area: Rect) -> Option<String> {
         ocr_text(frame, area).ok()
     }

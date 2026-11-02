@@ -140,6 +140,7 @@ pub struct App {
     ram_list: Vec<String>,
     ram_pw_input: String,
     ps_input: String,
+    cookie_input: String,
     ram_rx: Receiver<RamMsg>,
     ram_tx: Sender<RamMsg>,
 
@@ -159,6 +160,9 @@ pub struct App {
     last_refresh: Instant,
     /// When we last tried to work out a client's username (by pid).
     name_tries: std::collections::HashMap<u32, Instant>,
+    /// Roblox log file already matched to each client (so two clients
+    /// never get the same name).
+    name_logs: std::collections::HashMap<u32, std::path::PathBuf>,
     /// Roblox runs as admin and we don't: Windows blocks docking/capture/input.
     admin_needed: bool,
 
@@ -197,7 +201,11 @@ enum RamMsg {
     Log(String),
     /// A launched account's Roblox window showed up.
     Pid(u32, String),
+    /// Name read from a client's Roblox log (that log is now taken).
+    PidLog(u32, String, std::path::PathBuf),
     Lock(crate::multi::MultiLock),
+    /// A login checked out: (username, user id, cookie) - save it.
+    Added(String, u64, String),
     LaunchDone,
 }
 
@@ -269,6 +277,7 @@ impl App {
             ram_list: vec![],
             ram_pw_input: String::new(),
             ps_input: String::new(),
+            cookie_input: String::new(),
             ram_rx,
             ram_tx,
             dock_rect: None,
@@ -281,6 +290,7 @@ impl App {
             names: Default::default(),
             last_refresh: Instant::now(),
             name_tries: Default::default(),
+            name_logs: Default::default(),
             admin_needed: false,
             run_rx: None,
             memory: Arc::new(std::sync::Mutex::new(crate::spotmem::SpotMemory::load(
@@ -701,25 +711,46 @@ impl App {
                     .is_none_or(|t| t.elapsed() > Duration::from_secs(10))
             })
             .collect();
+        let known: Vec<(String, u64)> = self
+            .settings
+            .accounts
+            .iter()
+            .filter(|a| a.user_id > 0)
+            .map(|a| (a.username.clone(), a.user_id))
+            .collect();
+        let use_ram = self.settings.account_source == accounts::AccountSource::Ram;
         for pid in todo {
             self.name_tries.insert(pid, Instant::now());
+            let taken: Vec<std::path::PathBuf> = self
+                .name_logs
+                .iter()
+                .filter(|(p, _)| **p != pid)
+                .map(|(_, l)| l.clone())
+                .collect();
             let p = self.platform.clone();
             let ram = self.ram();
             let tx = self.ram_tx.clone();
+            let known = known.clone();
             std::thread::spawn(move || {
                 let Some(started) = p.process_started(pid) else {
                     return;
                 };
-                let Some(id) = crate::robloxlog::user_id_for(started) else {
+                let Some((log, id)) = crate::robloxlog::user_id_for(started, &taken) else {
                     return;
                 };
-                let name = ram
-                    .accounts_ids()
-                    .ok()
-                    .and_then(|l| l.into_iter().find(|(_, i)| *i == id).map(|(n, _)| n))
+                let name = known
+                    .iter()
+                    .find(|(_, i)| *i == id)
+                    .map(|(n, _)| n.clone())
+                    .or_else(|| {
+                        use_ram
+                            .then(|| ram.accounts_ids().ok())
+                            .flatten()
+                            .and_then(|l| l.into_iter().find(|(_, i)| *i == id).map(|(n, _)| n))
+                    })
                     .or_else(|| crate::robloxlog::username_online(id));
                 if let Some(n) = name {
-                    let _ = tx.send(RamMsg::Pid(pid, n));
+                    let _ = tx.send(RamMsg::PidLog(pid, n, log));
                 }
             });
         }
@@ -1629,64 +1660,82 @@ impl App {
         heading(
             ui,
             "Accounts",
-            "Roblox Account Manager launches your main + alts into your private server",
+            "launch your main + alts into your private server - built in, no other app needed",
         );
-        card(ui, |ui| {
-            ui.label(
-                RichText::new("ROBLOX ACCOUNT MANAGER")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-            ui.horizontal(|ui| {
-                let (c, t) = match self.ram_ok {
-                    Some(true) => (GOOD, "connected"),
-                    Some(false) => (BAD, "not connected"),
-                    None => (MUTED, "not checked"),
-                };
-                dot(ui, c);
-                ui.colored_label(c, t);
-                ui.label(RichText::new(&self.ram_state).color(MUTED).size(12.0));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Port");
-                if ui
-                    .add(egui::DragValue::new(&mut self.settings.ram_port).range(1..=65535))
-                    .changed()
-                {
-                    self.dirty();
-                }
-                ui.label("Password");
-                let has = self.secrets.has(accounts::PASSWORD_KEY);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.ram_pw_input)
-                        .password(true)
-                        .desired_width(150.0)
-                        .hint_text(if has {
-                            "saved (encrypted)"
-                        } else {
-                            "6+ characters"
-                        }),
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Launch accounts with").color(MUTED));
+            if segmented(
+                ui,
+                &mut self.settings.account_source,
+                &[
+                    (accounts::AccountSource::BuiltIn, "Built-in (this app)"),
+                    (accounts::AccountSource::Ram, "Roblox Account Manager"),
+                ],
+            ) {
+                self.dirty();
+            }
+        });
+        ui.add_space(6.0);
+        if self.settings.account_source == accounts::AccountSource::BuiltIn {
+            self.builtin_card(ui);
+        } else {
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new("ROBLOX ACCOUNT MANAGER")
+                        .size(11.0)
+                        .color(MUTED),
                 );
-                if ui.button("Save").clicked() {
-                    let pw = self.ram_pw_input.clone();
-                    match self.secrets.set(accounts::PASSWORD_KEY, &pw) {
-                        Ok(()) => {
-                            self.ram_pw_input.clear();
-                            self.say("RAM password saved (encrypted)");
-                        }
-                        Err(e) => self.say(format!("saving password failed: {e}")),
+                ui.horizontal(|ui| {
+                    let (c, t) = match self.ram_ok {
+                        Some(true) => (GOOD, "connected"),
+                        Some(false) => (BAD, "not connected"),
+                        None => (MUTED, "not checked"),
+                    };
+                    dot(ui, c);
+                    ui.colored_label(c, t);
+                    ui.label(RichText::new(&self.ram_state).color(MUTED).size(12.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    if ui
+                        .add(egui::DragValue::new(&mut self.settings.ram_port).range(1..=65535))
+                        .changed()
+                    {
+                        self.dirty();
                     }
-                }
-                if ui.button("Test & load accounts").clicked() {
-                    self.ram_load();
-                }
-            });
-            ui.label(
+                    ui.label("Password");
+                    let has = self.secrets.has(accounts::PASSWORD_KEY);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ram_pw_input)
+                            .password(true)
+                            .desired_width(150.0)
+                            .hint_text(if has {
+                                "saved (encrypted)"
+                            } else {
+                                "6+ characters"
+                            }),
+                    );
+                    if ui.button("Save").clicked() {
+                        let pw = self.ram_pw_input.clone();
+                        match self.secrets.set(accounts::PASSWORD_KEY, &pw) {
+                            Ok(()) => {
+                                self.ram_pw_input.clear();
+                                self.say("RAM password saved (encrypted)");
+                            }
+                            Err(e) => self.say(format!("saving password failed: {e}")),
+                        }
+                    }
+                    if ui.button("Test & load accounts").clicked() {
+                        self.ram_load();
+                    }
+                });
+                ui.label(
                 RichText::new("In RAM: Settings > Developer > Enable Web Server · Web Server > Allow LaunchAccount + Allow GetAccounts + a password · General > Multi Roblox. Cookies stay inside RAM; the macro only asks it to launch.")
                     .size(11.0)
                     .color(MUTED),
             );
-        });
+            });
+        }
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.label(RichText::new("PRIVATE SERVER").size(11.0).color(MUTED));
@@ -1730,7 +1779,9 @@ impl App {
                     {
                         launch = Some(order);
                     }
-                    if ui.button("+ Add").clicked() {
+                    if self.settings.account_source == accounts::AccountSource::Ram
+                        && ui.button("+ Add").clicked()
+                    {
                         let role = if self
                             .settings
                             .accounts
@@ -1745,6 +1796,7 @@ impl App {
                             username: String::new(),
                             role,
                             enabled: true,
+                            user_id: 0,
                         });
                         changed = true;
                     }
@@ -1779,6 +1831,13 @@ impl App {
                 );
             }
             let names = self.ram_list.clone();
+            let builtin = self.settings.account_source == accounts::AccountSource::BuiltIn;
+            let saved: Vec<bool> = self
+                .settings
+                .accounts
+                .iter()
+                .map(|a| self.secrets.has(&crate::rbx::cookie_key(&a.username)))
+                .collect();
             let mut remove = None;
             egui::Grid::new("accounts")
                 .spacing([12.0, 8.0])
@@ -1789,6 +1848,16 @@ impl App {
                     ui.end_row();
                     for (i, a) in self.settings.accounts.iter_mut().enumerate() {
                         changed |= ui.checkbox(&mut a.enabled, "").changed();
+                        if builtin {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&a.username).color(TEXT));
+                                if saved.get(i).copied().unwrap_or(false) {
+                                    ui.label(RichText::new("login saved").size(11.0).color(GOOD));
+                                } else {
+                                    ui.label(RichText::new("no login - add it above").size(11.0).color(BAD));
+                                }
+                            });
+                        } else {
                         ComboBox::from_id_salt(("acc", i))
                             .width(180.0)
                             .selected_text(if a.username.is_empty() {
@@ -1806,6 +1875,7 @@ impl App {
                                     ui.label("press Test & load accounts first");
                                 }
                             });
+                        }
                         ComboBox::from_id_salt(("accrole", i))
                             .width(80.0)
                             .selected_text(if a.role == AccountRole::Main {
@@ -1842,7 +1912,10 @@ impl App {
                     }
                 });
             if let Some(i) = remove {
-                self.settings.accounts.remove(i);
+                let gone = self.settings.accounts.remove(i);
+                let _ = self
+                    .secrets
+                    .set(&crate::rbx::cookie_key(&gone.username), "");
                 changed = true;
             }
             if self.settings.accounts.is_empty() {
@@ -1875,6 +1948,139 @@ impl App {
         if let Some(alt) = follow {
             self.ram_launch(vec![alt], true);
         }
+    }
+
+    /// Built-in account manager: add a login (cookie), or move accounts
+    /// over from Roblox Account Manager once.
+    fn builtin_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("BUILT-IN ACCOUNT MANAGER")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            ui.label(
+                RichText::new("Add each account's login once. It's saved encrypted on this PC (Windows DPAPI - only your Windows user can read it) and only ever sent to roblox.com to start Roblox. Never share it: it logs straight into the account.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            ui.horizontal(|ui| {
+                ui.label("Login cookie");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cookie_input)
+                        .password(true)
+                        .desired_width(320.0)
+                        .hint_text(".ROBLOSECURITY value (_|WARNING:-DO-NOT-SHARE…)"),
+                );
+                if ui.button("Add account").clicked() {
+                    let c = crate::rbx::clean_cookie(&self.cookie_input);
+                    self.cookie_input.clear();
+                    if c.len() < 50 {
+                        self.say("that doesn't look like a login cookie");
+                    } else {
+                        let tx = self.ram_tx.clone();
+                        self.say("checking the login with Roblox…");
+                        std::thread::spawn(move || match crate::rbx::whoami(&c) {
+                            Ok((id, name)) => {
+                                let _ = tx.send(RamMsg::Added(name, id, c));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(RamMsg::Log(format!("add account: {e}")));
+                            }
+                        });
+                    }
+                }
+            });
+            ui.label(
+                RichText::new("Where to get it: open a private / incognito browser window, log into the account at roblox.com, press F12 > Application > Cookies > https://www.roblox.com > .ROBLOSECURITY > copy the Value. Then just close the window - don't press Log out, that ends the saved login too.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Import all from Roblox Account Manager")
+                    .on_hover_text("one time: RAM open, Web Server on, Allow GetAccounts + Allow GetCookie ticked, password saved in the RAM mode of this page")
+                    .clicked()
+                {
+                    self.import_from_ram();
+                }
+                ui.label(
+                    RichText::new("one time - then untick Allow GetCookie in RAM and you can close RAM for good")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+        });
+    }
+
+    fn import_from_ram(&mut self) {
+        let ram = self.ram();
+        let tx = self.ram_tx.clone();
+        self.say("importing accounts from Roblox Account Manager…");
+        std::thread::spawn(move || {
+            let log = |s: String| {
+                let _ = tx.send(RamMsg::Log(s));
+            };
+            let list = match ram.accounts() {
+                Ok(l) => l,
+                Err(e) => return log(format!("import: {e}")),
+            };
+            let mut n = 0;
+            for a in list {
+                match ram.cookie(&a).and_then(|c| {
+                    let c = crate::rbx::clean_cookie(&c);
+                    crate::rbx::whoami(&c).map(|(id, name)| (id, name, c))
+                }) {
+                    Ok((id, name, c)) => {
+                        let _ = tx.send(RamMsg::Added(name, id, c));
+                        n += 1;
+                    }
+                    Err(e) => log(format!("import {a}: {e}")),
+                }
+            }
+            log(format!(
+                "import: {n} account(s) moved in - untick Allow GetCookie in RAM now"
+            ));
+        });
+    }
+
+    /// Save a checked login and list the account.
+    fn add_builtin(&mut self, name: String, id: u64, cookie: String) {
+        if let Err(e) = self.secrets.set(&crate::rbx::cookie_key(&name), &cookie) {
+            self.say(format!("saving the login failed: {e}"));
+            return;
+        }
+        match self
+            .settings
+            .accounts
+            .iter_mut()
+            .find(|a| a.username.eq_ignore_ascii_case(&name))
+        {
+            Some(a) => {
+                a.user_id = id;
+                self.say(format!("{name}: login updated"));
+            }
+            None => {
+                let role = if self
+                    .settings
+                    .accounts
+                    .iter()
+                    .any(|a| a.role == AccountRole::Main)
+                {
+                    AccountRole::Alt
+                } else {
+                    AccountRole::Main
+                };
+                self.settings.accounts.push(AccountSlot {
+                    username: name.clone(),
+                    role,
+                    enabled: true,
+                    user_id: id,
+                });
+                self.say(format!("{name} added ({role:?})"));
+            }
+        }
+        self.dirty();
     }
 
     fn ram_load(&mut self) {
@@ -1922,13 +2128,28 @@ impl App {
             .find(|a| a.role == AccountRole::Main && a.enabled)
             .map(|a| a.username.clone());
         let follow = follow_only || self.settings.alt_join == accounts::AltJoin::FollowMain;
+        let builtin = self.settings.account_source == accounts::AccountSource::BuiltIn;
+        // built-in: (cookie, user id) per username, read here (secrets stay on this thread)
+        let logins: std::collections::HashMap<String, (String, u64)> = if builtin {
+            self.settings
+                .accounts
+                .iter()
+                .filter_map(|a| {
+                    self.secrets
+                        .get(&crate::rbx::cookie_key(&a.username))
+                        .map(|c| (a.username.clone(), (c, a.user_id)))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         let delay = Duration::from_secs(self.settings.follow_delay_s);
         let main_in_batch = main.as_ref().is_some_and(|m| names.contains(m));
         if follow && main.is_none() {
             self.say("follow: mark one account as Main first");
             return;
         }
-        self.say(format!("launching {} account(s) through RAM…", names.len()));
+        self.say(format!("launching {} account(s)…", names.len()));
         std::thread::spawn(move || {
             let log = |s: String| {
                 let _ = tx.send(RamMsg::Log(s));
@@ -1962,9 +2183,43 @@ impl App {
                         std::thread::sleep(delay);
                         waited = true;
                     }
-                    return ram.follow(n, m).map(|r| format!("{r} (following {m})"));
+                    if !builtin {
+                        return ram.follow(n, m).map(|r| format!("{r} (following {m})"));
+                    }
                 }
-                ram.launch(n, link.as_deref())
+                if !builtin {
+                    return ram.launch(n, link.as_deref());
+                }
+                // built-in account manager
+                let (cookie, mut id) = logins.get(n).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("no saved login - add it on the Accounts page")
+                })?;
+                if id == 0 {
+                    id = crate::rbx::whoami(&cookie)?.0;
+                }
+                let target = if follow && !is_main {
+                    let m = main.as_deref().unwrap_or_default();
+                    let uid = logins
+                        .get(m)
+                        .map(|l| l.1)
+                        .filter(|i| *i > 0)
+                        .map(Ok)
+                        .unwrap_or_else(|| crate::rbx::user_id(m))?;
+                    crate::rbx::Target::Follow { user: uid }
+                } else {
+                    match link.as_deref().filter(|l| !l.trim().is_empty()) {
+                        Some(l) => crate::rbx::private_target(&cookie, accounts::AA_PLACE_ID, l)?,
+                        None => crate::rbx::Target::Game {
+                            place: accounts::AA_PLACE_ID,
+                        },
+                    }
+                };
+                crate::rbx::launch(&cookie, id, &target, &|u| p.open_uri(u))?;
+                Ok(match &target {
+                    crate::rbx::Target::Follow { .. } => "launched, following the main".into(),
+                    crate::rbx::Target::Private { .. } => "launched into the private server".into(),
+                    crate::rbx::Target::Game { .. } => "launched".into(),
+                })
             };
             crate::multi::launch_each(
                 &names,
@@ -2589,7 +2844,16 @@ impl App {
                     self.names.insert(pid, name);
                     self.refresh_quiet();
                 }
+                RamMsg::PidLog(pid, name, log) => {
+                    // never two clients with one name: first one wins
+                    let dup = self.names.iter().any(|(p, n)| *p != pid && *n == name);
+                    self.name_logs.insert(pid, log);
+                    if !dup {
+                        self.names.insert(pid, name);
+                    }
+                }
                 RamMsg::Lock(l) => self.multi = Some(l),
+                RamMsg::Added(name, id, cookie) => self.add_builtin(name, id, cookie),
                 RamMsg::LaunchDone => {
                     self.refresh_clients();
                     if !self.settings.dock {
