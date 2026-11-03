@@ -201,6 +201,12 @@ impl LiveScreen {
         card_screen_text(&text)
     }
 
+    /// Everything readable on the screen (Windows OCR).
+    pub fn ocr_all(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        self.platform.ocr(frame, all)
+    }
+
     /// VICTORY (true) / DEFEAT (false) read with OCR from the upper middle.
     pub fn ocr_end(&self, frame: &crate::capture::Frame) -> Option<bool> {
         let area = Rect::new(150, 60, 500, 220);

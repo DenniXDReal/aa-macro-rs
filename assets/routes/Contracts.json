@@ -1,0 +1,12 @@
+{
+ "map": "Contracts",
+ "source": "AA Spiral v16 default routes",
+ "steps": [
+  {
+   "type": "click",
+   "x": 590,
+   "y": 15,
+   "button": "left"
+  }
+ ]
+}

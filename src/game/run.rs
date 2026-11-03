@@ -49,6 +49,26 @@ pub fn map_from_pattern(p: &str) -> String {
         .join(" ")
 }
 
+/// Which known map name the OCR text mentions (longest match wins, so
+/// "Future City (Tyrant)" beats "Future City").
+pub fn match_map(text: &str, known: &[String]) -> Option<String> {
+    let flat = |s: &str| -> String {
+        s.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect()
+    };
+    let t = flat(text);
+    known
+        .iter()
+        .filter(|m| {
+            let k = flat(m);
+            k.len() >= 5 && t.contains(&k)
+        })
+        .max_by_key(|m| flat(m).len())
+        .cloned()
+}
+
 /// Pattern name used to recognise `map` while it loads.
 pub fn loading_pattern(map: &str) -> String {
     format!("loading_{}", crate::vision::key(&route_map(map)))
@@ -821,9 +841,15 @@ impl RunCtx {
         let detect = main.with_prefix("loading_");
         let vote = Self::names(&["vote_start"]);
         let mut map: Option<String> = None;
-        if main.has("vote_start") || !detect.is_empty() {
-            // poll until Vote Start shows; spot the loading screen meanwhile
+        // map names the OCR can recognise: every map with a route + your loading_ captures
+        let mut known: Vec<String> = self.routes.maps.keys().cloned().collect();
+        known.extend(detect.iter().map(|p| map_from_pattern(p)));
+        let mut ocr_vote = false;
+        {
+            // poll until Vote Start shows; spot the map meanwhile (your
+            // loading_ captures first, else OCR of the map name)
             let mut dl = self.control.deadline(self.secs(120.0));
+            let started = Instant::now();
             loop {
                 self.check()?;
                 if map.is_none() && !detect.is_empty() {
@@ -836,11 +862,34 @@ impl RunCtx {
                         }
                     }
                 }
+                if (map.is_none() || !main.has("vote_start")) && ocr_due_for(self.main, 2) {
+                    if let Some(text) = main.frame().and_then(|f| main.ocr_all(&f)) {
+                        if map.is_none() {
+                            if let Some(m) = match_map(&text, &known) {
+                                self.log(format!("map (read by OCR): {m}"));
+                                map = Some(m);
+                            }
+                        }
+                        let flat = text.to_lowercase();
+                        if flat.contains("vote") && flat.contains("start") {
+                            ocr_vote = true;
+                        }
+                    }
+                }
                 if main.has("vote_start") && main.find(&vote, None).is_some() {
+                    break;
+                }
+                if !main.has("vote_start") && ocr_vote {
                     break;
                 }
                 if !main.has("vote_start") && map.is_some() {
                     self.sleep(6000)?;
+                    break;
+                }
+                if !main.has("vote_start")
+                    && detect.is_empty()
+                    && started.elapsed() > Duration::from_secs_f64(self.secs(25.0))
+                {
                     break;
                 }
                 if dl.expired() {
@@ -849,8 +898,6 @@ impl RunCtx {
                 }
                 self.sleep(300)?;
             }
-        } else {
-            self.sleep(6000)?;
         }
         let map = match (map, fixed) {
             (Some(m), true) if route_map(&m) != route_map(&s.run.map) => {
@@ -1632,6 +1679,28 @@ impl RunCtx {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn map_by_ocr_text() {
+        let known: Vec<String> = [
+            "Future City",
+            "Future City (Tyrant)",
+            "Ruined City",
+            "Contracts",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            match_map("LOADING... FUTURE CITY (TYRANT) Tip: ...", &known).as_deref(),
+            Some("Future City (Tyrant)")
+        );
+        assert_eq!(
+            match_map("Ruined  City", &known).as_deref(),
+            Some("Ruined City")
+        );
+        assert_eq!(match_map("Wave 1", &known), None);
+    }
 
     #[test]
     fn plan_per_mode() {

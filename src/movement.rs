@@ -497,7 +497,7 @@ mod tests {
     fn every_builtin_route_parses_and_converts() {
         let r = Routes::load(Path::new("/nonexistent"));
         assert!(r.maps.len() >= 30, "only {} routes", r.maps.len());
-        assert!(!r.maps.contains_key("Contracts"));
+        assert!(r.maps.contains_key("Contracts"));
         assert!(r.maps.contains_key("Space Center") && r.maps.contains_key("Adventurer Town"));
         let env = FakeEnv(vec![]);
         let v = Vars {
