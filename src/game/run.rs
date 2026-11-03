@@ -980,6 +980,30 @@ impl RunCtx {
                         s.placers.len(),
                     ));
                 }
+                // hill unit: select it, read the glowing high ground, try those first
+                if u.hill {
+                    let key_ = keys.units[(slot.clamp(1, 6)) - 1];
+                    let _ = self.arb.run(
+                        Batch::new(h, "hill: show high ground")
+                            .then(Action::KeyTap {
+                                key: key_,
+                                hold_ms: 40,
+                            })
+                            .wait(500),
+                    );
+                    let hs = scr
+                        .frame()
+                        .map(|f| super::placing::hill_spots(&f, 60))
+                        .unwrap_or_default();
+                    let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
+                    self.log(format!(
+                        "client {n}: slot {slot} hill - {} high-ground spot(s) seen",
+                        hs.len()
+                    ));
+                    let mut v = hs;
+                    v.extend(spots.into_iter());
+                    spots = v;
+                }
                 // skip spots that failed before on this map (spot memory)
                 if s.spot_memory {
                     // hill units learn their own spots (high ground only)

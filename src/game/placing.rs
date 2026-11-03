@@ -120,6 +120,39 @@ impl Shape {
     }
 }
 
+/// Hill units: while one is selected the high ground it can go on glows
+/// bright green (as AA Spiral v16 uses). Spots on that green, middle first.
+pub fn hill_spots(f: &crate::capture::Frame, max: usize) -> Vec<Point> {
+    let green = |x: i32, y: i32| {
+        f.rgb(x, y).is_some_and(|(r, g, b)| {
+            let (r, g, b) = (r as i32, g as i32, b as i32);
+            g >= 150 && g - r >= 60 && g - b >= 60
+        })
+    };
+    let a = SHAPE_AREA;
+    let mut out = vec![];
+    let mut y = a.y + 8;
+    while y < a.y + a.h - 8 {
+        let mut x = a.x + 8;
+        while x < a.x + a.w - 8 {
+            // the spot and its neighbours green = solidly on the high ground
+            let n = [(0, 0), (-6, 0), (6, 0), (0, -6), (0, 6)]
+                .iter()
+                .filter(|(dx, dy)| green(x + dx, y + dy))
+                .count();
+            if n >= 4 {
+                out.push(Point::new(x, y));
+            }
+            x += 22;
+        }
+        y += 22;
+    }
+    let c = SHAPE_CENTRE;
+    out.sort_by_key(|p| (p.x - c.x).pow(2) + (p.y - c.y).pow(2));
+    out.truncate(max);
+    out
+}
+
 /// AHK's centre of the play field (client px).
 pub const SHAPE_CENTRE: Point = Point::new(408, 320);
 /// Spots must stay off the hotbar / top UI.
@@ -506,6 +539,22 @@ pub fn place_slot(
 #[cfg(test)]
 mod shape_tests {
     use super::*;
+
+    #[test]
+    fn hill_spots_on_green() {
+        let mut f = crate::capture::Frame::solid(800, 599, 40, 60, 50);
+        for y in 200..300 {
+            for x in 500..640 {
+                let i = ((y * 800 + x) * 4) as usize;
+                f.bgra[i..i + 3].copy_from_slice(&[40, 230, 60]);
+            }
+        }
+        let v = hill_spots(&f, 50);
+        assert!(!v.is_empty());
+        assert!(v
+            .iter()
+            .all(|p| (500..640).contains(&p.x) && (200..300).contains(&p.y)));
+    }
 
     #[test]
     fn every_shape_gives_spots_on_screen() {
