@@ -844,6 +844,23 @@ impl RunCtx {
         // map names the OCR can recognise: every map with a route + your loading_ captures
         let mut known: Vec<String> = self.routes.maps.keys().cloned().collect();
         known.extend(detect.iter().map(|p| map_from_pattern(p)));
+        known.extend(
+            crate::movement::Stages::builtin()
+                .modes
+                .values()
+                .flat_map(|m| m.maps.iter().map(|p| p.name.clone())),
+        );
+        // event / special maps from AA Spiral's loading screens
+        known.extend(
+            [
+                "Assassin Park",
+                "Cursed Womb",
+                "Haunted Mansion",
+                "Walled City",
+                "Spirit Invasion",
+            ]
+            .map(String::from),
+        );
         let mut ocr_vote = false;
         {
             // poll until Vote Start shows; spot the map meanwhile (your
