@@ -862,7 +862,9 @@ impl RunCtx {
             .map(String::from),
         );
         let mut ocr_vote = false;
-        let summer = s.run.mode == Mode::SummerHunt;
+        // Find Match puts every Summer map's loading screen / title as
+        // "Planet Greenie (Summer)" - only then ignore them (Play Here is fine)
+        let summer = s.run.mode == Mode::SummerHunt && s.run.play == PlayChoice::FindMatch;
         {
             // poll until Vote Start shows; spot the map meanwhile (your
             // loading_ captures first, else OCR of the map name)
@@ -921,7 +923,7 @@ impl RunCtx {
         }
         // Summer Event: loading screen and title both say "Planet Greenie
         // (Summer)" on every map - recognise it from the minimap instead
-        if summer && map.is_none() {
+        if s.run.mode == Mode::SummerHunt && map.is_none() {
             let lib = super::minimap::library(&super::minimap::dir());
             let mut seen = None;
             for _ in 0..4 {

@@ -328,9 +328,9 @@ mod tests {
         c.enter_stage().unwrap();
         assert_eq!(sim.screen_now(), 5, "in the loading screen after Start");
         let map = c.stage_setup("").unwrap();
-        assert!(
-            map.starts_with("Summer map"),
-            "Summer: recognised by minimap, numbered by itself: {map}"
+        assert_eq!(
+            map, "Summer Beach",
+            "Play Here: map read off the loading screen"
         );
         assert_eq!(sim.screen_now(), 9, "voted, stage running");
         let won = c.upgrade_until_end(&[]).unwrap();
