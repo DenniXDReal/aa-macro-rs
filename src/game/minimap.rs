@@ -89,6 +89,7 @@ pub fn library(folder: &Path) -> Vec<(String, Vec<u8>)> {
             // "Magic Hills 2" = a second look of Magic Hills
             let map = name
                 .rsplit_once(' ')
+                .filter(|_| !name.starts_with("Summer map"))
                 .filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit()))
                 .map(|(m, _)| m.to_string())
                 .unwrap_or(name);
@@ -104,6 +105,36 @@ pub fn recognise(f: &Frame, lib: &[(String, Vec<u8>)]) -> Option<(String, f32)> 
         .map(|(n, l)| (n.clone(), distance(&fp, l)))
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .filter(|(_, d)| *d <= 18.0)
+}
+
+/// Save an unrecognised minimap under the next free "Summer map N" name and
+/// return that name - no naming needed; rename the file later if you like.
+pub fn save_new(f: &Frame, folder: &Path) -> Option<String> {
+    let m = crop(f)?;
+    let _ = std::fs::create_dir_all(folder);
+    let mut n = 1;
+    while folder.join(format!("Summer map {n}.png")).exists() {
+        n += 1;
+    }
+    let name = format!("Summer map {n}");
+    m.save_png(&folder.join(format!("{name}.png"))).ok()?;
+    Some(name)
+}
+
+/// Normal modes know their map: keep its minimap too (once), so the
+/// library fills up by itself.
+pub fn save_named_if_missing(f: &Frame, folder: &Path, map: &str) -> bool {
+    let clean: String = map
+        .chars()
+        .filter(|c| c.is_alphanumeric() || " ()-".contains(*c))
+        .collect();
+    let p = folder.join(format!("{clean}.png"));
+    if clean.is_empty() || p.exists() {
+        return false;
+    }
+    let Some(m) = crop(f) else { return false };
+    let _ = std::fs::create_dir_all(folder);
+    m.save_png(&p).is_ok()
 }
 
 /// Keep an unrecognised minimap so you can name it (rename the file to the
@@ -170,6 +201,15 @@ mod tests {
         let lib = library(&dir);
         assert_eq!(recognise(&hills, &lib).unwrap().0, "Magic Hills");
         assert_eq!(recognise(&island, &lib).unwrap().0, "Puppet Island");
+        // brand new map: numbered by itself, recognised next time
+        let other = shot(200, 40, 40, 70);
+        assert_eq!(save_new(&other, &dir).as_deref(), Some("Summer map 1"));
+        let lib = library(&dir);
+        assert_eq!(recognise(&other, &lib).unwrap().0, "Summer map 1");
+        assert_eq!(
+            save_new(&shot(10, 10, 200, 20), &dir).as_deref(),
+            Some("Summer map 2")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

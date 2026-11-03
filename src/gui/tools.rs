@@ -342,15 +342,15 @@ impl App {
         let named = files.len() - unknown.len();
         egui::CollapsingHeader::new(
             egui::RichText::new(format!(
-                "Summer maps (minimap)  {named} named, {} to name",
+                "Summer maps (minimap)  {named} named, {} numbered (naming optional)",
                 unknown.len()
             ))
-            .color(if unknown.is_empty() { GOOD } else { WARN }),
+            .color(GOOD),
         )
         .id_salt("summer-minimaps")
-        .default_open(!unknown.is_empty())
+        .default_open(false)
         .show(ui, |ui| {
-            ui.small("Summer Event loading screens and titles all say Planet Greenie, so the macro recognises the map by its minimap. A new one is saved here after the stage loads - type which map it was (look at the picture) and Save. Same map again later = recognised.");
+            ui.small("Summer Event loading screens and titles all say Planet Greenie, so the macro recognises the map by its minimap - automatically. A new one is remembered as 'Summer map N' with its own saved spots. Naming it is optional: name it after a real map to also use that map's walking route.");
             let maps: Vec<String> = self.routes.maps.keys().cloned().collect();
             let mut rename: Option<(std::path::PathBuf, String)> = None;
             for p in &unknown {
@@ -403,7 +403,7 @@ impl App {
                 let names: Vec<String> = files
                     .iter()
                     .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                    .filter(|s| !s.starts_with("unknown"))
+                    .filter(|s| !s.starts_with("unknown") && !s.starts_with("Summer map"))
                     .collect();
                 ui.small(format!("known: {}", names.join(", ")));
             }

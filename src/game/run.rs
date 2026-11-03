@@ -946,14 +946,20 @@ impl RunCtx {
                 self.sleep(700)?;
             }
             if map.is_none() {
-                if let Some(p) =
-                    seen.and_then(|f| super::minimap::save_unknown(&f, &super::minimap::dir()))
+                // new one: give it a number by itself, no naming needed
+                if let Some(n) =
+                    seen.and_then(|f| super::minimap::save_new(&f, &super::minimap::dir()))
                 {
                     self.log(format!(
-                        "new Summer map - minimap saved as {} : name it on the Patterns page (Summer maps)",
-                        p.display()
+                        "new Summer map - remembered as '{n}' (rename on the Patterns page if you like)"
                     ));
+                    map = Some(n);
                 }
+            }
+        } else if let (Some(m), Some(f)) = (map.as_ref(), main.frame()) {
+            // other modes know the map: learn its minimap for free
+            if super::minimap::save_named_if_missing(&f, &super::minimap::dir(), &route_map(m)) {
+                self.log(format!("minimap of {} learned", route_map(m)));
             }
         }
         let map = match (map, fixed) {
