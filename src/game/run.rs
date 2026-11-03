@@ -862,6 +862,7 @@ impl RunCtx {
             .map(String::from),
         );
         let mut ocr_vote = false;
+        let summer = s.run.mode == Mode::SummerHunt;
         {
             // poll until Vote Start shows; spot the map meanwhile (your
             // loading_ captures first, else OCR of the map name)
@@ -869,7 +870,9 @@ impl RunCtx {
             let started = Instant::now();
             loop {
                 self.check()?;
-                if map.is_none() && !detect.is_empty() {
+                // Summer Event: every loading screen says Planet Greenie, so the
+                // map is read from the stage title once in (below), not here
+                if map.is_none() && !detect.is_empty() && !summer {
                     for p in &detect {
                         if main.find(std::slice::from_ref(p), None).is_some() {
                             let m = map_from_pattern(p);
@@ -881,7 +884,7 @@ impl RunCtx {
                 }
                 if (map.is_none() || !main.has("vote_start")) && ocr_due_for(self.main, 2) {
                     if let Some(text) = main.frame().and_then(|f| main.ocr_all(&f)) {
-                        if map.is_none() {
+                        if map.is_none() && !summer {
                             if let Some(m) = match_map(&text, &known) {
                                 self.log(format!("map (read by OCR): {m}"));
                                 map = Some(m);
@@ -914,6 +917,20 @@ impl RunCtx {
                     break;
                 }
                 self.sleep(300)?;
+            }
+        }
+        // Summer Event: read the map from the stage title at the top
+        // ("Magic Hills Summer Hunt", "Puppet Island (Summer) Summer Hunt")
+        if summer && map.is_none() {
+            for _ in 0..4 {
+                if let Some(t) = main.frame().and_then(|f| main.ocr_title(&f)) {
+                    if let Some(m) = match_map(&t, &known) {
+                        self.log(format!("map (stage title): {m}"));
+                        map = Some(m);
+                        break;
+                    }
+                }
+                self.sleep(700)?;
             }
         }
         let map = match (map, fixed) {
@@ -1717,6 +1734,18 @@ mod tests {
             Some("Ruined City")
         );
         assert_eq!(match_map("Wave 1", &known), None);
+        let k2: Vec<String> = ["Puppet Island", "Magic Hills", "Planet Greenie"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            match_map("Puppet Island (Summer) Summer Hunt 0.0/68250", &k2).as_deref(),
+            Some("Puppet Island")
+        );
+        assert_eq!(
+            match_map("Magic Hills Summer Hunt", &k2).as_deref(),
+            Some("Magic Hills")
+        );
     }
 
     #[test]

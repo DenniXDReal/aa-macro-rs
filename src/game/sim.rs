@@ -328,13 +328,13 @@ mod tests {
         c.enter_stage().unwrap();
         assert_eq!(sim.screen_now(), 5, "in the loading screen after Start");
         let map = c.stage_setup("").unwrap();
-        assert_eq!(map, "Summer Beach", "map read off the loading screen");
+        assert_eq!(map, "", "Summer: loading screen ignored (always says Planet Greenie); title OCR not in the fake game");
         assert_eq!(sim.screen_now(), 9, "voted, stage running");
         let won = c.upgrade_until_end(&[]).unwrap();
         assert!(won);
         let lobby = c.after_end().unwrap();
         assert!(!lobby, "replays by default");
-        assert_eq!(c.stage_setup(&map).unwrap(), "Summer Beach");
+        assert_eq!(c.stage_setup(&map).unwrap(), "");
         assert_eq!(
             *sim.clicks.lock().unwrap(),
             vec![

@@ -201,6 +201,11 @@ impl LiveScreen {
         card_screen_text(&text)
     }
 
+    /// The stage title bar at the top middle (map + mode name).
+    pub fn ocr_title(&self, frame: &crate::capture::Frame) -> Option<String> {
+        self.platform.ocr(frame, Rect::new(150, 0, 500, 48))
+    }
+
     /// Everything readable on the screen (Windows OCR).
     pub fn ocr_all(&self, frame: &crate::capture::Frame) -> Option<String> {
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
