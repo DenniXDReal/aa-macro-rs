@@ -3,6 +3,7 @@
 
 pub mod cardlog;
 pub mod cards;
+pub mod minimap;
 pub mod placing;
 pub mod run;
 #[cfg(test)]

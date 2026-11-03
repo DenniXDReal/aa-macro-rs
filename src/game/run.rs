@@ -919,18 +919,41 @@ impl RunCtx {
                 self.sleep(300)?;
             }
         }
-        // Summer Event: read the map from the stage title at the top
-        // ("Magic Hills Summer Hunt", "Puppet Island (Summer) Summer Hunt")
+        // Summer Event: loading screen and title both say "Planet Greenie
+        // (Summer)" on every map - recognise it from the minimap instead
         if summer && map.is_none() {
+            let lib = super::minimap::library(&super::minimap::dir());
+            let mut seen = None;
             for _ in 0..4 {
-                if let Some(t) = main.frame().and_then(|f| main.ocr_title(&f)) {
-                    if let Some(m) = match_map(&t, &known) {
+                if let Some(f) = main.frame() {
+                    if let Some((m, d)) = super::minimap::recognise(&f, &lib) {
+                        self.log(format!("map (minimap): {m} [{d:.0}]"));
+                        map = Some(m);
+                        break;
+                    }
+                    // the title may still name it on some maps
+                    if let Some(m) = main
+                        .ocr_title(&f)
+                        .and_then(|t| match_map(&t, &known))
+                        .filter(|m| m != "Planet Greenie")
+                    {
                         self.log(format!("map (stage title): {m}"));
                         map = Some(m);
                         break;
                     }
+                    seen = Some(f);
                 }
                 self.sleep(700)?;
+            }
+            if map.is_none() {
+                if let Some(p) =
+                    seen.and_then(|f| super::minimap::save_unknown(&f, &super::minimap::dir()))
+                {
+                    self.log(format!(
+                        "new Summer map - minimap saved as {} : name it on the Patterns page (Summer maps)",
+                        p.display()
+                    ));
+                }
             }
         }
         let map = match (map, fixed) {

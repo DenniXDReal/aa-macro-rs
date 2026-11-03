@@ -119,6 +119,9 @@ pub struct App {
     pat_margin: i32,
     pat_preview: Option<TextureHandle>,
     detect_map: String,
+    /// Summer minimaps waiting for a name: file -> typed name / thumbnail.
+    mm_names: std::collections::HashMap<String, String>,
+    mm_tex: std::collections::HashMap<String, TextureHandle>,
     /// TEMPORARY (debug_tp): where the TP click would land.
     tp_dbg_click: Option<Point>,
     hits: Vec<(String, Rect, Option<Hit>)>,
@@ -269,6 +272,8 @@ impl App {
             pat_margin: 40,
             pat_preview: None,
             detect_map: String::new(),
+            mm_names: Default::default(),
+            mm_tex: Default::default(),
             tp_dbg_click: None,
             hits: vec![],
             map,

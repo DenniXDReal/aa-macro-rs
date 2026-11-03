@@ -318,6 +318,98 @@ impl App {
         }
     }
 
+    /// Summer maps are told apart by their minimap. New ones are saved as
+    /// unknown-*.png; name them here (pick or type the map).
+    pub(super) fn summer_minimaps_ui(&mut self, ui: &mut egui::Ui) {
+        let dir = crate::game::minimap::dir();
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "png"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        let unknown: Vec<_> = files
+            .iter()
+            .filter(|p| {
+                p.file_stem()
+                    .is_some_and(|s| s.to_string_lossy().starts_with("unknown"))
+            })
+            .cloned()
+            .collect();
+        let named = files.len() - unknown.len();
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!(
+                "Summer maps (minimap)  {named} named, {} to name",
+                unknown.len()
+            ))
+            .color(if unknown.is_empty() { GOOD } else { WARN }),
+        )
+        .id_salt("summer-minimaps")
+        .default_open(!unknown.is_empty())
+        .show(ui, |ui| {
+            ui.small("Summer Event loading screens and titles all say Planet Greenie, so the macro recognises the map by its minimap. A new one is saved here after the stage loads - type which map it was (look at the picture) and Save. Same map again later = recognised.");
+            let maps: Vec<String> = self.routes.maps.keys().cloned().collect();
+            let mut rename: Option<(std::path::PathBuf, String)> = None;
+            for p in &unknown {
+                let key = p.to_string_lossy().to_string();
+                if !self.mm_tex.contains_key(&key) {
+                    if let Ok(f) = Frame::load_png(p) {
+                        let img = ColorImage::from_rgba_unmultiplied(
+                            [f.width as usize, f.height as usize],
+                            &rgba(&f),
+                        );
+                        let t = ui.ctx().load_texture(key.clone(), img, TextureOptions::LINEAR);
+                        self.mm_tex.insert(key.clone(), t);
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if let Some(t) = self.mm_tex.get(&key) {
+                        ui.image((t.id(), Vec2::new(96.0, 96.0)));
+                    }
+                    ui.vertical(|ui| {
+                        ui.small(p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                        let name = self.mm_names.entry(key.clone()).or_default();
+                        ComboBox::from_id_salt(("mm", key.clone()))
+                            .selected_text(if name.is_empty() { "pick the map".to_string() } else { name.clone() })
+                            .show_ui(ui, |ui| {
+                                for m in &maps {
+                                    ui.selectable_value(name, m.clone(), m);
+                                }
+                            });
+                        ui.add(egui::TextEdit::singleline(name).desired_width(160.0).hint_text("or type it"));
+                        if ui.small_button("Save name").clicked() && !name.trim().is_empty() {
+                            rename = Some((p.clone(), name.trim().to_string()));
+                        }
+                    });
+                });
+            }
+            if let Some((from, name)) = rename {
+                let clean: String = name.chars().filter(|c| c.is_alphanumeric() || " ()-".contains(*c)).collect();
+                let mut to = dir.join(format!("{clean}.png"));
+                let mut n = 2;
+                while to.exists() {
+                    to = dir.join(format!("{clean} {n}.png"));
+                    n += 1;
+                }
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => self.say(format!("Summer minimap saved as {clean}")),
+                    Err(e) => self.say(format!("rename failed: {e}")),
+                }
+            }
+            if named > 0 {
+                let names: Vec<String> = files
+                    .iter()
+                    .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+                    .filter(|s| !s.starts_with("unknown"))
+                    .collect();
+                ui.small(format!("known: {}", names.join(", ")));
+            }
+        });
+    }
+
     pub(super) fn read_level_test(&mut self) {
         let Some(info) = self.clients.get(self.sel).cloned() else {
             self.say("no client");
@@ -950,6 +1042,7 @@ impl App {
                 }
             });
         }
+        self.summer_minimaps_ui(ui);
         if let Some((name, icon)) = pick {
             self.pat_name = name.clone();
             self.pat_image = icon;
