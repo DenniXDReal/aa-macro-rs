@@ -290,6 +290,10 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     }
 }
 
+/// When a weather shift banner was last seen: a card pick right after it
+/// uses the weather order (buffs first).
+static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
 /// Accounts still upgrading (0 = all done: idle clicks keep things awake).
 static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -650,7 +654,15 @@ impl RunCtx {
                 }
             }
         }
-        let prio = if self.settings.run.card_priority.is_empty() {
+        let shift = LAST_SHIFT
+            .lock()
+            .unwrap()
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(90));
+        let prio = if shift {
+            // weather shift: buffs (green) first, then debuffs, each in your order
+            self.log("weather shift card - buffs first");
+            super::cards::weather_priority(&self.settings.run.card_priority)
+        } else if self.settings.run.card_priority.is_empty() {
             super::cards::default_priority()
         } else {
             self.settings.run.card_priority.clone()
@@ -784,6 +796,7 @@ impl RunCtx {
             }
             *l = Some(Instant::now());
         }
+        *LAST_SHIFT.lock().unwrap() = Some(Instant::now());
         let scr = self.screen(h);
         if let Some(p) = scr
             .has("unit_close")
@@ -1882,9 +1895,15 @@ impl RunCtx {
                 self.arb
                     .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
                     .map_err(|e| format!("upgrade: {e}"))?;
+                // let the panel draw before reading it
+                self.sleep(s.upgrade_read_ms)?;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
-                let before = Self::read_level(scr);
+                let mut before = Self::read_level(scr);
+                if before.is_none() {
+                    self.sleep(400)?;
+                    before = Self::read_level(scr);
+                }
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -1915,8 +1934,13 @@ impl RunCtx {
                             .wait(180);
                     }
                     self.arb.run(b).map_err(|e| format!("upgrade: {e}"))?;
-                    self.sleep(500)?;
-                    let after = Self::read_level(scr);
+                    self.sleep(s.upgrade_read_ms.max(500))?;
+                    let mut after = Self::read_level(scr);
+                    if after.is_none() || after == before {
+                        // slow panel: one more look
+                        self.sleep(s.upgrade_read_ms / 2 + 300)?;
+                        after = Self::read_level(scr).or(after);
+                    }
                     match (before, after) {
                         (_, Some(u32::MAX)) => {
                             maxed[k] = true;

@@ -3259,6 +3259,13 @@ impl App {
                     );
                     changed |= ui.checkbox(&mut s.parallel_checks, "").changed();
                     ui.end_row();
+                    ui.label("Upgrade read wait (ms)").on_hover_text(
+                        "after opening a unit / pressing upgrade, wait this long before reading its level",
+                    );
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.upgrade_read_ms).range(0..=5000))
+                        .changed();
+                    ui.end_row();
                     ui.label("Placed check time (ms)").on_hover_text(
                         "how long it keeps looking for the unit panel / UPG [0] after the click",
                     );
