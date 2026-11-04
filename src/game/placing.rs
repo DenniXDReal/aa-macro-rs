@@ -182,9 +182,10 @@ pub fn shape_spots_for(
     nth: usize,
     placers: usize,
 ) -> Vec<Point> {
-    let o = account_offset(nth, placers);
-    // several accounts: each gets its own (smaller) patch of the screen
-    let scale = if placers > 1 { scale * 0.75 } else { scale };
+    // every account uses the whole shape; they don't share spots because
+    // each spot is claimed by one account at a time (see place_all)
+    let _ = (nth, placers);
+    let o = Point::new(0, 0);
     let mut out: Vec<Point> = shape_spots_scaled(shape, n * 2, seed, scale)
         .into_iter()
         .map(|p| Point::new(p.x + o.x, p.y + o.y))
@@ -484,6 +485,7 @@ pub fn place_slot(
         keep_open,
         delay_ms,
         before_each,
+        &|_| true,
         &|seen, _| if seen { Check::Placed } else { Check::Failed },
         on_placed,
         on_failed,
@@ -515,6 +517,7 @@ pub fn place_slot_checked(
     keep_open: bool,
     delay_ms: u64,
     before_each: &dyn Fn() -> bool,
+    claim: &dyn Fn(Point) -> bool,
     check: &dyn Fn(bool, Point) -> Check,
     on_placed: &dyn Fn(Point),
     on_failed: &dyn Fn(Point),
@@ -531,6 +534,10 @@ pub fn place_slot_checked(
             break;
         }
         if placed.contains(at) {
+            continue;
+        }
+        // another account placing here (or already did)? take the next spot
+        if !claim(*at) {
             continue;
         }
         if i > 0 && delay_ms > 0 {

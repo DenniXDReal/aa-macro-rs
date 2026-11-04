@@ -1312,6 +1312,10 @@ impl RunCtx {
         // set when VICTORY / DEFEAT shows up while placing
         let over = std::sync::atomic::AtomicBool::new(false);
         let over = &over;
+        // spots taken by an account (being tried or placed): the others skip
+        // anything close, so two accounts never fight over one spot
+        let claimed: std::sync::Mutex<Vec<(Point, usize)>> = std::sync::Mutex::new(vec![]);
+        let claimed = &claimed;
         let out = std::thread::scope(|sc| {
             let mut handles = vec![];
             for (wi, (n, h, scr, jobs, units)) in work.into_iter().enumerate() {
@@ -1384,6 +1388,21 @@ impl RunCtx {
                             if remember {
                                 self.memory.lock().unwrap().failed(&set, p);
                             }
+                            // free it again (nothing stands there)
+                            claimed
+                                .lock()
+                                .unwrap()
+                                .retain(|(q, who)| !(*who == n && *q == p));
+                        };
+                        let claim = |p: Point| -> bool {
+                            let mut c = claimed.lock().unwrap();
+                            if c.iter().any(|(q, who)| {
+                                *who != n && (q.x - p.x).abs() <= 28 && (q.y - p.y).abs() <= 28
+                            }) {
+                                return false;
+                            }
+                            c.push((p, n));
+                            true
                         };
                         // second opinion on each placement: the hotbar
                         // counter ("1/3") and the "Unique units may not be
@@ -1412,7 +1431,7 @@ impl RunCtx {
                             c
                         };
                         let base = std::cell::Cell::new(if use_counter { read_counter() } else { None });
-                        let check = |seen: bool, _at: Point| -> Check {
+                        let check_inner = |seen: bool| -> Check {
                             let panel_says = badge.is_some() && seen;
                             if panel_says && detect != PlacementDetect::Hotbar {
                                 if let Some((c, m)) = base.get() {
@@ -1458,6 +1477,28 @@ impl RunCtx {
                             }
                             Check::Failed
                         };
+                        // misses in a row: after a few, ask the counter
+                        // whether this unit is simply at its limit already
+                        let misses = std::cell::Cell::new(0u32);
+                        let check = |seen: bool, _at: Point| -> Check {
+                            let r = check_inner(seen);
+                            if r == Check::Failed {
+                                misses.set(misses.get() + 1);
+                                if misses.get() >= 3 && misses.get() % 3 == 0 {
+                                    if let Some((c, m)) = read_counter() {
+                                        if c >= m {
+                                            self.log(format!(
+                                                "client {n}: slot {slot} is at its limit ({c}/{m}) - next unit"
+                                            ));
+                                            return Check::Stop;
+                                        }
+                                    }
+                                }
+                            } else {
+                                misses.set(0);
+                            }
+                            r
+                        };
                         match super::placing::place_slot_checked(
                             &self.arb,
                             h,
@@ -1469,6 +1510,7 @@ impl RunCtx {
                             buff,
                             delay,
                             &cards,
+                            &claim,
                             &check,
                             &good,
                             &bad,
