@@ -54,7 +54,7 @@ jobs:
         with:
           tag_name: parallel
           name: Parallel checks test build
-          body: "TEST build with parallel placement checks, from ${{ github.sha }} (build ${{ github.run_number }}). Updates itself from this test channel only."
+          body: "Built from ${{ github.sha }} (build ${{ github.run_number }}). TEST build with parallel placement checks - updates itself from this test channel only."
           prerelease: true
           make_latest: false
           files: aa-macro-windows.zip
