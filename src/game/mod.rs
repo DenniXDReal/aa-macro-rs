@@ -29,7 +29,7 @@ mod level_tests {
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
         assert_eq!(parse_level(""), None);
-        let r = Rect::new(100, 200, 30, 12);
+        let r = crate::geom::Rect::new(100, 200, 30, 12);
         let lines = vec![
             vec![("Sell".to_string(), r)],
             vec![("UPG".to_string(), r), ("[0]".to_string(), r)],
