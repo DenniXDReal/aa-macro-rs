@@ -2050,6 +2050,11 @@ impl RunCtx {
     /// capture), else your upg_1 .. upg_10 patterns (unit_placed = 0).
     /// Some(u32::MAX) = MAX.
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
+        // upgrade reads of different accounts may run at the same time
+        crate::platform::urgent_ocr(|| Self::read_level_now(scr))
+    }
+
+    fn read_level_now(scr: &super::LiveScreen) -> Option<u32> {
         let f = scr.frame()?;
         // MAX first: the panel says "UPG [6] (MAX)" and "Max Upgrade", but a
         // small read of the UPG box may only catch "UPG [6]"
