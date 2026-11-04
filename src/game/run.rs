@@ -247,6 +247,7 @@ pub enum Event {
     Done(String),
 }
 
+#[derive(Clone)]
 pub struct RunCtx {
     pub arb: ArbiterHandle,
     pub control: Control,
@@ -1144,8 +1145,14 @@ impl RunCtx {
                 }
             }
         }
-        for h in self.main_last(self.movers()) {
-            self.tp_spawn(h)?;
+        // replay on the same map: everyone is at spawn already - no need to
+        // open the settings for Teleport to Spawn. New map: do it.
+        if !prev_map.is_empty() && route_map(prev_map) == route_map(&map) {
+            self.log("same map as last run - skipping Teleport to Spawn");
+        } else {
+            for h in self.main_last(self.movers()) {
+                self.tp_spawn(h)?;
+            }
         }
         if let Some(r) = (!map.is_empty())
             .then(|| self.routes.find_map(&map))
@@ -1384,7 +1391,9 @@ impl RunCtx {
                         use super::placing::Check;
                         use crate::config::PlacementDetect;
                         let detect = s.placement_detect;
-                        let use_counter = detect != PlacementDetect::Panel || badge.is_none();
+                        // Panel (default) = the placing used before: the
+                        // counter is only read in the other modes
+                        let use_counter = detect != PlacementDetect::Panel;
                         let read_counter = || -> Option<(u32, u32)> {
                             let k = keys.units[slot.clamp(1, 6) - 1];
                             self.arb
@@ -1403,22 +1412,11 @@ impl RunCtx {
                             c
                         };
                         let base = std::cell::Cell::new(if use_counter { read_counter() } else { None });
-                        if let Some((c, m)) = base.get() {
-                            if c >= m {
-                                self.log(format!(
-                                    "client {n}: slot {slot} already at its limit ({c}/{m}) - skipping"
-                                ));
-                                continue;
-                            }
-                        }
                         let check = |seen: bool, _at: Point| -> Check {
                             let panel_says = badge.is_some() && seen;
                             if panel_says && detect != PlacementDetect::Hotbar {
                                 if let Some((c, m)) = base.get() {
                                     base.set(Some((c + 1, m)));
-                                    if c + 1 >= m {
-                                        return Check::PlacedLast;
-                                    }
                                 }
                                 return Check::Placed;
                             }
@@ -1428,17 +1426,14 @@ impl RunCtx {
                                     let before = base.get().map(|b| b.0);
                                     base.set(Some((c, m)));
                                     match before {
-                                        Some(b) if c > b => {
+                                        Some(b) if c == b + 1 => {
                                             if !panel_says {
                                                 self.log(format!(
                                                     "client {n}: slot {slot} counter {b} -> {c}/{m} - counted as placed"
                                                 ));
                                             }
-                                            return if c >= m {
-                                                Check::PlacedLast
-                                            } else {
-                                                Check::Placed
-                                            };
+                                            let _ = m;
+                                            return Check::Placed;
                                         }
                                         Some(_) => counted = true,
                                         None => {}
@@ -1696,10 +1691,14 @@ impl RunCtx {
 
     /// Next -> Replay or Return to lobby. Returns true when back in the lobby.
     pub fn after_end(&self) -> R<bool> {
+        self.after_end_to(self.settings.run.return_to_lobby)
+    }
+
+    /// `after_end`, choosing Return to Lobby (`lobby`) or Replay.
+    pub fn after_end_to(&self, lobby: bool) -> R<bool> {
         // straight to the main: spam Next until Replay shows, then Replay
         self.to_main()?;
         let main = self.screen(self.main);
-        let lobby = self.settings.run.return_to_lobby;
         let want = if lobby { "return_to_lobby" } else { "replay" };
         let title = Self::names(&["victory", "defeat"]);
         let next = Self::names(&["next_button"]);
@@ -1871,7 +1870,7 @@ impl RunCtx {
     }
 
     /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
-    fn one_round(&self, in_lobby: &mut bool, map: &mut String) -> R<()> {
+    fn one_round(&self, in_lobby: &mut bool, map: &mut String, last: &dyn Fn() -> bool) -> R<()> {
         if *in_lobby {
             self.enter_stage()?;
             map.clear();
@@ -1909,7 +1908,8 @@ impl RunCtx {
         if !won && self.settings.run.stop_after_defeat {
             return Err("stopped after a defeat".into());
         }
-        *in_lobby = self.after_end()?;
+        // last run of a schedule step: back to the lobby for the next one
+        *in_lobby = self.after_end_to(self.settings.run.return_to_lobby || last())?;
         Ok(())
     }
 
@@ -1920,21 +1920,89 @@ impl RunCtx {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
             sc.spawn(|| self.anti_afk(&finished));
             let r = (|| -> R<()> {
-                let mut in_lobby = true;
-                let mut map = String::new();
                 if self.settings.run.own_team
                     && self.settings.run.party_invite
                     && self.clients.len() > 1
                 {
                     self.party_up()?;
                 }
+                let sched = &self.settings.schedule;
+                let steps: Vec<(usize, &crate::config::ScheduleStep)> = sched
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, st)| st.enabled)
+                    .collect();
+                if !sched.enabled || steps.is_empty() {
+                    return self.run_loop(None, true);
+                }
+                // schedule: one step after another, each with its own settings
+                let mut in_lobby = true;
+                loop {
+                    for (i, st) in &steps {
+                        let mut ctx = self.clone();
+                        ctx.settings = st.apply(&self.settings);
+                        self.log(format!(
+                            "schedule: step {} of {} - {}",
+                            i + 1,
+                            sched.steps.len(),
+                            st.label()
+                        ));
+                        let limit = StepLimit {
+                            runs: st.runs,
+                            until: (st.minutes > 0).then(|| {
+                                Instant::now() + Duration::from_secs(st.minutes as u64 * 60)
+                            }),
+                        };
+                        ctx.run_loop(Some(limit), in_lobby)?;
+                        in_lobby = true;
+                    }
+                    if !sched.repeat {
+                        self.log("schedule: all steps done");
+                        return Ok(());
+                    }
+                    self.log("schedule: starting again from the first step");
+                }
+            })();
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            r
+        });
+        let _ = self.tx.send(Event::Done(match res {
+            Ok(()) => "finished".into(),
+            Err(e) => e,
+        }));
+    }
+
+    /// Rounds until Stop / an error, or until `limit` is reached (then
+    /// back in the lobby, Ok).
+    fn run_loop(&self, limit: Option<StepLimit>, start_in_lobby: bool) -> R<()> {
+        {
+            {
+                let mut in_lobby = start_in_lobby;
+                let mut map = String::new();
+                let mut rounds = 0u32;
+                let reached = |rounds: u32| {
+                    limit.as_ref().is_some_and(|l| {
+                        (l.runs > 0 && rounds >= l.runs)
+                            || l.until.is_some_and(|t| Instant::now() >= t)
+                    })
+                };
                 let mut fails = 0;
                 let mut blocked_told = false;
                 loop {
-                    match self.one_round(&mut in_lobby, &mut map) {
+                    let done_after = rounds + 1;
+                    match self.one_round(&mut in_lobby, &mut map, &|| reached(done_after)) {
                         Ok(()) => {
                             fails = 0;
                             blocked_told = false;
+                            rounds += 1;
+                            if reached(rounds) {
+                                // make sure we're in the lobby for the next step
+                                if !in_lobby {
+                                    let _ = self.return_to_lobby_now();
+                                }
+                                return Ok(());
+                            }
                         }
                         Err(e) if e == "stopped" || e.starts_with("stopped after") => {
                             return Err(e)
@@ -1978,15 +2046,24 @@ impl RunCtx {
                     }
                     self.sleep(500)?;
                 }
-            })();
-            finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            r
-        });
-        let _ = self.tx.send(Event::Done(match res {
-            Ok(()) => "finished".into(),
-            Err(e) => e,
-        }));
+            }
+        }
     }
+
+    /// Leave the stage for the lobby (end screen or mid-stage).
+    fn return_to_lobby_now(&self) -> R<()> {
+        if self.where_am_i() == "end" {
+            self.after_end_to(true)?;
+        }
+        Ok(())
+    }
+}
+
+/// When a schedule step is done.
+#[derive(Clone, Copy)]
+struct StepLimit {
+    runs: u32,
+    until: Option<Instant>,
 }
 
 #[cfg(test)]

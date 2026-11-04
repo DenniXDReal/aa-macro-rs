@@ -68,6 +68,7 @@ const PAGES: [(Page, &str); 6] = [
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HomeTab {
     Control,
+    Schedule,
     Sequence,
     Activity,
 }
@@ -1148,6 +1149,7 @@ impl App {
             &mut self.home_tab,
             &[
                 (HomeTab::Control, "Control"),
+                (HomeTab::Schedule, "Schedule"),
                 (HomeTab::Sequence, "Sequence check"),
                 (HomeTab::Activity, "Activity"),
             ],
@@ -1155,8 +1157,137 @@ impl App {
         ui.add_space(6.0);
         match self.home_tab {
             HomeTab::Control => self.units_grid(ui),
+            HomeTab::Schedule => self.schedule_card(ui),
             HomeTab::Sequence => self.sequence_card(ui),
             HomeTab::Activity => self.activity(ui),
+        }
+    }
+
+    /// Farm list: modes one after another, each for some runs / minutes.
+    fn schedule_card(&mut self, ui: &mut egui::Ui) {
+        use crate::config::{Mode, PlayChoice, ScheduleStep};
+        let mut changed = false;
+        let teams: Vec<String> = self.settings.teams.iter().map(|t| t.name.clone()).collect();
+        let now = ScheduleStep::from_run(&self.settings);
+        card(ui, |ui| {
+            let sc = &mut self.settings.schedule;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SCHEDULE").size(11.0).color(MUTED));
+                changed |= toggle(ui, &mut sc.enabled, "Use the schedule");
+                changed |= toggle(ui, &mut sc.repeat, "Repeat");
+            });
+            ui.label(
+                RichText::new(
+                    "Start runs the steps in order. A step ends after its runs or minutes (whichever first, the current run is finished), then it goes back to the lobby and starts the next.",
+                )
+                .size(11.0)
+                .color(MUTED),
+            );
+            let mut remove = None;
+            let mut swap = None;
+            let len = sc.steps.len();
+            for (i, st) in sc.steps.iter_mut().enumerate() {
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{}.", i + 1)).strong());
+                    changed |= ui.checkbox(&mut st.enabled, "").changed();
+                    ComboBox::from_id_salt(("sched_mode", i))
+                        .selected_text(st.mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in Mode::ALL {
+                                changed |=
+                                    ui.selectable_value(&mut st.mode, m, m.label()).changed();
+                            }
+                        });
+                    if matches!(st.mode, Mode::Story | Mode::Legend | Mode::Raid) {
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut st.map)
+                                    .hint_text("map")
+                                    .desired_width(110.0),
+                            )
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut st.act)
+                                    .hint_text("act")
+                                    .desired_width(60.0),
+                            )
+                            .changed();
+                    }
+                    if st.mode == Mode::SummerHunt {
+                        changed |= segmented(
+                            ui,
+                            &mut st.play,
+                            &[
+                                (PlayChoice::PlayHere, "Play here"),
+                                (PlayChoice::FindMatch, "Find match"),
+                            ],
+                        );
+                    }
+                    if st.mode == Mode::InfinityCastle {
+                        changed |= ui.checkbox(&mut st.castle_hard, "Hard").changed();
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Team");
+                    let shown = st
+                        .team
+                        .and_then(|t| teams.get(t).cloned())
+                        .unwrap_or_else(|| "mode's team".into());
+                    ComboBox::from_id_salt(("sched_team", i))
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            changed |= ui
+                                .selectable_value(&mut st.team, None, "mode's team")
+                                .changed();
+                            for (t, name) in teams.iter().enumerate() {
+                                changed |=
+                                    ui.selectable_value(&mut st.team, Some(t), name).changed();
+                            }
+                        });
+                    ui.label("Runs");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut st.runs).range(0..=9999))
+                        .changed();
+                    ui.label("Minutes");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut st.minutes).range(0..=1440))
+                        .changed();
+                    ui.label(RichText::new("(0 = no limit)").size(11.0).color(MUTED));
+                    if ui
+                        .add_enabled(i > 0, egui::Button::new("▲").small())
+                        .clicked()
+                    {
+                        swap = Some((i, i - 1));
+                    }
+                    if ui
+                        .add_enabled(i + 1 < len, egui::Button::new("▼").small())
+                        .clicked()
+                    {
+                        swap = Some((i, i + 1));
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some((a, b)) = swap {
+                sc.steps.swap(a, b);
+                changed = true;
+            }
+            if let Some(i) = remove {
+                sc.steps.remove(i);
+                changed = true;
+            }
+            ui.separator();
+            if ui.button("+ Add step (what's set up now)").clicked() {
+                sc.steps.push(now.clone());
+                changed = true;
+            }
+        });
+        if changed {
+            self.dirty();
         }
     }
 

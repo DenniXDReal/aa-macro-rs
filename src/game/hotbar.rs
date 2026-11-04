@@ -47,7 +47,8 @@ pub fn parse_count(text: &str) -> Option<(u32, u32)> {
         let (Ok(n), Ok(m)) = (a.parse::<u32>(), b.parse::<u32>()) else {
             continue;
         };
-        if (1..=20).contains(&m) && n <= m {
+        // a unit may stand at most a handful of times: bigger = other text
+        if (1..=9).contains(&m) && n <= m {
             return Some((n, m));
         }
     }
@@ -74,6 +75,7 @@ mod tests {
         assert_eq!(parse_count("Wave 12/40 ... 2/2"), Some((2, 2)));
         assert_eq!(parse_count("UPG [3]"), None);
         assert_eq!(parse_count("5/3"), None);
+        assert_eq!(parse_count("20/20"), None, "not a unit counter");
         assert!(unique_blocked(
             "Unique units may not be placed with others of its kind"
         ));

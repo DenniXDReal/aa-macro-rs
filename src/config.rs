@@ -52,9 +52,14 @@ pub struct Settings {
     pub click_mode: crate::input::ClickMode,
     /// How a placement is confirmed: the unit panel (UPG), the hotbar
     /// counter ("1/3", read with OCR), or panel first and counter as backup.
+    /// (renamed from placement_detect so old saves start on Panel again)
+    #[serde(rename = "placement_check")]
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
+    /// Farm one thing after another (each step: mode + map + team, for a
+    /// number of runs or minutes).
+    pub schedule: Schedule,
     /// Multi-instance unlock object names (held while `unlock` runs).
     pub singleton_names: Vec<String>,
     pub instances: Vec<InstanceProfile>,
@@ -453,8 +458,9 @@ impl Default for Settings {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             click_mode: crate::input::ClickMode::Safe,
-            placement_detect: PlacementDetect::Both,
+            placement_detect: PlacementDetect::Panel,
             adaptations: Adaptations::default(),
+            schedule: Schedule::default(),
             step_delay_ms: 800,
             place_delay_ms: 2000,
             swap_delay_ms: 1200,
@@ -643,16 +649,16 @@ mod team_tests {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PlacementDetect {
     /// The unit panel (unit_placed / UPG) shows after the click.
+    #[default]
     Panel,
     /// The unit's hotbar counter ("1/3") went up.
     Hotbar,
     /// Panel first; when it isn't seen, check the counter.
-    #[default]
     Both,
 }
 
 impl PlacementDetect {
-    pub const ALL: [PlacementDetect; 3] = [Self::Both, Self::Panel, Self::Hotbar];
+    pub const ALL: [PlacementDetect; 3] = [Self::Panel, Self::Both, Self::Hotbar];
     pub fn label(self) -> &'static str {
         match self {
             Self::Panel => "Unit panel",
@@ -683,5 +689,124 @@ impl Default for Adaptations {
             def: v.clone(),
             boss: v,
         }
+    }
+}
+
+/// Farm list: the macro works through the steps in order.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Schedule {
+    pub enabled: bool,
+    /// After the last step, start again at the first.
+    pub repeat: bool,
+    pub steps: Vec<ScheduleStep>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScheduleStep {
+    pub enabled: bool,
+    pub mode: Mode,
+    pub play: PlayChoice,
+    /// Story / Legend / Raid.
+    pub map: String,
+    pub act: String,
+    pub castle_hard: bool,
+    /// Team to use (index), None = the team saved for that mode.
+    pub team: Option<usize>,
+    /// Move on after this many runs (0 = no limit).
+    pub runs: u32,
+    /// ... or after this many minutes (0 = no limit). Whichever comes first;
+    /// the current run is always finished.
+    pub minutes: u32,
+}
+
+impl Default for ScheduleStep {
+    fn default() -> Self {
+        let r = RunSettings::default();
+        Self {
+            enabled: true,
+            mode: r.mode,
+            play: r.play,
+            map: r.map,
+            act: r.act,
+            castle_hard: false,
+            team: None,
+            runs: 10,
+            minutes: 0,
+        }
+    }
+}
+
+impl ScheduleStep {
+    /// A step from what's set up now.
+    pub fn from_run(s: &Settings) -> Self {
+        Self {
+            mode: s.run.mode,
+            play: s.run.play,
+            map: s.run.map.clone(),
+            act: s.run.act.clone(),
+            castle_hard: s.run.castle_hard,
+            team: Some(s.team),
+            ..Default::default()
+        }
+    }
+
+    /// The settings for this step, starting from `base`.
+    pub fn apply(&self, base: &Settings) -> Settings {
+        let mut s = base.clone();
+        s.run.mode = self.mode;
+        s.run.play = self.play;
+        s.run.map = self.map.clone();
+        s.run.act = self.act.clone();
+        s.run.castle_hard = self.castle_hard;
+        match self.team {
+            Some(t) => s.switch_team(t),
+            None => s.team_for_mode(self.mode),
+        }
+        s
+    }
+
+    pub fn label(&self) -> String {
+        let what = match self.mode {
+            Mode::Story | Mode::Legend | Mode::Raid => {
+                format!("{} {} {}", self.mode.label(), self.map, self.act)
+            }
+            m => m.label().to_string(),
+        };
+        let until = match (self.runs, self.minutes) {
+            (0, 0) => "no limit".to_string(),
+            (r, 0) => format!("{r} runs"),
+            (0, m) => format!("{m} min"),
+            (r, m) => format!("{r} runs or {m} min"),
+        };
+        format!("{what} ({until})")
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    #[test]
+    fn step_applies_mode_and_team() {
+        let mut base = Settings::default();
+        let t = base.add_team("Raid team");
+        base.switch_team(0);
+        let st = ScheduleStep {
+            mode: Mode::Raid,
+            map: "Ruined City".into(),
+            act: "Act 2".into(),
+            team: Some(t),
+            runs: 5,
+            minutes: 30,
+            ..Default::default()
+        };
+        let s = st.apply(&base);
+        assert_eq!(s.run.mode, Mode::Raid);
+        assert_eq!(s.run.map, "Ruined City");
+        assert_eq!(s.team, t);
+        assert_eq!(st.label(), "Raid Ruined City Act 2 (5 runs or 30 min)");
+        assert_eq!(base.run.mode, Mode::SummerHunt, "base untouched");
     }
 }

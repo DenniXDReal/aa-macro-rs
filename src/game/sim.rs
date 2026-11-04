@@ -355,9 +355,7 @@ mod tests {
                 "vote_start",
                 "next_button",
                 "replay",
-                "settings_button",
-                "tp_arrow",
-                "settings_close",
+                // same map again: no Teleport to Spawn on a replay
                 "vote_start",
             ]
         );
