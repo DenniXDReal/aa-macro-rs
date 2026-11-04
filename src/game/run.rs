@@ -276,7 +276,9 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     static LAST: std::sync::Mutex<Vec<(Hwnd, u8, Instant)>> = std::sync::Mutex::new(Vec::new());
     let mut v = LAST.lock().unwrap();
     match v.iter_mut().find(|e| e.0 == h && e.1 == what) {
-        Some(e) if e.2.elapsed() < Duration::from_secs(2) => false,
+        Some(e) if e.2.elapsed() < Duration::from_millis(if what == 0 { 1000 } else { 2000 }) => {
+            false
+        }
         Some(e) => {
             e.2 = Instant::now();
             true
@@ -296,7 +298,7 @@ fn keys_ref(k: &Keys) -> &Keys {
 }
 
 /// When a card was last picked (any client) - one pick does it for all.
-static LAST_PICK: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+static LAST_PICK: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new(Vec::new());
 
 impl RunCtx {
     fn log(&self, s: impl Into<String>) {
@@ -551,7 +553,7 @@ impl RunCtx {
                 true
             } else if ocr_due(h) {
                 let f = scr.frame();
-                let text = f.as_ref().and_then(|f| scr.ocr_all(f));
+                let text = f.as_ref().and_then(|f| scr.ocr_text_fast(f));
                 // Mahoraga's adaptation panel shares this OCR read
                 if let (Some(t), Some(f)) = (&text, &f) {
                     if self.settings.adaptations.enabled && super::adaptation::showing(t) {
@@ -582,32 +584,36 @@ impl RunCtx {
         if !seen {
             return Ok(false);
         }
-        // one pick is enough for everyone. Picked in the last 45 s and the
-        // screen is still up: it's the card vote, other players are still
-        // voting - wait for it to close instead of picking again
-        let since = LAST_PICK.lock().unwrap().map(|t| t.elapsed());
+        // every account picks (and votes) for itself. This one picked in the
+        // last 45 s and the screen is still up: it's the vote, others are
+        // still voting - wait (a bit) for it to close instead of picking again
+        let since = LAST_PICK
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(c, _)| *c == h)
+            .map(|(_, t)| t.elapsed());
         if since.is_some_and(|t| t < Duration::from_secs(45)) {
-            static SAID: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
-            {
-                let mut said = SAID.lock().unwrap();
-                if !said.is_some_and(|t| t.elapsed() < Duration::from_secs(45)) {
-                    self.log("card vote open - waiting for it to close");
-                    *said = Some(Instant::now());
-                }
-            }
-            let mut dl = self.control.deadline(self.secs(20.0));
+            let mut dl = self.control.deadline(self.secs(8.0));
             while !dl.expired() {
-                self.sleep(1000)?;
+                self.sleep(700)?;
                 let up = (scr.has("choose_card")
                     && scr.find(&Self::names(&["choose_card"]), None).is_some())
-                    || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some();
+                    || scr
+                        .frame()
+                        .and_then(|f| scr.ocr_text_fast(&f))
+                        .is_some_and(|t| super::card_screen_text(&t).is_some());
                 if !up {
                     break;
                 }
             }
             return Ok(true);
         }
-        *LAST_PICK.lock().unwrap() = Some(Instant::now());
+        {
+            let mut l = LAST_PICK.lock().unwrap();
+            l.retain(|(c, _)| *c != h);
+            l.push((h, Instant::now()));
+        }
         // close the unit panel first if one is open (its X is on screen);
         // no panel = straight to the screenshot
         if let Some(p) = scr
@@ -796,10 +802,10 @@ impl RunCtx {
     fn cards_all(&self) -> R<()> {
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
         let mut alt_done = false;
+        // every account picks its own card (all of them vote)
         for h in self.main_last(all) {
-            if self.handle_cards(h)? {
-                alt_done = h != self.main;
-                break; // one pick is enough
+            if self.handle_cards(h)? && h != self.main {
+                alt_done = true;
             }
         }
         if alt_done {
@@ -1952,6 +1958,27 @@ impl RunCtx {
     /// Some(u32::MAX) = MAX.
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
         let f = scr.frame()?;
+        // MAX first: the panel says "UPG [6] (MAX)" and "Max Upgrade", but a
+        // small read of the UPG box may only catch "UPG [6]"
+        if scr.has_ocr() {
+            let max = crate::platform::urgent_ocr(|| scr.ocr_lines(&f)).is_some_and(|lines| {
+                lines.iter().any(|l| {
+                    let t: String = l
+                        .iter()
+                        .map(|(w, _)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase();
+                    let flat: String = t.chars().filter(|c| c.is_alphanumeric()).collect();
+                    flat.contains("maxupgrade")
+                        || (flat.contains("upg") && flat.contains("max"))
+                        || t.contains("(max)")
+                })
+            });
+            if max {
+                return Some(u32::MAX);
+            }
+        }
         match scr.ocr_level(&f) {
             Some(Ok(n)) => return Some(n),
             Some(Err(())) => return Some(u32::MAX),
