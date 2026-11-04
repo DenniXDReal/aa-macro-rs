@@ -2,7 +2,7 @@
  "map": "In stage > Settings > Teleport to Spawn",
  "source": "DenniXD: scan for the settings button, wait 2 s, scan for 'Teleport back to Spawn' (tp_spawn), wait 3 s, click its button (tp_spawn_button, or 178,7 right of the label), close settings",
  "steps": [
-  { "type": "click_pattern", "pattern": "settings_button", "timeout_ms": 5000, "fallback": [26, 570] },
+  { "type": "click_pattern", "pattern": "settings_button", "timeout_ms": 5000, "fallback": [26, 570], "once": true },
   { "type": "wait", "ms": 2000 },
   { "type": "scroll_until", "pattern": "tp_spawn", "x": 400, "y": 300, "max": 12 },
   { "type": "wait", "ms": 3000 },

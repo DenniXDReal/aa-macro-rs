@@ -54,6 +54,11 @@ pub enum Step {
         /// Click this far from the pattern's centre (e.g. a toggle beside a label).
         #[serde(default)]
         offset: [i32; 2],
+        /// Click once, never again (Safe clicks re-click a button that is
+        /// still there - wrong for a toggle like the settings cog, which
+        /// stays on screen and would close again).
+        #[serde(default)]
+        once: bool,
     },
     /// Wait until one of `patterns` is on screen.
     WaitFor {
@@ -278,11 +283,18 @@ fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) 
                 timeout_ms,
                 button: b,
                 offset,
+                once,
             } => {
+                let mut probe = env
+                    .probe(&[v.fill(pattern)], None)
+                    .shifted(offset[0], offset[1]);
+                // toggles stay on screen after the click: never click twice
+                let name = crate::vision::key(&v.fill(pattern));
+                if *once || name == "settings_button" || name.ends_with("_toggle") {
+                    probe.stays = true;
+                }
                 out.push(Action::ClickWhen {
-                    probe: env
-                        .probe(&[v.fill(pattern)], None)
-                        .shifted(offset[0], offset[1]),
+                    probe,
                     timeout_ms: *timeout_ms,
                     fallback: fallback.map(|[x, y]| Point::new(x, y)),
                     button: button(b),
@@ -513,6 +525,23 @@ mod tests {
         for m in ["summer", "story", "legend", "raid", "castle", "challenge"] {
             assert!(r.lobby.contains_key(m), "lobby {m}");
         }
+    }
+
+    #[test]
+    fn settings_cog_is_clicked_once() {
+        let r = Routes::load(Path::new("/nonexistent"));
+        let a = r.lobby["tp_spawn"]
+            .to_actions(&FakeEnv(vec![]), &Vars::default())
+            .unwrap();
+        let first = a
+            .iter()
+            .find_map(|x| match x {
+                Action::ClickWhen { probe, .. } => Some(probe.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(first.label.contains("settings_button"));
+        assert!(first.stays, "Safe click must not click the cog again");
     }
 
     #[test]
