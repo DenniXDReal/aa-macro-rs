@@ -1240,7 +1240,9 @@ impl RunCtx {
                     let nth = s.placers.iter().position(|x| *x == n).unwrap_or(0);
                     spots.extend(super::placing::shape_spots_for(
                         s.place_shape,
-                        80,
+                        // plenty of spots: the outer rings are only tried when
+                        // the inner ones are taken / fail
+                        160,
                         n as u64 * 31 + slot as u64,
                         s.shape_scale,
                         nth,

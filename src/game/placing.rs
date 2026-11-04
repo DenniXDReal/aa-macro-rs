@@ -238,10 +238,16 @@ pub fn shape_spots(shape: Shape, n: usize, seed: u64) -> Vec<Point> {
     let mut v: Vec<Point> = match shape {
         Shape::Spiral => return spiral_spots(n, seed),
         Shape::Circle => {
-            let mut v = vec![];
-            for (r, k) in [(45.0, 8), (90.0, 16), (135.0, 8), (180.0, 8)] {
+            // middle, then 12 rings out to the edge, a spot about every 32 px
+            let mut v = vec![c];
+            for ring in 1..=12 {
+                let r = 28.0 * ring as f64;
+                let k = ((std::f64::consts::TAU * r / 32.0).round() as usize).max(6);
+                // every other ring turned half a step: no straight lines of spots
+                let turn = if ring % 2 == 0 { 0.5 } else { 0.0 };
                 for i in 0..k {
-                    let a = (i as f64) * std::f64::consts::TAU / k as f64;
+                    let i = i as f64 + turn;
+                    let a = i * std::f64::consts::TAU / k as f64;
                     v.push(Point::new(
                         c.x + (r * a.cos()).round() as i32,
                         c.y + (r * a.sin()).round() as i32,
