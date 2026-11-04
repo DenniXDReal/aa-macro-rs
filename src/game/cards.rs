@@ -261,6 +261,18 @@ pub fn is_green(name: &str) -> bool {
     CARD_BASES.iter().any(|(b, g)| *g && name.starts_with(b))
 }
 
+/// Weather shift order: every buff (green) card first, then the debuffs,
+/// each keeping its place from `mine` (or the default order).
+pub fn weather_priority(mine: &[String]) -> Vec<String> {
+    let base = if mine.is_empty() {
+        default_priority()
+    } else {
+        mine.to_vec()
+    };
+    let (g, r): (Vec<String>, Vec<String>) = base.into_iter().partition(|n| is_green(n));
+    g.into_iter().chain(r).collect()
+}
+
 /// Which card to take: the first in `priority` that's on offer.
 pub fn choose(names: &[Option<String>; 3], priority: &[String]) -> Option<usize> {
     // the card's place in your list: its exact name (with tier), else -
