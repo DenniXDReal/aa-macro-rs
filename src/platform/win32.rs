@@ -49,7 +49,7 @@ fn w(h: HWND) -> Hwnd {
 
 /// Windows' own OCR (the same engine the AHK macro's OCR.ahk uses): the crop
 /// is greyed and scaled 4x first, which small game text needs.
-pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
+fn ocr_run(frame: &Frame, area: Rect) -> Result<(windows::Media::Ocr::OcrResult, Rect, i32)> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
     use windows::Media::Ocr::OcrEngine;
     use windows::Security::Cryptography::CryptographicBuffer;
@@ -76,7 +76,35 @@ pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
     let bmp = SoftwareBitmap::CreateCopyFromBuffer(&ib, BitmapPixelFormat::Bgra8, w, h)?;
     let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
     let res = engine.RecognizeAsync(&bmp)?.get()?;
+    Ok((res, a, k))
+}
+
+pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
+    let (res, _, _) = ocr_run(frame, area)?;
     Ok(res.Text()?.to_string())
+}
+
+/// OCR with word boxes, mapped back to `frame` coordinates.
+pub fn ocr_lines(frame: &Frame, area: Rect) -> Result<Vec<Vec<(String, Rect)>>> {
+    let (res, a, k) = ocr_run(frame, area)?;
+    let mut out = vec![];
+    for line in res.Lines()? {
+        let mut words = vec![];
+        for w in line.Words()? {
+            let b = w.BoundingRect()?;
+            let r = Rect::new(
+                a.x + (b.X / k as f32) as i32,
+                a.y + (b.Y / k as f32) as i32,
+                ((b.Width / k as f32) as i32).max(1),
+                ((b.Height / k as f32) as i32).max(1),
+            );
+            words.push((w.Text()?.to_string(), r));
+        }
+        if !words.is_empty() {
+            out.push(words);
+        }
+    }
+    Ok(out)
 }
 
 /// Is this process running as administrator? `Some(true)` also when we may
@@ -541,6 +569,10 @@ impl Platform for Win32Platform {
 
     fn ocr(&self, frame: &Frame, area: Rect) -> Option<String> {
         ocr_text(frame, area).ok()
+    }
+
+    fn ocr_lines(&self, frame: &Frame, area: Rect) -> Option<Vec<Vec<(String, Rect)>>> {
+        ocr_lines(frame, area).ok()
     }
 
     fn process_started(&self, pid: u32) -> Option<std::time::SystemTime> {

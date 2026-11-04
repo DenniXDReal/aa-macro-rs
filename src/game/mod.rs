@@ -8,6 +8,7 @@ pub mod placing;
 pub mod run;
 #[cfg(test)]
 pub mod sim;
+pub mod textbuttons;
 
 #[cfg(test)]
 mod level_tests {
@@ -167,12 +168,60 @@ impl LiveScreen {
     /// Centre of the first of `names` found now (inside `region` if given).
     pub fn find(&self, names: &[String], region: Option<Rect>) -> Option<Point> {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
-        names.iter().find_map(|n| {
-            self.pats
-                .get(&key(n))
-                .and_then(|p| p.find_in(&frame, region))
-                .map(|h| h.center())
-        })
+        names
+            .iter()
+            .find_map(|n| {
+                self.pats
+                    .get(&key(n))
+                    .and_then(|p| p.find_in(&frame, region))
+                    .map(|h| h.center())
+            })
+            .or_else(|| self.find_text(&frame, names, region).into_iter().next())
+    }
+
+    /// Backup: the buttons' labels read with OCR (when the picture isn't
+    /// found or was never captured). One OCR per client every 0.7 s at most.
+    pub fn find_text(
+        &self,
+        frame: &crate::capture::Frame,
+        names: &[String],
+        within: Option<Rect>,
+    ) -> Vec<Point> {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+        type Lines = Vec<Vec<(String, Rect)>>;
+        static CACHE: Mutex<Vec<(Hwnd, Instant, Arc<Lines>)>> = Mutex::new(Vec::new());
+        let labels: Vec<&[&str]> = names
+            .iter()
+            .filter_map(|n| textbuttons::labels_for(&key(n)))
+            .collect();
+        if labels.is_empty() {
+            return vec![];
+        }
+        let cached = CACHE.lock().ok().and_then(|c| {
+            c.iter()
+                .find(|(h, t, _)| *h == self.hwnd && t.elapsed() < Duration::from_millis(700))
+                .map(|(_, _, l)| l.clone())
+        });
+        let lines = match cached {
+            Some(l) => l,
+            None => {
+                let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+                let Some(l) = self.platform.ocr_lines(frame, all) else {
+                    return vec![];
+                };
+                let l = Arc::new(l);
+                if let Ok(mut c) = CACHE.lock() {
+                    c.retain(|(h, _, _)| *h != self.hwnd);
+                    c.push((self.hwnd, Instant::now(), l.clone()));
+                }
+                l
+            }
+        };
+        labels
+            .iter()
+            .flat_map(|l| textbuttons::find_all(&lines, l, within))
+            .collect()
     }
 
     /// Where the unit panel's level text sits: around your `unit_placed`
@@ -275,13 +324,16 @@ impl LiveScreen {
     pub fn find_wide(&self, names: &[String]) -> Option<Point> {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
-        names.iter().find_map(|n| {
-            self.pats.get(&key(n)).and_then(|p| {
-                p.find_in(&frame, None)
-                    .or_else(|| p.find_in(&frame, Some(all)))
-                    .map(|h| h.center())
+        names
+            .iter()
+            .find_map(|n| {
+                self.pats.get(&key(n)).and_then(|p| {
+                    p.find_in(&frame, None)
+                        .or_else(|| p.find_in(&frame, Some(all)))
+                        .map(|h| h.center())
+                })
             })
-        })
+            .or_else(|| self.find_text(&frame, names, None).into_iter().next())
     }
 
     /// Every place `name` shows on the whole picture (e.g. one Invite button
@@ -291,7 +343,7 @@ impl LiveScreen {
             return vec![];
         };
         let Some(p) = self.pats.get(&key(name)) else {
-            return vec![];
+            return self.find_text(&frame, &[name.to_string()], None);
         };
         let mut out = vec![];
         let mut todo = vec![Rect::new(0, 0, frame.width as i32, frame.height as i32)];
@@ -308,6 +360,9 @@ impl LiveScreen {
                 todo.push(above);
                 todo.push(below);
             }
+        }
+        if out.is_empty() {
+            return self.find_text(&frame, &[name.to_string()], None);
         }
         out.sort_by_key(|p| (p.y, p.x));
         out

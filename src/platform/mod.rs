@@ -82,6 +82,11 @@ pub trait Platform: Send + Sync {
     fn ocr(&self, _frame: &Frame, _area: Rect) -> Option<String> {
         None
     }
+    /// OCR with positions: one entry per text line, each word with its box
+    /// (in `frame` coordinates). Used to find buttons by their label.
+    fn ocr_lines(&self, _frame: &Frame, _area: Rect) -> Option<Vec<Vec<(String, Rect)>>> {
+        None
+    }
     /// When a process started (to find its Roblox log).
     fn process_started(&self, _pid: u32) -> Option<std::time::SystemTime> {
         None
