@@ -28,6 +28,9 @@ pub struct Settings {
     pub swap_delay_ms: u64,
     /// Pause between unit placements so the game can register each one.
     pub place_delay_ms: u64,
+    /// After a placement click, keep the window this long (ms) before
+    /// closing the panel / swapping to another account.
+    pub place_settle_ms: u64,
     /// Shape tried when a map has no (or not enough) custom spots.
     pub place_shape: crate::game::placing::Shape,
     /// How far the shape spreads out (1.0 = AHK / v10 size).
@@ -463,6 +466,7 @@ impl Default for Settings {
             schedule: Schedule::default(),
             step_delay_ms: 800,
             place_delay_ms: 2000,
+            place_settle_ms: 700,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.8,

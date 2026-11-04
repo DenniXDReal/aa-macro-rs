@@ -3247,6 +3247,13 @@ impl App {
                         .add(egui::DragValue::new(&mut s.place_delay_ms).range(0..=10000))
                         .changed();
                     ui.end_row();
+                    ui.label("Hold after a placement click (ms)").on_hover_text(
+                        "the window stays with this account this long after the click, so the game takes the placement before swapping",
+                    );
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.place_settle_ms).range(200..=3000))
+                        .changed();
+                    ui.end_row();
                     ui.label("Clicks");
                     let before = s.click_mode;
                     segmented(

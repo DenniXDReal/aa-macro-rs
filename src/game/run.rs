@@ -1209,6 +1209,10 @@ impl RunCtx {
     /// Place on every placing client at once. Returns placed (client, slot, spot).
     pub fn place_all(&self, map: &str) -> R<Vec<(Hwnd, usize, Point)>> {
         let s = &self.settings;
+        super::placing::PLACE_SETTLE_MS.store(
+            s.place_settle_ms.clamp(200, 3000),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let keys = Keys::from(&s.keybinds)?;
         let map = route_map(map);
         let mut work = vec![];

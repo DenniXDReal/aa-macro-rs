@@ -413,16 +413,23 @@ pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
 
 /// Pick the unit and click the spot, leaving whatever opened (the unit's
 /// "UPG [0]" panel on success) on screen so it can be checked.
+/// How long the placing turn keeps the window after the click (ms), so the
+/// game takes the placement before anything else happens or another account
+/// gets the focus. Set from Settings when a run starts.
+pub static PLACE_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(700);
+
 pub fn place_open_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
     let key = keys.units[(slot.clamp(1, 6)) - 1];
-    // slow enough for Roblox to show the unit ghost before the click
+    let settle = PLACE_SETTLE_MS.load(std::sync::atomic::Ordering::Relaxed);
+    // slow enough for Roblox to show the unit ghost before the click, and to
+    // take the placement before the panel closes / the focus moves on
     Batch::new(hwnd, format!("place slot {slot}"))
         .then(Action::KeyTap { key, hold_ms: 50 })
-        .wait(250)
+        .wait(300)
         .move_to(at.x, at.y)
         .wait(250)
         .click(at.x, at.y)
-        .wait(350)
+        .wait(settle)
 }
 
 pub fn cancel_batch(hwnd: Hwnd, keys: &Keys) -> Batch {
@@ -582,10 +589,13 @@ pub fn place_slot_checked(
             });
         }
         if !keep_open {
-            b = b.then(Action::KeyTap {
-                key: keys.cancel,
-                hold_ms: 40,
-            });
+            b = b
+                .then(Action::KeyTap {
+                    key: keys.cancel,
+                    hold_ms: 40,
+                })
+                // let the close register before another account takes over
+                .wait(250);
         }
         arb.run(b)?;
         let res = check(badge.is_none() || seen.load(Ordering::Relaxed), *at);
