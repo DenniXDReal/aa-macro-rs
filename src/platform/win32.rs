@@ -583,6 +583,10 @@ impl Platform for Win32Platform {
         Ok(())
     }
 
+    fn has_ocr(&self) -> bool {
+        true
+    }
+
     fn ocr(&self, frame: &Frame, area: Rect) -> Option<String> {
         ocr_text(frame, area).ok()
     }

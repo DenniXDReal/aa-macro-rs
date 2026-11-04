@@ -29,6 +29,13 @@ mod level_tests {
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
         assert_eq!(parse_level(""), None);
+        let r = Rect::new(100, 200, 30, 12);
+        let lines = vec![
+            vec![("Sell".to_string(), r)],
+            vec![("UPG".to_string(), r), ("[0]".to_string(), r)],
+        ];
+        assert_eq!(super::upg_line(&lines).unwrap().0, "UPG [0]");
+        assert!(super::upg_line(&lines[..1]).is_none());
         use super::card_screen_text;
         assert_eq!(
             card_screen_text("CHOOSE A CARD Weather: Rainy Tier 1"),
@@ -149,6 +156,28 @@ pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
         return digits[1..].parse().ok().map(Ok);
     }
     Some(Ok(n))
+}
+
+/// The OCR line with the unit panel's "UPG [n]": (its text, where "UPG" is).
+pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
+    for l in lines {
+        for (i, (w, r)) in l.iter().enumerate() {
+            let f: String = w
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(|c| c.to_uppercase())
+                .collect();
+            // "UPG", "UPG[0]", OCR slips "UP6" / "UPC"
+            if f.starts_with("UPG") || f.starts_with("UP6") || f.starts_with("UPC") {
+                let rest: Vec<&str> = l[i..].iter().take(3).map(|(t, _)| t.as_str()).collect();
+                let text = rest.join(" ").replace("UP6", "UPG").replace("UPC", "UPG");
+                if parse_level(&text).is_some() {
+                    return Some((text, Point::new(r.x + r.w / 2, r.y + r.h / 2)));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// One client's screen + a snapshot of your patterns.
@@ -278,8 +307,27 @@ impl LiveScreen {
     /// OCR of the unit panel's level: Some(Ok(n)) = "UPG [n]",
     /// Some(Err(())) = MAX, None = couldn't read it.
     pub fn ocr_level(&self, frame: &crate::capture::Frame) -> Option<Result<u32, ()>> {
-        let text = self.platform.ocr(frame, self.level_area())?;
-        parse_level(&text)
+        if let Some(l) = self
+            .platform
+            .ocr(frame, self.level_area())
+            .and_then(|t| parse_level(&t))
+        {
+            return Some(l);
+        }
+        // the panel may sit elsewhere: find "UPG" anywhere and read its line
+        let lines = self.ocr_lines(frame)?;
+        upg_line(&lines).and_then(|(t, _)| parse_level(&t))
+    }
+
+    pub fn has_ocr(&self) -> bool {
+        self.platform.has_ocr()
+    }
+
+    /// Where the unit panel's "UPG [n]" (or MAX) text is, read with OCR over
+    /// the whole screen: the unit panel is open = a unit was just placed.
+    pub fn find_upg(&self, frame: &crate::capture::Frame) -> Option<Point> {
+        let lines = self.ocr_lines(frame)?;
+        upg_line(&lines).map(|(_, p)| p)
     }
 
     /// Card pick screen by OCR: Some(weather) when "Choose a card" is on

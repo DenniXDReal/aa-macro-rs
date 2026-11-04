@@ -584,7 +584,7 @@ pub fn place_slot_checked(
             });
             b = b.then(Action::WaitFor {
                 probe: rec,
-                timeout_ms: 700,
+                timeout_ms: 1200,
                 required: false,
             });
         }

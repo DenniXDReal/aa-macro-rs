@@ -82,6 +82,10 @@ pub trait Platform: Send + Sync {
     fn open_uri(&self, _uri: &str) -> Result<()> {
         anyhow::bail!("opening links needs Windows")
     }
+    /// Is OCR available here?
+    fn has_ocr(&self) -> bool {
+        false
+    }
     /// Read the text in `area` of `frame` (Windows' built-in OCR).
     fn ocr(&self, _frame: &Frame, _area: Rect) -> Option<String> {
         None

@@ -1328,10 +1328,27 @@ impl RunCtx {
                 let watchers = if wi == 0 { watchers.clone() } else { vec![] };
                 handles.push(sc.spawn(move || {
                     // "UPG [0]" badge = the unit really went down
+                    // the unit panel opened = it went down: your unit_placed
+                    // picture, and/or "UPG [0]" read with OCR anywhere on screen
                     let badge = {
-                        use crate::movement::RouteEnv;
-                        scr.has("unit_placed")
-                            .then(|| scr.probe(&["unit_placed".to_string()], None))
+                        let pic = scr.has("unit_placed");
+                        let ocr = scr.has_ocr();
+                        (pic || ocr).then(|| {
+                            let me = scr.clone();
+                            crate::input::Probe::new("unit placed (UPG)", move || {
+                                if pic {
+                                    if let Some(p) =
+                                        me.find(&["unit_placed".to_string()], None)
+                                    {
+                                        return Some(p);
+                                    }
+                                }
+                                if ocr {
+                                    return me.frame().and_then(|f| me.find_upg(&f));
+                                }
+                                None
+                            })
+                        })
                     };
                     // before every placement: stage over? card pop-up?
                     let cards = || {
@@ -1381,7 +1398,7 @@ impl RunCtx {
                         } else {
                             spots_key(&map, n)
                         };
-                        let remember = s.spot_memory && scr.has("unit_placed");
+                        let remember = s.spot_memory && badge.is_some();
                         let good = |p: Point| {
                             auto(p);
                             if remember {
