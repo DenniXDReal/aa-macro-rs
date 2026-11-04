@@ -243,6 +243,15 @@ impl LiveScreen {
         hit.or_else(|| self.find_text(&frame, names, region).into_iter().next())
     }
 
+    /// Where one of `labels` is written right now (OCR, first label first).
+    pub fn find_words_now(&self, labels: &[&str]) -> Option<Point> {
+        let frame = self.frame()?;
+        let lines = self.ocr_lines(&frame)?;
+        labels
+            .iter()
+            .find_map(|l| textbuttons::find_all(&lines, &[l], None).into_iter().next())
+    }
+
     /// Read button labels right now (no waiting for the picture first).
     pub fn find_label_now(&self, names: &[String]) -> Option<Point> {
         let frame = self.frame()?;
