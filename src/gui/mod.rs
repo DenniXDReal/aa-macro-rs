@@ -2582,6 +2582,82 @@ impl App {
 
     // ---------------- Settings ----------------
 
+    /// Summer Event card order: first one offered wins.
+    fn card_priority_ui(&mut self, ui: &mut egui::Ui) {
+        // start from the default; keep any new cards the default learned
+        let defaults = crate::game::cards::default_priority();
+        let list = &mut self.settings.run.card_priority;
+        if list.is_empty() {
+            *list = defaults.clone();
+        }
+        for d in &defaults {
+            if !list.contains(d) {
+                list.push(d.clone());
+            }
+        }
+        let mut changed = false;
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("CARD PRIORITY (Summer Event)")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                if ui.small_button("Reset to default").clicked() {
+                    self.settings.run.card_priority = defaults.clone();
+                    changed = true;
+                }
+            });
+            ui.label(
+                RichText::new("The macro reads the 3 cards with OCR and takes the first one in this list. Red cards pay Summer Pearls + secret drop chance (I +30%, II +70% & +25% drops, III +150% & +50% drops); green cards help you. Default: Plated / Health / Speed at the highest tier first.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            let list = &mut self.settings.run.card_priority;
+            let mut mv: Option<(usize, i32)> = None;
+            egui::ScrollArea::vertical()
+                .id_salt("cardprio")
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for (i, c) in list.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("{:>2}.", i + 1))
+                                    .color(MUTED)
+                                    .monospace(),
+                            );
+                            let col = if crate::game::cards::is_green(c) {
+                                GOOD
+                            } else {
+                                BAD
+                            };
+                            ui.label(RichText::new(c).color(col));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("Down").clicked() {
+                                    mv = Some((i, 1));
+                                }
+                                if ui.small_button("Up").clicked() {
+                                    mv = Some((i, -1));
+                                }
+                                if ui.small_button("Top").clicked() {
+                                    mv = Some((i, -1000));
+                                }
+                            });
+                        });
+                    }
+                });
+            if let Some((i, d)) = mv {
+                let item = list.remove(i);
+                let j = (i as i32 + d).clamp(0, list.len() as i32) as usize;
+                list.insert(j, item);
+                changed = true;
+            }
+        });
+        if changed {
+            self.dirty();
+        }
+    }
+
     fn page_settings(&mut self, ui: &mut egui::Ui) {
         heading(ui, "Settings", "");
         let mut changed = false;
@@ -2656,6 +2732,8 @@ impl App {
                 ui.label(RichText::new(&self.dock_note).size(11.0).color(MUTED));
             }
         });
+        ui.add_space(8.0);
+        self.card_priority_ui(ui);
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.label(RichText::new("KEYBINDS").size(11.0).color(MUTED));

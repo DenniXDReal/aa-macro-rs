@@ -566,12 +566,42 @@ impl RunCtx {
         if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir(), &weather) {
             self.log(format!("card screen saved: {}", path.display()));
         }
-        let (p, green) = super::cards::pick(&f);
-        self.log(if green {
-            "card: green one"
-        } else {
-            "card: no green - middle one"
+        // read the three card titles and take the first one in your order
+        let names: [Option<String>; 3] = std::array::from_fn(|i| {
+            scr.ocr_rect(&f, super::cards::title_box(i))
+                .and_then(|t| super::cards::card_name(&t))
         });
+        let prio = if self.settings.run.card_priority.is_empty() {
+            super::cards::default_priority()
+        } else {
+            self.settings.run.card_priority.clone()
+        };
+        let pick = super::cards::choose(&names, &prio);
+        let shown: Vec<String> = names
+            .iter()
+            .map(|n| n.clone().unwrap_or_else(|| "?".into()))
+            .collect();
+        let (p, why) = match pick {
+            Some(i) => {
+                let b = super::cards::CARD_BOXES[i];
+                (
+                    Point::new(b.x + b.w / 2, b.y + b.h / 2),
+                    format!("card: {} (offered: {})", shown[i], shown.join(" / ")),
+                )
+            }
+            None => {
+                let (p, green) = super::cards::pick(&f);
+                (
+                    p,
+                    format!(
+                        "card: couldn't read them ({}) - {}",
+                        shown.join(" / "),
+                        if green { "green one" } else { "middle one" }
+                    ),
+                )
+            }
+        };
+        self.log(why);
         self.click(h, p, "card")?;
         self.sleep(500)?;
         match self.wait_any(

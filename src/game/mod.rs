@@ -207,6 +207,11 @@ impl LiveScreen {
         self.platform.ocr(frame, Rect::new(150, 0, 500, 48))
     }
 
+    /// OCR of one area of a picture.
+    pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
+        self.platform.ocr(frame, area)
+    }
+
     /// Everything readable on the screen (Windows OCR).
     pub fn ocr_all(&self, frame: &crate::capture::Frame) -> Option<String> {
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
