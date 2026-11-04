@@ -297,7 +297,15 @@ fn title(hwnd: HWND) -> String {
 }
 
 fn send(inputs: &[INPUT]) -> Result<()> {
-    let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+    let mut sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+    // Windows refuses input for a moment now and then (focus change, a
+    // notification popping up): try again before calling it blocked
+    let mut tries = 0;
+    while sent == 0 && tries < 5 {
+        std::thread::sleep(std::time::Duration::from_millis(40 * (tries + 1)));
+        sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+        tries += 1;
+    }
     if sent as usize != inputs.len() {
         bail!(
             "SendInput sent {sent}/{} - input blocked (PC locked / screen off / UAC prompt, or Roblox runs as admin)",

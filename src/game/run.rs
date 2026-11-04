@@ -288,6 +288,13 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     }
 }
 
+/// Accounts still upgrading (0 = all done: idle clicks keep things awake).
+static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn keys_ref(k: &Keys) -> &Keys {
+    k
+}
+
 /// When a card was last picked (any client) - one pick does it for all.
 static LAST_PICK: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
@@ -1741,105 +1748,179 @@ impl RunCtx {
                 }
             }
         }
+        // one upgrader per account, all at the same time (each one's input
+        // turns still take the window in turn); this thread watches for the
+        // end screen and cards meanwhile
+        let mut clients: Vec<Hwnd> = vec![];
+        for (h, _, _) in &order {
+            if !clients.contains(h) {
+                clients.push(*h);
+            }
+        }
+        let over = std::sync::atomic::AtomicBool::new(false);
+        let failed: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let end = Self::names(&["victory", "defeat"]);
+        let result = std::thread::scope(|sc| -> R<bool> {
+            for h in &clients {
+                let mine: Vec<&(Hwnd, usize, Point)> =
+                    order.iter().copied().filter(|(c, _, _)| c == h).collect();
+                let (over, failed, keys, unit) = (&over, &failed, &keys, &unit);
+                sc.spawn(move || {
+                    if let Err(e) = self.upgrade_account(&mine, keys, unit, over) {
+                        if e != "stage over" {
+                            *failed.lock().unwrap() = Some(e);
+                        }
+                        over.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+            let mut last_idle = Instant::now();
+            let mut dl = self.control.deadline(self.secs(60.0 * 40.0));
+            let r = loop {
+                if let Some(e) = failed.lock().unwrap().take() {
+                    break Err(e);
+                }
+                if let Err(e) = self.check() {
+                    break Err(e);
+                }
+                match self.end_screen(&end) {
+                    Ok(Some(won)) => break Ok(won),
+                    Err(e) => break Err(e),
+                    Ok(None) => {}
+                }
+                if let Err(e) = self.cards_all() {
+                    break Err(e);
+                }
+                if dl.expired() {
+                    break Err("no end screen after 40 min".into());
+                }
+                // nothing left to upgrade anywhere: keep the PC / Roblox busy
+                if UPGRADING.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    let _ = self.idle_click(&mut last_idle, keys_ref(&keys));
+                }
+                if self.sleep(700).is_err() {
+                    break Err("stopped".into());
+                }
+            };
+            over.store(true, std::sync::atomic::Ordering::Relaxed);
+            r
+        });
+        result
+    }
+
+    /// One account's upgrades, by priority, until `over`. MAX units get the
+    /// upgrade key 3x per visit.
+    fn upgrade_account(
+        &self,
+        order: &[&(Hwnd, usize, Point)],
+        keys: &Keys,
+        unit: &dyn Fn(&Hwnd, usize) -> crate::config::UnitSlot,
+        over: &std::sync::atomic::AtomicBool,
+    ) -> R<()> {
+        use std::sync::atomic::Ordering;
+        let s = &self.settings;
         let mut done: Vec<u32> = vec![0; order.len()];
         let mut maxed: Vec<bool> = vec![false; order.len()];
-        let mut last_idle = Instant::now();
-        let end = Self::names(&["victory", "defeat"]);
-        let mut dl = self.control.deadline(self.secs(60.0 * 40.0));
+        let finished = |k: usize, done: &[u32], maxed: &[bool]| {
+            let (h, slot, _) = order[k];
+            maxed[k]
+                || match unit(h, *slot).upgrade {
+                    Upgrade::Level(n) => done[k] >= n as u32,
+                    _ => false,
+                }
+        };
+        let mut busy = true;
+        UPGRADING.fetch_add(1, Ordering::Relaxed);
         let mut i = 0usize;
-        loop {
-            self.check()?;
-            if let Some(won) = self.end_screen(&end)? {
-                return Ok(won);
-            }
-            self.cards_all()?;
-            if dl.expired() {
-                return Err("no end screen after 40 min".into());
-            }
-            if order.is_empty() {
-                self.idle_click(&mut last_idle, &keys)?;
-                self.sleep(1000)?;
-                continue;
-            }
-            // skip the ones already finished; all finished = just watch the end
-            let finished = |k: usize, done: &[u32], maxed: &[bool]| {
-                let (h, slot, _) = order[k];
-                maxed[k]
-                    || match unit(h, *slot).upgrade {
-                        Upgrade::Level(n) => done[k] >= n as u32,
-                        _ => false,
+        let r = (|| -> R<()> {
+            loop {
+                if over.load(Ordering::Relaxed) {
+                    return Err("stage over".into());
+                }
+                self.check()?;
+                if order.is_empty() || (0..order.len()).all(|k| finished(k, &done, &maxed)) {
+                    if busy {
+                        busy = false;
+                        UPGRADING.fetch_sub(1, Ordering::Relaxed);
                     }
-            };
-            if (0..order.len()).all(|k| finished(k, &done, &maxed)) {
-                // everything upgraded: keep the PC and Roblox busy until the end
-                self.idle_click(&mut last_idle, &keys)?;
-                self.sleep(1000)?;
-                continue;
-            }
-            while finished(i % order.len(), &done, &maxed) {
-                i += 1;
-            }
-            let k = i % order.len();
-            let (h, slot, at) = order[k];
-            let scr = self.screen(*h);
-            // open the unit
-            self.arb
-                .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
-                .map_err(|e| format!("upgrade: {e}"))?;
-            let is_max =
-                scr.has("upgrade_max") && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
-            let before = Self::read_level(scr);
-            let reached = match (unit(h, *slot).upgrade, before) {
-                (Upgrade::Level(n), Some(l)) => l >= n as u32,
-                _ => false,
-            };
-            if is_max {
-                maxed[k] = true;
-                self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
-            } else if reached {
-                done[k] = before.unwrap_or(0);
-                self.log(format!(
-                    "slot {slot} at {},{} reached its level",
-                    at.x, at.y
-                ));
-            } else {
+                    self.sleep(1000)?;
+                    continue;
+                }
+                while finished(i % order.len(), &done, &maxed) {
+                    i += 1;
+                }
+                let k = i % order.len();
+                let (h, slot, at) = order[k];
+                let scr = self.screen(*h);
+                let want = unit(h, *slot).upgrade;
+                // open the unit
                 self.arb
-                    .run(
-                        Batch::new(*h, "upgrade")
+                    .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
+                    .map_err(|e| format!("upgrade: {e}"))?;
+                let is_max = scr.has("upgrade_max")
+                    && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
+                let before = Self::read_level(scr);
+                let reached = match (want, before) {
+                    (Upgrade::Level(n), Some(l)) => l >= n as u32,
+                    _ => false,
+                };
+                if is_max || before == Some(u32::MAX) {
+                    maxed[k] = true;
+                    self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+                } else if reached {
+                    done[k] = before.unwrap_or(0);
+                    self.log(format!(
+                        "slot {slot} at {},{} reached its level",
+                        at.x, at.y
+                    ));
+                } else {
+                    // MAX: 3 presses a visit; a set level: only what's left (max 3)
+                    let presses = match (want, before) {
+                        (Upgrade::Level(n), Some(l)) => (n as u32).saturating_sub(l).clamp(1, 3),
+                        (Upgrade::Level(_), None) => 1,
+                        _ => 3,
+                    };
+                    let mut b = Batch::new(*h, "upgrade");
+                    for _ in 0..presses {
+                        b = b
                             .then(crate::input::Action::KeyTap {
                                 key: keys.upgrade,
                                 hold_ms: 40,
                             })
-                            .wait(150),
-                    )
-                    .map_err(|e| format!("upgrade: {e}"))?;
-                self.sleep(500)?;
-                let after = Self::read_level(scr);
-                match (before, after) {
-                    // verified: the level text went up
-                    (_, Some(u32::MAX)) => {
-                        maxed[k] = true;
-                        self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+                            .wait(180);
                     }
-                    (Some(b), Some(a)) if a > b => {
-                        done[k] = a;
-                        self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
+                    self.arb.run(b).map_err(|e| format!("upgrade: {e}"))?;
+                    self.sleep(500)?;
+                    let after = Self::read_level(scr);
+                    match (before, after) {
+                        (_, Some(u32::MAX)) => {
+                            maxed[k] = true;
+                            self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+                        }
+                        (Some(b), Some(a)) if a > b => {
+                            done[k] = a;
+                            self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
+                        }
+                        // same level = not enough money yet; doesn't count
+                        (Some(_), Some(_)) => {}
+                        (None, Some(a)) => done[k] = a,
+                        // level text not readable: count the presses
+                        _ => done[k] += presses,
                     }
-                    // same level = not enough money yet; doesn't count
-                    (Some(_), Some(_)) => {}
-                    (None, Some(a)) => done[k] = a,
-                    // level text not captured / not readable: count the press
-                    _ => done[k] += 1,
                 }
+                self.arb
+                    .run(super::placing::cancel_batch(*h, keys))
+                    .map_err(|e| format!("upgrade: {e}"))?;
+                if !(s.run.priority_upgrade && !finished(k, &done, &maxed)) {
+                    i += 1; // priority upgrade keeps on this one until it's done
+                }
+                self.sleep(300)?;
             }
-            self.arb
-                .run(super::placing::cancel_batch(*h, &keys))
-                .map_err(|e| format!("upgrade: {e}"))?;
-            if !(s.run.priority_upgrade && !finished(k, &done, &maxed)) {
-                i += 1; // priority upgrade keeps on this one until it's done
-            }
-            self.sleep(400)?;
+        })();
+        if busy {
+            UPGRADING.fetch_sub(1, Ordering::Relaxed);
         }
+        r
     }
 
     /// Every 5 s once there's nothing left to upgrade: a click on an empty
@@ -2212,12 +2293,14 @@ impl RunCtx {
                 };
                 let mut fails = 0;
                 let mut blocked_told = false;
+                let mut blocked_n = 0u32;
                 loop {
                     let done_after = rounds + 1;
                     match self.one_round(&mut in_lobby, &mut map, &|| reached(done_after)) {
                         Ok(()) => {
                             fails = 0;
                             blocked_told = false;
+                            blocked_n = 0;
                             rounds += 1;
                             if reached(rounds) {
                                 // make sure we're in the lobby for the next step
@@ -2231,14 +2314,19 @@ impl RunCtx {
                             return Err(e)
                         }
                         Err(e) if e.contains("input blocked") => {
-                            // locked PC / screen off: not the game's fault - wait, don't give up
-                            if !blocked_told {
+                            // locked PC / screen off: not the game's fault - wait, don't give up.
+                            // Only ping once it keeps happening (a blip is retried quietly)
+                            blocked_n += 1;
+                            self.log(format!(
+                                "input refused by Windows ({blocked_n}x) - retrying"
+                            ));
+                            if blocked_n >= 3 && !blocked_told {
                                 let _ = self.tx.send(Event::Attention(
                                 "Input is blocked (PC locked, screen off or a UAC prompt) - the macro waits and carries on once it's unlocked".into(),
                             ));
                                 blocked_told = true;
                             }
-                            self.sleep(10_000)?;
+                            self.sleep(if blocked_n >= 3 { 10_000 } else { 2_000 })?;
                             let at = self.where_am_i();
                             match at {
                                 "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
