@@ -635,10 +635,21 @@ impl RunCtx {
             self.log(format!("card screen - weather: {weather}"));
         }
         // read the three card titles and take the first one in your order
-        let names: [Option<String>; 3] = std::array::from_fn(|i| {
+        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
             scr.ocr_rect(&f, super::cards::title_box(i))
                 .and_then(|t| super::cards::card_name(&t))
         });
+        // a title box missed: look for the names anywhere on the cards
+        if names.iter().any(|n| n.is_none()) {
+            if let Some(lines) = scr.ocr_lines(&f) {
+                let more = super::cards::names_from_lines(&lines);
+                for i in 0..3 {
+                    if names[i].is_none() {
+                        names[i] = more[i].clone();
+                    }
+                }
+            }
+        }
         let prio = if self.settings.run.card_priority.is_empty() {
             super::cards::default_priority()
         } else {
@@ -669,7 +680,15 @@ impl RunCtx {
                 let b = super::cards::CARD_BOXES[i];
                 (
                     Point::new(b.x + b.w / 2, b.y + b.h / 2),
-                    format!("card: {} (offered: {})", shown[i], shown.join(" / ")),
+                    format!(
+                        "card: {} - #{} in your order (offered: {})",
+                        shown[i],
+                        prio.iter()
+                            .position(|p| *p == shown[i])
+                            .map(|x| (x + 1).to_string())
+                            .unwrap_or_else(|| "~".into()),
+                        shown.join(" / ")
+                    ),
                 )
             }
             None => {
