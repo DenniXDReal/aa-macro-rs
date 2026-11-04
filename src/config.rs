@@ -34,6 +34,9 @@ pub struct Settings {
     pub place_settle_ms: u64,
     /// How long the placed check (unit_placed / "UPG [0]" OCR) may look (ms).
     pub place_check_ms: u64,
+    /// Test: each account only holds the input to select + click, then
+    /// checks its own placement on its own while the next account places.
+    pub parallel_checks: bool,
     /// Shape tried when a map has no (or not enough) custom spots.
     pub place_shape: crate::game::placing::Shape,
     /// How far the shape spreads out (1.0 = AHK / v10 size).
@@ -471,6 +474,7 @@ impl Default for Settings {
             place_delay_ms: 2000,
             place_settle_ms: 2000,
             place_check_ms: 3000,
+            parallel_checks: true,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.8,

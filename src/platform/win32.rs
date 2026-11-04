@@ -84,7 +84,10 @@ fn ocr_run(
     if super::ocr_should_yield() {
         bail!("OCR busy with a placement check");
     }
-    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    // placement checks of different accounts may read at the same time
+    // (each its own engine); background reads still go one at a time
+    let urgent = super::OCR_IS_URGENT.with(|c| c.get());
+    let _g = (!urgent).then(|| ONE.lock().unwrap_or_else(|e| e.into_inner()));
     let run = || -> windows::core::Result<windows::Media::Ocr::OcrResult> {
         let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
         engine.RecognizeAsync(&bmp)?.get()

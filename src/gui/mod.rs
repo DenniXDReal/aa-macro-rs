@@ -3254,6 +3254,11 @@ impl App {
                         .add(egui::DragValue::new(&mut s.place_settle_ms).range(100..=5000))
                         .changed();
                     ui.end_row();
+                    ui.label("Parallel checks (test)").on_hover_text(
+                        "each account only holds the input to select + click, then checks its own placement while the next account places. Put the clients side by side (Window > Tile).",
+                    );
+                    changed |= ui.checkbox(&mut s.parallel_checks, "").changed();
+                    ui.end_row();
                     ui.label("Placed check time (ms)").on_hover_text(
                         "how long it keeps looking for the unit panel / UPG [0] after the click",
                     );

@@ -1234,6 +1234,8 @@ impl RunCtx {
             s.place_settle_ms.clamp(100, 5000),
             std::sync::atomic::Ordering::Relaxed,
         );
+        super::placing::PARALLEL_CHECKS
+            .store(s.parallel_checks, std::sync::atomic::Ordering::Relaxed);
         super::placing::PLACE_CHECK_MS.store(
             s.place_check_ms.clamp(500, 10000),
             std::sync::atomic::Ordering::Relaxed,

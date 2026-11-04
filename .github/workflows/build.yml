@@ -14,6 +14,7 @@ jobs:
     env:
       AA_BUILD_SHA: ${{ github.sha }}
       AA_BUILD_NUM: ${{ github.run_number }}
+      AA_CHANNEL: ${{ github.ref == 'refs/heads/parallel' && 'parallel' || 'latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +35,7 @@ jobs:
           path: dist/
           if-no-files-found: error
       - name: Zip
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/parallel') && github.event_name != 'pull_request'
         shell: pwsh
         run: Compress-Archive -Path dist/* -DestinationPath aa-macro-windows.zip -Force
       - name: Publish "latest" release
@@ -46,4 +47,14 @@ jobs:
           body: "Built from ${{ github.sha }} (build ${{ github.run_number }}). Download aa-macro-windows.zip, unzip, double-click aa-macro.exe. Already installed? The app updates itself (Settings → Updates)." 
           prerelease: true
           make_latest: true
+          files: aa-macro-windows.zip
+      - name: Publish "parallel" test release
+        if: github.ref == 'refs/heads/parallel' && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: parallel
+          name: Parallel checks test build
+          body: "TEST build with parallel placement checks, from ${{ github.sha }} (build ${{ github.run_number }}). Updates itself from this test channel only."
+          prerelease: true
+          make_latest: false
           files: aa-macro-windows.zip

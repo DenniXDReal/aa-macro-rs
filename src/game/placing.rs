@@ -422,6 +422,9 @@ pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
 /// Pause between each step of a placement (select > click > check > next
 /// account), ms. Set from Settings when a run starts.
 pub static PLACE_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2000);
+/// Parallel checks (test build): the placed check runs off the input turn.
+pub static PARALLEL_CHECKS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// How long the check (unit_placed picture / "UPG [0]" OCR) may look, ms.
 pub static PLACE_CHECK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(3000);
 
@@ -592,11 +595,48 @@ pub fn place_slot_checked(
             }
         }
         last_fail = None;
+        let parallel = PARALLEL_CHECKS.load(Ordering::Relaxed);
         // one input turn for key + click + badge check + close, so other
         // accounts can't cut in between (no extra window swaps)
         let seen = Arc::new(AtomicBool::new(false));
-        let mut b = place_open_batch(hwnd, keys, slot, *at);
-        if let Some(p) = &badge {
+        let mut b = if parallel {
+            // parallel checks: only select + click need the input; the check
+            // runs below on this account's own thread while others place
+            let key = keys.units[(slot.clamp(1, 6)) - 1];
+            Batch::new(hwnd, format!("place slot {slot}"))
+                .then(Action::KeyTap { key, hold_ms: 50 })
+                .wait(gap())
+                .move_to(at.x, at.y)
+                .wait(250)
+                .click(at.x, at.y)
+                .wait(400)
+        } else {
+            place_open_batch(hwnd, keys, slot, *at)
+        };
+        if parallel {
+            arb.run(b)?;
+            if let Some(p) = &badge {
+                let t = std::time::Instant::now();
+                let limit =
+                    std::time::Duration::from_millis(PLACE_CHECK_MS.load(Ordering::Relaxed));
+                while t.elapsed() < limit {
+                    if (p.find)().is_some() {
+                        seen.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+            b = Batch::new(hwnd, "placed check done");
+            if !keep_open {
+                b = b
+                    .then(Action::KeyTap {
+                        key: keys.cancel,
+                        hold_ms: 40,
+                    })
+                    .wait(300);
+            }
+        } else if let Some(p) = &badge {
             let (f, s2) = (p.find.clone(), seen.clone());
             let rec = crate::input::Probe::new(p.label.clone(), move || {
                 let r = f();
@@ -611,7 +651,7 @@ pub fn place_slot_checked(
                 required: false,
             });
         }
-        if !keep_open {
+        if !keep_open && !parallel {
             b = b
                 .then(Action::KeyTap {
                     key: keys.cancel,
