@@ -1293,15 +1293,29 @@ impl RunCtx {
                             })
                             .wait(500),
                     );
-                    let hs = scr
+                    let mut hs = scr
                         .frame()
                         .map(|f| super::placing::hill_spots(&f, 60))
                         .unwrap_or_default();
+                    if hs.is_empty() {
+                        // a banner / slow glow: one more look
+                        std::thread::sleep(Duration::from_millis(500));
+                        hs = scr
+                            .frame()
+                            .map(|f| super::placing::hill_spots(&f, 60))
+                            .unwrap_or_default();
+                    }
                     let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
-                    self.log(format!(
-                        "client {n}: slot {slot} hill - {} high-ground spot(s) seen",
-                        hs.len()
-                    ));
+                    if hs.is_empty() {
+                        self.log(format!(
+                            "client {n}: slot {slot} hill - no green high ground seen, placing it on the ground"
+                        ));
+                    } else {
+                        self.log(format!(
+                            "client {n}: slot {slot} hill - {} high-ground spot(s) seen (ground after those)",
+                            hs.len()
+                        ));
+                    }
                     let mut v = hs;
                     v.extend(spots.into_iter());
                     spots = v;
