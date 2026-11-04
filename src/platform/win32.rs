@@ -81,9 +81,6 @@ fn ocr_run(
     // one OCR at a time: several accounts' threads reading at once made the
     // engine fail now and then; and one retry when it does
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    if super::ocr_should_yield() {
-        bail!("OCR busy with a placement check");
-    }
     // placement checks of different accounts may read at the same time
     // (each its own engine); background reads still go one at a time
     let urgent = super::OCR_IS_URGENT.with(|c| c.get());
