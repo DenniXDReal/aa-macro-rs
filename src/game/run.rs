@@ -5,7 +5,7 @@
 //! Everything it looks for is one of your patterns; [`plan`] lists them per
 //! step so the Home page can show what's still missing before you Start.
 
-use super::placing::{camera_batch, place_slot, spots_key, Keys};
+use super::placing::{camera_batch, spots_key, Keys};
 use super::LiveScreen;
 use crate::config::{Mode, PlayChoice, Settings, Upgrade};
 use crate::control::Control;
@@ -240,6 +240,8 @@ pub enum Event {
     Log(String),
     Win,
     Loss,
+    /// Rewards read off the end screen (sent right before Win / Loss).
+    Drops(Vec<(String, u64)>),
     /// Something needs the user (captcha) - ping them.
     Attention(String),
     Done(String),
@@ -533,15 +535,26 @@ impl RunCtx {
             if scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some() {
                 true
             } else if ocr_due(h) {
-                match scr.frame().map(|f| scr.ocr_events(&f)) {
-                    Some((Some(w), _)) => {
-                        weather = w;
-                        true
+                let f = scr.frame();
+                let text = f.as_ref().and_then(|f| scr.ocr_all(f));
+                // Mahoraga's adaptation panel shares this OCR read
+                if let (Some(t), Some(f)) = (&text, &f) {
+                    if self.settings.adaptations.enabled && super::adaptation::showing(t) {
+                        self.handle_adaptation(h, f)?;
+                        return Ok(true);
                     }
-                    Some((None, s)) => {
-                        shift = s;
-                        false
-                    }
+                }
+                match text {
+                    Some(t) => match super::card_screen_text(&t) {
+                        Some(w) => {
+                            weather = w;
+                            true
+                        }
+                        None => {
+                            shift = super::weather_shift_text(&t);
+                            false
+                        }
+                    },
                     None => false,
                 }
             } else {
@@ -554,14 +567,32 @@ impl RunCtx {
         if !seen {
             return Ok(false);
         }
-        // one pick is enough for everyone: skip if another client just did it
-        {
-            let mut last = LAST_PICK.lock().unwrap();
-            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
-                return Ok(false);
+        // one pick is enough for everyone. Picked in the last 45 s and the
+        // screen is still up: it's the card vote, other players are still
+        // voting - wait for it to close instead of picking again
+        let since = LAST_PICK.lock().unwrap().map(|t| t.elapsed());
+        if since.is_some_and(|t| t < Duration::from_secs(45)) {
+            static SAID: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+            {
+                let mut said = SAID.lock().unwrap();
+                if !said.is_some_and(|t| t.elapsed() < Duration::from_secs(45)) {
+                    self.log("card vote open - waiting for it to close");
+                    *said = Some(Instant::now());
+                }
             }
-            *last = Some(Instant::now());
+            let mut dl = self.control.deadline(self.secs(20.0));
+            while !dl.expired() {
+                self.sleep(1000)?;
+                let up = (scr.has("choose_card")
+                    && scr.find(&Self::names(&["choose_card"]), None).is_some())
+                    || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some();
+                if !up {
+                    break;
+                }
+            }
+            return Ok(true);
         }
+        *LAST_PICK.lock().unwrap() = Some(Instant::now());
         // close the unit panel first if one is open (its X is on screen);
         // no panel = straight to the screenshot
         if let Some(p) = scr
@@ -652,6 +683,32 @@ impl RunCtx {
             self.sleep(300)?;
         }
         Ok(true)
+    }
+
+    /// Mahoraga's "Choose an Adaptation": take the first choice in your
+    /// order for the badge shown that isn't grey. Never stops the run.
+    fn handle_adaptation(&self, h: Hwnd, f: &crate::capture::Frame) -> R<()> {
+        let scr = self.screen(h);
+        let Some(lines) = scr.ocr_lines(f) else {
+            return Ok(());
+        };
+        let Some(panel) = super::adaptation::read(&lines, f) else {
+            return Ok(());
+        };
+        let badge = panel.badge.map(|b| b.label()).unwrap_or("?");
+        match super::adaptation::choose(&panel, &self.settings.adaptations) {
+            Some(c) => {
+                self.log(format!("adaptation ({badge}): {}", c.name));
+                if let Err(e) = self.click(h, c.at, "adaptation") {
+                    self.log(format!("adaptation choice failed: {e}"));
+                }
+            }
+            None if panel.choices.is_empty() => {
+                self.log("adaptation panel up but its choices aren't readable")
+            }
+            None => self.log("adaptation: every choice is grey - nothing to pick"),
+        }
+        Ok(())
     }
 
     /// Weather shift banner: close the unit panel (if open) and keep a
@@ -919,6 +976,7 @@ impl RunCtx {
                 "Haunted Mansion",
                 "Walled City",
                 "Spirit Invasion",
+                "Sky Island",
             ]
             .map(String::from),
         );
@@ -1310,7 +1368,92 @@ impl RunCtx {
                                 self.memory.lock().unwrap().failed(&set, p);
                             }
                         };
-                        match place_slot(
+                        // second opinion on each placement: the hotbar
+                        // counter ("1/3") and the "Unique units may not be
+                        // placed" message (AA Spiral v0.17)
+                        use super::placing::Check;
+                        use crate::config::PlacementDetect;
+                        let detect = s.placement_detect;
+                        let use_counter = detect != PlacementDetect::Panel || badge.is_none();
+                        let read_counter = || -> Option<(u32, u32)> {
+                            let k = keys.units[slot.clamp(1, 6) - 1];
+                            self.arb
+                                .run(
+                                    Batch::new(h, "read unit counter")
+                                        .then(Action::KeyTap { key: k, hold_ms: 40 })
+                                        .wait(350),
+                                )
+                                .ok()?;
+                            let mut c = scr.frame().and_then(|f| scr.ocr_counter(&f));
+                            if c.is_none() {
+                                std::thread::sleep(Duration::from_millis(250));
+                                c = scr.frame().and_then(|f| scr.ocr_counter(&f));
+                            }
+                            let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
+                            c
+                        };
+                        let base = std::cell::Cell::new(if use_counter { read_counter() } else { None });
+                        if let Some((c, m)) = base.get() {
+                            if c >= m {
+                                self.log(format!(
+                                    "client {n}: slot {slot} already at its limit ({c}/{m}) - skipping"
+                                ));
+                                continue;
+                            }
+                        }
+                        let check = |seen: bool, _at: Point| -> Check {
+                            let panel_says = badge.is_some() && seen;
+                            if panel_says && detect != PlacementDetect::Hotbar {
+                                if let Some((c, m)) = base.get() {
+                                    base.set(Some((c + 1, m)));
+                                    if c + 1 >= m {
+                                        return Check::PlacedLast;
+                                    }
+                                }
+                                return Check::Placed;
+                            }
+                            let mut counted = false;
+                            if use_counter {
+                                if let Some((c, m)) = read_counter() {
+                                    let before = base.get().map(|b| b.0);
+                                    base.set(Some((c, m)));
+                                    match before {
+                                        Some(b) if c > b => {
+                                            if !panel_says {
+                                                self.log(format!(
+                                                    "client {n}: slot {slot} counter {b} -> {c}/{m} - counted as placed"
+                                                ));
+                                            }
+                                            return if c >= m {
+                                                Check::PlacedLast
+                                            } else {
+                                                Check::Placed
+                                            };
+                                        }
+                                        Some(_) => counted = true,
+                                        None => {}
+                                    }
+                                }
+                            }
+                            if seen && !counted {
+                                return Check::Placed;
+                            }
+                            // didn't go down: one of a unique unit already stands?
+                            if ocr_due_for(h, 6) {
+                                let blocked = scr
+                                    .frame()
+                                    .and_then(|f| scr.ocr_all(&f))
+                                    .is_some_and(|t| super::hotbar::unique_blocked(&t));
+                                if blocked {
+                                    self.log(format!(
+                                        "client {n}: slot {slot} is a unique unit and one is already down - next unit"
+                                    ));
+                                    return Check::Stop;
+                                }
+                            }
+                            Check::Failed
+                        };
+                        match super::placing::place_slot_checked(
                             &self.arb,
                             h,
                             &keys,
@@ -1321,6 +1464,7 @@ impl RunCtx {
                             buff,
                             delay,
                             &cards,
+                            &check,
                             &good,
                             &bad,
                         ) {
@@ -1732,6 +1876,25 @@ impl RunCtx {
             started.elapsed().as_secs_f32()
         ));
         let won = self.upgrade_until_end(&placed)?;
+        // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
+        {
+            let main = self.screen(self.main);
+            let mut drops = vec![];
+            for _ in 0..3 {
+                self.sleep(1200)?;
+                if let Some(f) = main.frame() {
+                    drops = super::drops::parse(&main.ocr_text_lines(&f));
+                }
+                if !drops.is_empty() {
+                    break;
+                }
+            }
+            if !drops.is_empty() {
+                let list: Vec<String> = drops.iter().map(|(n, a)| format!("{a} {n}")).collect();
+                self.log(format!("drops: {}", list.join(", ")));
+                let _ = self.tx.send(Event::Drops(drops));
+            }
+        }
         let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
         if !won && self.settings.run.stop_after_defeat {
             return Err("stopped after a defeat".into());

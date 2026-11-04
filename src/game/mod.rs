@@ -1,8 +1,11 @@
 //! Live game context: what a client's screen shows right now, as probes the
 //! input arbiter can wait on. Shared by the Movement tester and the game loop.
 
+pub mod adaptation;
 pub mod cardlog;
 pub mod cards;
+pub mod drops;
+pub mod hotbar;
 pub mod minimap;
 pub mod placing;
 pub mod run;
@@ -259,6 +262,37 @@ impl LiveScreen {
     /// OCR of one area of a picture.
     pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
         self.platform.ocr(frame, area)
+    }
+
+    /// OCR of the whole screen with word boxes (None without OCR).
+    pub fn ocr_lines(&self, frame: &crate::capture::Frame) -> Option<Vec<Vec<(String, Rect)>>> {
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        self.platform.ocr_lines(frame, all)
+    }
+
+    /// The screen's text, one string per line.
+    pub fn ocr_text_lines(&self, frame: &crate::capture::Frame) -> Vec<String> {
+        if let Some(l) = self.ocr_lines(frame) {
+            return l
+                .iter()
+                .map(|w| {
+                    w.iter()
+                        .map(|(t, _)| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+        }
+        self.ocr_all(frame)
+            .map(|t| t.lines().map(String::from).collect())
+            .unwrap_or_default()
+    }
+
+    /// The hotbar counter of the selected unit ("1/3"), read with OCR.
+    pub fn ocr_counter(&self, frame: &crate::capture::Frame) -> Option<(u32, u32)> {
+        let area = hotbar::counter_area(frame.width as i32, frame.height as i32);
+        let t = self.platform.ocr(frame, area)?;
+        hotbar::parse_count(&t)
     }
 
     /// Everything readable on the screen (Windows OCR).

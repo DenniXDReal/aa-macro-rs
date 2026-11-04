@@ -50,6 +50,11 @@ pub struct Settings {
     pub spot_memory: bool,
     /// Single / Safe (hover wiggle + re-click if it didn't take) / Double.
     pub click_mode: crate::input::ClickMode,
+    /// How a placement is confirmed: the unit panel (UPG), the hotbar
+    /// counter ("1/3", read with OCR), or panel first and counter as backup.
+    pub placement_detect: PlacementDetect,
+    /// Megumi's Mahoraga "Choose an Adaptation" picks.
+    pub adaptations: Adaptations,
     /// Multi-instance unlock object names (held while `unlock` runs).
     pub singleton_names: Vec<String>,
     pub instances: Vec<InstanceProfile>,
@@ -448,6 +453,8 @@ impl Default for Settings {
             mouse_settle_ms: 35,
             click_hold_ms: 40,
             click_mode: crate::input::ClickMode::Safe,
+            placement_detect: PlacementDetect::Both,
+            adaptations: Adaptations::default(),
             step_delay_ms: 800,
             place_delay_ms: 2000,
             swap_delay_ms: 1200,
@@ -629,5 +636,52 @@ mod team_tests {
         assert!(s.placer_teams.is_empty());
         assert_eq!(s.account_placing["altacc"].team, None);
         assert_eq!(s.units_for(2)[0].name, "Main team unit");
+    }
+}
+
+/// How a placement is confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PlacementDetect {
+    /// The unit panel (unit_placed / UPG) shows after the click.
+    Panel,
+    /// The unit's hotbar counter ("1/3") went up.
+    Hotbar,
+    /// Panel first; when it isn't seen, check the counter.
+    #[default]
+    Both,
+}
+
+impl PlacementDetect {
+    pub const ALL: [PlacementDetect; 3] = [Self::Both, Self::Panel, Self::Hotbar];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Panel => "Unit panel",
+            Self::Hotbar => "Hotbar counter (1/3)",
+            Self::Both => "Panel, counter as backup",
+        }
+    }
+}
+
+/// Mahoraga's adaptation choices, top one first, per badge (ATK/DEF/BOSS).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Adaptations {
+    pub enabled: bool,
+    pub atk: Vec<String>,
+    pub def: Vec<String>,
+    pub boss: Vec<String>,
+}
+
+pub const ADAPTATION_NAMES: [&str; 3] = ["Divine Wings", "Heavenly Force", "Adapted Slash"];
+
+impl Default for Adaptations {
+    fn default() -> Self {
+        let v: Vec<String> = ADAPTATION_NAMES.iter().map(|s| s.to_string()).collect();
+        Self {
+            enabled: true,
+            atk: v.clone(),
+            def: v.clone(),
+            boss: v,
+        }
     }
 }

@@ -192,6 +192,9 @@ pub struct App {
     started: Option<Instant>,
     wins: u32,
     losses: u32,
+    /// Rewards this session (end screen OCR) and the last round's.
+    drops: Vec<(String, u64)>,
+    last_drops: Vec<(String, u64)>,
     hotkeys: Receiver<u8>,
 
     log: Vec<String>,
@@ -320,6 +323,8 @@ impl App {
             started: None,
             wins: 0,
             losses: 0,
+            drops: vec![],
+            last_drops: vec![],
             hotkeys,
             log: vec![],
             log_tx,
@@ -443,6 +448,25 @@ impl App {
         ));
     }
 
+    /// "3W / 1L" plus this round's and the session's drops (Discord).
+    fn result_text(&mut self) -> String {
+        let fmt = |v: &[(String, u64)]| {
+            v.iter()
+                .map(|(n, a)| format!("{a} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut t = format!("{}W / {}L", self.wins, self.losses);
+        let last = std::mem::take(&mut self.last_drops);
+        if !last.is_empty() {
+            t += &format!("\nDrops: {}", fmt(&last));
+        }
+        if !self.drops.is_empty() {
+            t += &format!("\nSession: {}", fmt(&self.drops));
+        }
+        t
+    }
+
     /// Events from the game loop thread.
     fn run_events(&mut self) {
         use crate::game::run::Event;
@@ -451,27 +475,26 @@ impl App {
         for e in evs {
             match e {
                 Event::Log(s) => self.say(s),
+                Event::Drops(d) => {
+                    for (n, a) in &d {
+                        match self.drops.iter_mut().find(|(m, _)| m == n) {
+                            Some(e) => e.1 += a,
+                            None => self.drops.push((n.clone(), *a)),
+                        }
+                    }
+                    self.last_drops = d;
+                }
                 Event::Win => {
                     self.wins += 1;
-                    let (w, l) = (self.wins, self.losses);
+                    let text = self.result_text();
                     self.say("VICTORY");
-                    self.hook(
-                        crate::webhook::Kind::Win,
-                        "Victory",
-                        &format!("{w}W / {l}L"),
-                        false,
-                    );
+                    self.hook(crate::webhook::Kind::Win, "Victory", &text, false);
                 }
                 Event::Loss => {
                     self.losses += 1;
-                    let (w, l) = (self.wins, self.losses);
+                    let text = self.result_text();
                     self.say("DEFEAT");
-                    self.hook(
-                        crate::webhook::Kind::Loss,
-                        "Defeat",
-                        &format!("{w}W / {l}L"),
-                        false,
-                    );
+                    self.hook(crate::webhook::Kind::Loss, "Defeat", &text, false);
                 }
                 Event::Attention(s) => {
                     self.say(format!("needs you: {s}"));
@@ -1310,6 +1333,7 @@ impl App {
                     if ui.small_button("Reset").clicked() {
                         self.wins = 0;
                         self.losses = 0;
+                        self.drops.clear();
                         self.started = if self.running {
                             Some(Instant::now())
                         } else {
@@ -1333,6 +1357,16 @@ impl App {
                     TEXT,
                 );
             });
+            if !self.drops.is_empty() {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Drops").size(11.0).color(MUTED));
+                    for (n, a) in &self.drops {
+                        ui.label(RichText::new(format!("{a} {n}")).color(TEXT));
+                        ui.label(RichText::new("·").color(MUTED));
+                    }
+                });
+            }
         });
     }
 
@@ -2674,6 +2708,71 @@ impl App {
         }
     }
 
+    /// Mahoraga's adaptation order per badge (ATK / DEF / BOSS).
+    fn adaptations_ui(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("ADAPTATIONS (MAHORAGA)")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            let a = &mut self.settings.adaptations;
+            changed |= toggle(ui, &mut a.enabled, "Pick adaptations automatically");
+            ui.label(
+                RichText::new(
+                    "When Megumi's Mahoraga asks every 50 kills. Takes the highest choice here that isn't grey (grey = already taken).",
+                )
+                .size(11.0)
+                .color(MUTED),
+            );
+            ui.horizontal_top(|ui| {
+                for (title, list) in [
+                    ("ATK", &mut a.atk),
+                    ("DEF", &mut a.def),
+                    ("BOSS", &mut a.boss),
+                ] {
+                    // keep every name once, in order
+                    for n in crate::config::ADAPTATION_NAMES {
+                        if !list.iter().any(|m| m == n) {
+                            list.push(n.to_string());
+                        }
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(title).strong());
+                        let len = list.len();
+                        let mut swap = None;
+                        for i in 0..len {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{}. {}", i + 1, list[i]));
+                                if ui
+                                    .add_enabled(i > 0, egui::Button::new("▲").small())
+                                    .clicked()
+                                {
+                                    swap = Some((i, i - 1));
+                                }
+                                if ui
+                                    .add_enabled(i + 1 < len, egui::Button::new("▼").small())
+                                    .clicked()
+                                {
+                                    swap = Some((i, i + 1));
+                                }
+                            });
+                        }
+                        if let Some((x, y)) = swap {
+                            list.swap(x, y);
+                            changed = true;
+                        }
+                    });
+                    ui.add_space(12.0);
+                }
+            });
+        });
+        if changed {
+            self.dirty();
+        }
+    }
+
     fn page_settings(&mut self, ui: &mut egui::Ui) {
         heading(ui, "Settings", "");
         let mut changed = false;
@@ -2750,6 +2849,8 @@ impl App {
         });
         ui.add_space(8.0);
         self.card_priority_ui(ui);
+        ui.add_space(8.0);
+        self.adaptations_ui(ui);
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.label(RichText::new("KEYBINDS").size(11.0).color(MUTED));
@@ -2882,6 +2983,18 @@ impl App {
                         changed = true;
                         input_changed = true;
                     }
+                    ui.end_row();
+                    ui.label("Placement check")
+                        .on_hover_text("How the macro knows a unit went down. Try the hotbar counter if units are placed but not counted.");
+                    egui::ComboBox::from_id_salt("placement_detect")
+                        .selected_text(s.placement_detect.label())
+                        .show_ui(ui, |ui| {
+                            for d in crate::config::PlacementDetect::ALL {
+                                changed |= ui
+                                    .selectable_value(&mut s.placement_detect, d, d.label())
+                                    .changed();
+                            }
+                        });
                     ui.end_row();
                     ui.label("Max input turn (ms)");
                     changed |= ui

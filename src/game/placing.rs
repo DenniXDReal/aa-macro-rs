@@ -473,6 +473,52 @@ pub fn place_slot(
     on_placed: &dyn Fn(Point),
     on_failed: &dyn Fn(Point),
 ) -> Result<Vec<Point>, InputError> {
+    place_slot_checked(
+        arb,
+        hwnd,
+        keys,
+        slot,
+        count,
+        spots,
+        badge,
+        keep_open,
+        delay_ms,
+        before_each,
+        &|seen, _| if seen { Check::Placed } else { Check::Failed },
+        on_placed,
+        on_failed,
+    )
+}
+
+/// What a placement attempt turned out to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    Placed,
+    Failed,
+    /// Placed, and that was the last one this unit may have.
+    PlacedLast,
+    /// Stop this unit (unique unit already down / at its limit).
+    Stop,
+}
+
+/// `place_slot` with a say in whether each attempt worked: `check(seen, spot)`
+/// gets whether the unit panel showed (always true without a badge).
+#[allow(clippy::too_many_arguments)]
+pub fn place_slot_checked(
+    arb: &ArbiterHandle,
+    hwnd: Hwnd,
+    keys: &Keys,
+    slot: usize,
+    count: u32,
+    spots: &[Point],
+    badge: Option<crate::input::Probe>,
+    keep_open: bool,
+    delay_ms: u64,
+    before_each: &dyn Fn() -> bool,
+    check: &dyn Fn(bool, Point) -> Check,
+    on_placed: &dyn Fn(Point),
+    on_failed: &dyn Fn(Point),
+) -> Result<Vec<Point>, InputError> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     let mut placed: Vec<Point> = vec![];
@@ -521,16 +567,21 @@ pub fn place_slot(
             });
         }
         arb.run(b)?;
-        let ok = badge.is_none() || seen.load(Ordering::Relaxed);
-        if ok {
-            // with keep_open its panel is still up (e.g. turn Auto ability on)
-            on_placed(*at);
-            placed.push(*at);
-        } else {
-            on_failed(*at);
+        let res = check(badge.is_none() || seen.load(Ordering::Relaxed), *at);
+        match res {
+            Check::Placed | Check::PlacedLast => {
+                // with keep_open its panel is still up (e.g. turn Auto ability on)
+                on_placed(*at);
+                placed.push(*at);
+            }
+            Check::Failed => on_failed(*at),
+            Check::Stop => {}
         }
         if keep_open {
             arb.run(cancel_batch(hwnd, keys))?;
+        }
+        if matches!(res, Check::PlacedLast | Check::Stop) {
+            break;
         }
     }
     Ok(placed)
