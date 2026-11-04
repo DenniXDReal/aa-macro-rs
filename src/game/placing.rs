@@ -126,7 +126,9 @@ pub fn hill_spots(f: &crate::capture::Frame, max: usize) -> Vec<Point> {
     let green = |x: i32, y: i32| {
         f.rgb(x, y).is_some_and(|(r, g, b)| {
             let (r, g, b) = (r as i32, g as i32, b as i32);
-            g >= 150 && g - r >= 60 && g - b >= 60
+            // the glowing high ground: bright green (r ~0-80, g ~230-255,
+            // b ~30-110); a bit of room for maps / lighting that differ
+            g >= 140 && g - r >= 50 && g - b >= 50
         })
     };
     let a = SHAPE_AREA;
