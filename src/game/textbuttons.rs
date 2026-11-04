@@ -9,7 +9,7 @@ use crate::geom::{Point, Rect};
 /// sit inside a line.
 pub const LABELS: &[(&str, &[&str])] = &[
     ("start_button", &["start"]),
-    ("vote_start", &["vote start"]),
+    ("vote_start", &["vote start", "yes", "vote"]),
     ("play_here", &["play here"]),
     ("join_matchmaking", &["join matchmaking", "matchmaking"]),
     ("find_match", &["find match"]),
@@ -129,7 +129,7 @@ mod tests {
         let start = labels_for("start_button").unwrap();
         // "Start" alone only, not the one in "Vote Start"
         assert_eq!(find_all(&lines, start, None), vec![Point::new(620, 110)]);
-        let vote = labels_for("vote_start").unwrap();
+        let vote = &["vote start"];
         assert_eq!(find_all(&lines, vote, None), vec![Point::new(342, 110)]);
         let back = labels_for("return_to_lobby").unwrap();
         assert_eq!(find_all(&lines, back, None).len(), 1);

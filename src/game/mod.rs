@@ -35,7 +35,12 @@ mod level_tests {
             vec![("UPG".to_string(), r), ("[0]".to_string(), r)],
         ];
         assert_eq!(super::upg_line(&lines).unwrap().0, "UPG [0]");
-        assert!(super::upg_line(&lines[..1]).is_none());
+        assert_eq!(
+            super::upg_line(&lines[..1]).unwrap().0,
+            "Sell",
+            "panel's Sell"
+        );
+        assert!(super::upg_line(&[vec![("Wave".to_string(), r)]]).is_none());
         use super::card_screen_text;
         assert_eq!(
             card_screen_text("CHOOSE A CARD Weather: Rainy Tier 1"),
@@ -160,8 +165,32 @@ pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
 
 /// The OCR line with the unit panel's "UPG [n]": (its text, where "UPG" is).
 pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
+    // the unit panel's own words (as AA Spiral v17 checks): Sell, and the
+    // targeting button (First / Last / Strongest / ...)
+    let panel_word = |w: &str| {
+        let f: String = w
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        matches!(
+            f.as_str(),
+            "sell"
+                | "first"
+                | "last"
+                | "strongest"
+                | "weakest"
+                | "closest"
+                | "farthest"
+                | "furthest"
+        )
+    };
+    let mut word_hit = None;
     for l in lines {
         for (i, (w, r)) in l.iter().enumerate() {
+            if word_hit.is_none() && panel_word(w) {
+                word_hit = Some((w.clone(), Point::new(r.x + r.w / 2, r.y + r.h / 2)));
+            }
             let f: String = w
                 .chars()
                 .filter(|c| c.is_alphanumeric())
@@ -177,7 +206,7 @@ pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
             }
         }
     }
-    None
+    word_hit
 }
 
 /// One client's screen + a snapshot of your patterns.
@@ -212,6 +241,17 @@ impl LiveScreen {
         });
         self.seen(names, hit.is_some());
         hit.or_else(|| self.find_text(&frame, names, region).into_iter().next())
+    }
+
+    /// Read button labels right now (no waiting for the picture first).
+    pub fn find_label_now(&self, names: &[String]) -> Option<Point> {
+        let frame = self.frame()?;
+        let lines = self.ocr_lines(&frame)?;
+        names
+            .iter()
+            .filter_map(|n| textbuttons::labels_for(&key(n)))
+            .flat_map(|l| textbuttons::find_all(&lines, l, None))
+            .next()
     }
 
     /// Track how long `names` have been missing: the OCR backup only runs for
@@ -316,7 +356,9 @@ impl LiveScreen {
         }
         // the panel may sit elsewhere: find "UPG" anywhere and read its line
         let lines = self.ocr_lines(frame)?;
-        upg_line(&lines).and_then(|(t, _)| parse_level(&t))
+        upg_line(&lines)
+            .filter(|(t, _)| t.to_uppercase().contains("UPG") || t.to_uppercase().contains("MAX"))
+            .and_then(|(t, _)| parse_level(&t))
     }
 
     pub fn has_ocr(&self) -> bool {
@@ -335,7 +377,7 @@ impl LiveScreen {
             .and_then(|v| v.iter().find(|(h, _)| *h == self.hwnd).map(|(_, r)| *r));
         let mut tries: Vec<Rect> = last.into_iter().collect();
         let la = self.level_area();
-        tries.push(Rect::new(la.x - 60, la.y - 20, la.w + 120, la.h + 40));
+        tries.push(Rect::new(la.x - 120, la.y - 60, la.w + 240, la.h + 220));
         tries.push(Rect::new(0, 0, frame.width as i32, frame.height as i32));
         for r in tries {
             let Some(lines) = self.platform.ocr_lines(frame, r) else {

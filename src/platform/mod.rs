@@ -146,3 +146,28 @@ pub fn native() -> Box<dyn Platform> {
         Box::new(null::NullPlatform)
     }
 }
+
+/// Placement checks read with OCR while holding a client's input: they go
+/// first. While one runs, background reads (cards, events) skip a turn
+/// instead of making it wait.
+pub static OCR_URGENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    pub static OCR_IS_URGENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with its OCR reads marked urgent (see `OCR_URGENT`).
+pub fn urgent_ocr<T>(f: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::Ordering;
+    OCR_URGENT.fetch_add(1, Ordering::SeqCst);
+    let before = OCR_IS_URGENT.with(|c| c.replace(true));
+    let r = f();
+    OCR_IS_URGENT.with(|c| c.set(before));
+    OCR_URGENT.fetch_sub(1, Ordering::SeqCst);
+    r
+}
+
+/// Should a (non-urgent) OCR read step aside right now?
+pub fn ocr_should_yield() -> bool {
+    OCR_URGENT.load(std::sync::atomic::Ordering::SeqCst) > 0 && !OCR_IS_URGENT.with(|c| c.get())
+}

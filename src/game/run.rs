@@ -1170,11 +1170,32 @@ impl RunCtx {
         }
         // every client votes (alts first), then back on the main
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
+        let names = Self::names(&["vote_start"]);
         for h in self.main_last(all) {
-            if let Some(p) =
-                self.wait_wide(h, "vote_start", if h == self.main { 3000 } else { 1500 })?
-            {
-                self.click(h, p, "vote start")?;
+            let scr = self.screen(h);
+            // picture first, then read "Vote Start" / "Yes" with OCR right away
+            let mut at =
+                self.wait_wide(h, "vote_start", if h == self.main { 3000 } else { 1500 })?;
+            let mut tries = 0;
+            while at.is_none() && tries < 4 {
+                at = scr.find_label_now(&names);
+                if at.is_none() {
+                    self.sleep(700)?;
+                }
+                tries += 1;
+            }
+            match at {
+                Some(p) => {
+                    self.click(h, p, "vote start")?;
+                    // still there = didn't take: once more
+                    self.sleep(600)?;
+                    if let Some(q) = scr.find_wide(&names) {
+                        if (q.x - p.x).abs() <= 8 && (q.y - p.y).abs() <= 8 {
+                            self.click(h, q, "vote start (again)")?;
+                        }
+                    }
+                }
+                None => self.log("Vote Start not seen (picture or OCR) - carrying on"),
             }
         }
         self.to_main()?;
@@ -1337,20 +1358,24 @@ impl RunCtx {
                     // the unit panel opened = it went down: your unit_placed
                     // picture, and/or "UPG [0]" read with OCR anywhere on screen
                     let badge = {
-                        let pic = scr.has("unit_placed");
+                        // unit_placed or the panel's red X (unit_close) picture
+                        let pic = scr.has("unit_placed") || scr.has("unit_close");
                         let ocr = scr.has_ocr();
                         (pic || ocr).then(|| {
                             let me = scr.clone();
                             crate::input::Probe::new("unit placed (UPG)", move || {
                                 if pic {
-                                    if let Some(p) =
-                                        me.find(&["unit_placed".to_string()], None)
-                                    {
+                                    if let Some(p) = me.find(
+                                        &["unit_placed".to_string(), "unit_close".to_string()],
+                                        None,
+                                    ) {
                                         return Some(p);
                                     }
                                 }
                                 if ocr {
-                                    return me.frame().and_then(|f| me.find_upg(&f));
+                                    return crate::platform::urgent_ocr(|| {
+                                        me.frame().and_then(|f| me.find_upg(&f))
+                                    });
                                 }
                                 None
                             })
@@ -1449,11 +1474,15 @@ impl RunCtx {
                                         .wait(350),
                                 )
                                 .ok()?;
-                            let mut c = scr.frame().and_then(|f| scr.ocr_counter(&f));
+                            let mut c = crate::platform::urgent_ocr(|| {
+                                scr.frame().and_then(|f| scr.ocr_counter(&f))
+                            });
                             if c.is_none() {
                                 std::thread::sleep(Duration::from_millis(250));
                                 let f = scr.frame();
-                                c = f.as_ref().and_then(|f| scr.ocr_counter(f));
+                                c = crate::platform::urgent_ocr(|| {
+                                    f.as_ref().and_then(|f| scr.ocr_counter(f))
+                                });
                                 // keep one picture of what it saw, to check where
                                 // the counter sits
                                 static SAVED: std::sync::atomic::AtomicBool =
@@ -1638,7 +1667,34 @@ impl RunCtx {
             .iter()
             .filter(|(h, slot, _)| unit(h, *slot).upgrade != Upgrade::None)
             .collect();
-        order.sort_by_key(|(h, slot, _)| (!unit(h, *slot).farm, unit(h, *slot).priority));
+        // your Priority decides (1 first); farm units only go first among equals
+        order.sort_by_key(|(h, slot, _)| (unit(h, *slot).priority, !unit(h, *slot).farm));
+        if !order.is_empty() {
+            let list: Vec<String> = order
+                .iter()
+                .map(|(h, slot, _)| {
+                    let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+                    format!("c{n} slot {slot} (prio {})", unit(h, *slot).priority)
+                })
+                .collect();
+            self.log(format!("upgrade order: {}", list.join(" > ")));
+        }
+        // a unit that should be upgraded but never registered as placed
+        for (h, _) in &per {
+            let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+            for (i, u) in per[h].iter().enumerate() {
+                if u.enabled
+                    && u.place > 0
+                    && u.upgrade != Upgrade::None
+                    && !placed.iter().any(|(ph, sl, _)| ph == h && *sl == i + 1)
+                {
+                    self.log(format!(
+                        "c{n} slot {} wasn't registered as placed - it can't be upgraded (placement check missed it)",
+                        i + 1
+                    ));
+                }
+            }
+        }
         let mut done: Vec<u32> = vec![0; order.len()];
         let mut maxed: Vec<bool> = vec![false; order.len()];
         let mut last_idle = Instant::now();

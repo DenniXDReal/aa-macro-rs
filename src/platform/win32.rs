@@ -81,6 +81,9 @@ fn ocr_run(
     // one OCR at a time: several accounts' threads reading at once made the
     // engine fail now and then; and one retry when it does
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if super::ocr_should_yield() {
+        bail!("OCR busy with a placement check");
+    }
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let run = || -> windows::core::Result<windows::Media::Ocr::OcrResult> {
         let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;

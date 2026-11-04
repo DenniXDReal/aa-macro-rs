@@ -541,6 +541,9 @@ pub fn place_slot_checked(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     let mut placed: Vec<Point> = vec![];
+    // the last attempt that looked failed: if its panel is up by the next
+    // attempt, it did go down - just slowly (AA Spiral v17 "credit late")
+    let mut last_fail: Option<Point> = None;
     // reached the furthest spot and still short? start again from the
     // middle (a spot may work now - e.g. there was no money before)
     let rounds = 2;
@@ -578,6 +581,17 @@ pub fn place_slot_checked(
         if !before_each() {
             break;
         }
+        if let (Some(prev), Some(p)) = (last_fail, &badge) {
+            if (p.find)().is_some() {
+                on_placed(prev);
+                placed.push(prev);
+                arb.run(cancel_batch(hwnd, keys))?;
+                if placed.len() as u32 >= count {
+                    break;
+                }
+            }
+        }
+        last_fail = None;
         // one input turn for key + click + badge check + close, so other
         // accounts can't cut in between (no extra window swaps)
         let seen = Arc::new(AtomicBool::new(false));
@@ -614,7 +628,10 @@ pub fn place_slot_checked(
                 on_placed(*at);
                 placed.push(*at);
             }
-            Check::Failed => on_failed(*at),
+            Check::Failed => {
+                on_failed(*at);
+                last_fail = Some(*at);
+            }
             Check::Stop => {}
         }
         if keep_open {
