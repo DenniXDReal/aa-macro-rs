@@ -419,23 +419,26 @@ pub fn place_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
 
 /// Pick the unit and click the spot, leaving whatever opened (the unit's
 /// "UPG [0]" panel on success) on screen so it can be checked.
-/// How long the placing turn keeps the window after the click (ms), so the
-/// game takes the placement before anything else happens or another account
-/// gets the focus. Set from Settings when a run starts.
-pub static PLACE_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(700);
+/// Pause between each step of a placement (select > click > check > next
+/// account), ms. Set from Settings when a run starts.
+pub static PLACE_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2000);
+/// How long the check (unit_placed picture / "UPG [0]" OCR) may look, ms.
+pub static PLACE_CHECK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(3000);
 
+fn gap() -> u64 {
+    PLACE_SETTLE_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Select the unit > wait > click the spot > wait (the check comes next).
 pub fn place_open_batch(hwnd: Hwnd, keys: &Keys, slot: usize, at: Point) -> Batch {
     let key = keys.units[(slot.clamp(1, 6)) - 1];
-    let settle = PLACE_SETTLE_MS.load(std::sync::atomic::Ordering::Relaxed);
-    // slow enough for Roblox to show the unit ghost before the click, and to
-    // take the placement before the panel closes / the focus moves on
     Batch::new(hwnd, format!("place slot {slot}"))
         .then(Action::KeyTap { key, hold_ms: 50 })
-        .wait(300)
+        .wait(gap())
         .move_to(at.x, at.y)
         .wait(250)
         .click(at.x, at.y)
-        .wait(settle)
+        .wait(gap())
 }
 
 pub fn cancel_batch(hwnd: Hwnd, keys: &Keys) -> Batch {
@@ -590,7 +593,7 @@ pub fn place_slot_checked(
             });
             b = b.then(Action::WaitFor {
                 probe: rec,
-                timeout_ms: 1200,
+                timeout_ms: PLACE_CHECK_MS.load(Ordering::Relaxed),
                 required: false,
             });
         }
@@ -601,7 +604,7 @@ pub fn place_slot_checked(
                     hold_ms: 40,
                 })
                 // let the close register before another account takes over
-                .wait(250);
+                .wait(gap());
         }
         arb.run(b)?;
         let res = check(badge.is_none() || seen.load(Ordering::Relaxed), *at);

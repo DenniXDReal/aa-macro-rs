@@ -717,6 +717,8 @@ mod tests {
         s.placers = vec![1, 2, 3];
         s.place_delay_ms = 0;
         s.step_delay_ms = 0;
+        s.place_settle_ms = 100;
+        s.place_check_ms = 500;
         let clients = (1..=3)
             .map(|i| (Hwnd(i), LiveScreen::new(sim.clone(), Hwnd(i), &lib)))
             .collect();

@@ -1210,7 +1210,11 @@ impl RunCtx {
     pub fn place_all(&self, map: &str) -> R<Vec<(Hwnd, usize, Point)>> {
         let s = &self.settings;
         super::placing::PLACE_SETTLE_MS.store(
-            s.place_settle_ms.clamp(200, 3000),
+            s.place_settle_ms.clamp(100, 5000),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        super::placing::PLACE_CHECK_MS.store(
+            s.place_check_ms.clamp(500, 10000),
             std::sync::atomic::Ordering::Relaxed,
         );
         let keys = Keys::from(&s.keybinds)?;

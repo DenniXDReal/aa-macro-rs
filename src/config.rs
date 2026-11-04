@@ -28,9 +28,12 @@ pub struct Settings {
     pub swap_delay_ms: u64,
     /// Pause between unit placements so the game can register each one.
     pub place_delay_ms: u64,
-    /// After a placement click, keep the window this long (ms) before
-    /// closing the panel / swapping to another account.
+    /// Pause between each step of a placement: select > click > check >
+    /// swap to the next account (ms). (key kept for old saves)
+    #[serde(rename = "place_step_ms")]
     pub place_settle_ms: u64,
+    /// How long the placed check (unit_placed / "UPG [0]" OCR) may look (ms).
+    pub place_check_ms: u64,
     /// Shape tried when a map has no (or not enough) custom spots.
     pub place_shape: crate::game::placing::Shape,
     /// How far the shape spreads out (1.0 = AHK / v10 size).
@@ -466,7 +469,8 @@ impl Default for Settings {
             schedule: Schedule::default(),
             step_delay_ms: 800,
             place_delay_ms: 2000,
-            place_settle_ms: 700,
+            place_settle_ms: 2000,
+            place_check_ms: 3000,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.8,

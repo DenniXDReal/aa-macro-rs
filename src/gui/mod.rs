@@ -3247,11 +3247,18 @@ impl App {
                         .add(egui::DragValue::new(&mut s.place_delay_ms).range(0..=10000))
                         .changed();
                     ui.end_row();
-                    ui.label("Hold after a placement click (ms)").on_hover_text(
-                        "the window stays with this account this long after the click, so the game takes the placement before swapping",
+                    ui.label("Pause between placing steps (ms)").on_hover_text(
+                        "select unit > pause > click > pause > check it went down > pause > next account",
                     );
                     changed |= ui
-                        .add(egui::DragValue::new(&mut s.place_settle_ms).range(200..=3000))
+                        .add(egui::DragValue::new(&mut s.place_settle_ms).range(100..=5000))
+                        .changed();
+                    ui.end_row();
+                    ui.label("Placed check time (ms)").on_hover_text(
+                        "how long it keeps looking for the unit panel / UPG [0] after the click",
+                    );
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut s.place_check_ms).range(500..=10000))
                         .changed();
                     ui.end_row();
                     ui.label("Clicks");
