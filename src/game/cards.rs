@@ -175,33 +175,15 @@ pub const CARD_BASES: &[(&str, bool)] = &[
     ("Random Curses", false),
 ];
 
-/// Default pick order (farming Summer Pearls + secret portal drops): the
-/// highest tier pays the most (III: +150% pearls, +50% secret drops), and
-/// Plated (physical resist), Enemy Health and Enemy Speed go first, as you
-/// pick them. Other red cards next, Random Curses after, green cards last.
-/// Change it in Settings > Card priority.
+/// Default pick order: Enemy Health and Enemy Speed first (highest tier
+/// first - most Summer Pearls + secret drops), then the green buff cards,
+/// then the rest of the red modifiers. Change it in Settings > Card priority.
 pub fn default_priority() -> Vec<String> {
-    let fav = ["Plated Enemies", "Enemy Health", "Enemy Speed"];
-    let rest = [
-        "Enemy Regen",
-        "Enemy Shield",
-        "Explosive Deaths",
-        "Spellproof Enemies",
-        "Resistant Enemies",
-    ];
     let mut v = vec![];
     for t in ["III", "II", "I"] {
-        for b in fav {
+        for b in ["Enemy Health", "Enemy Speed"] {
             v.push(format!("{b} {t}"));
         }
-    }
-    for t in ["III", "II", "I"] {
-        for b in rest {
-            v.push(format!("{b} {t}"));
-        }
-    }
-    for t in ["II", "I"] {
-        v.push(format!("Random Curses {t}"));
     }
     for t in ["III", "II", "I"] {
         for b in ["Random Blessings", "Attack"] {
@@ -209,9 +191,14 @@ pub fn default_priority() -> Vec<String> {
         }
     }
     for c in [
+        "Boss Damage III",
+        "Boss Damage II",
         "Boss Damage I",
+        "Active Cooldown III",
         "Active Cooldown II",
+        "Cooldown III",
         "Cooldown II",
+        "Range III",
         "Range II",
         "Active Cooldown I",
         "Cooldown I",
@@ -221,6 +208,22 @@ pub fn default_priority() -> Vec<String> {
         "Yen I",
     ] {
         v.push(c.to_string());
+    }
+    let rest = [
+        "Plated Enemies",
+        "Enemy Regen",
+        "Enemy Shield",
+        "Explosive Deaths",
+        "Spellproof Enemies",
+        "Resistant Enemies",
+    ];
+    for t in ["III", "II", "I"] {
+        for b in rest {
+            v.push(format!("{b} {t}"));
+        }
+    }
+    for t in ["III", "II", "I"] {
+        v.push(format!("Random Curses {t}"));
     }
     v
 }
@@ -304,21 +307,22 @@ mod name_tests {
             ]
         };
         assert_eq!(
-            choose(&o("Attack I", "Enemy Speed I", "Yen I"), &p),
+            choose(&o("Attack III", "Enemy Speed I", "Yen I"), &p),
             Some(1),
-            "pearls over green"
+            "health / speed first"
+        );
+        assert_eq!(
+            choose(&o("Plated Enemies III", "Enemy Regen III", "Attack I"), &p),
+            Some(2),
+            "buffs before other debuffs"
         );
         assert_eq!(
             choose(
-                &o("Plated Enemies I", "Enemy Regen III", "Enemy Health II"),
+                &o("Enemy Regen I", "Plated Enemies I", "Enemy Shield II"),
                 &p
             ),
             Some(2),
-            "favourite at a higher tier"
-        );
-        assert_eq!(
-            choose(&o("Enemy Regen I", "Plated Enemies I", "Attack III"), &p),
-            Some(1)
+            "higher tier first"
         );
         assert!(is_green("Active Cooldown I") && !is_green("Enemy Regen II"));
     }
