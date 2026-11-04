@@ -290,6 +290,21 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     }
 }
 
+/// One picture of an upgrade panel the macro couldn't make sense of
+/// (upgrade-debug.png next to the macro), to see what OCR is given.
+fn save_upgrade_debug(ctx: &RunCtx, scr: &super::LiveScreen) {
+    static SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SAVED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(f) = scr.frame() {
+        let path = super::data_dir().join("upgrade-debug.png");
+        if f.save_png(&path).is_ok() {
+            ctx.log(format!("upgrade panel picture saved: {}", path.display()));
+        }
+    }
+}
+
 /// When a weather shift banner was last seen: a card pick right after it
 /// uses the weather order (buffs first).
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
@@ -1859,6 +1874,13 @@ impl RunCtx {
         let s = &self.settings;
         let mut done: Vec<u32> = vec![0; order.len()];
         let mut maxed: Vec<bool> = vec![false; order.len()];
+        // visits in a row where the presses changed nothing; after 3 the
+        // unit is left alone for a minute (no money yet, or MAX not read)
+        let mut stuck: Vec<u32> = vec![0; order.len()];
+        let mut rest: Vec<Option<Instant>> = vec![None; order.len()];
+        let resting = |k: usize, rest: &[Option<Instant>]| {
+            rest[k].is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        };
         let finished = |k: usize, done: &[u32], maxed: &[bool]| {
             let (h, slot, _) = order[k];
             maxed[k]
@@ -1876,7 +1898,9 @@ impl RunCtx {
                     return Err("stage over".into());
                 }
                 self.check()?;
-                if order.is_empty() || (0..order.len()).all(|k| finished(k, &done, &maxed)) {
+                if order.is_empty()
+                    || (0..order.len()).all(|k| finished(k, &done, &maxed) || resting(k, &rest))
+                {
                     if busy {
                         busy = false;
                         UPGRADING.fetch_sub(1, Ordering::Relaxed);
@@ -1884,7 +1908,7 @@ impl RunCtx {
                     self.sleep(1000)?;
                     continue;
                 }
-                while finished(i % order.len(), &done, &maxed) {
+                while finished(i % order.len(), &done, &maxed) || resting(i % order.len(), &rest) {
                     i += 1;
                 }
                 let k = i % order.len();
@@ -1947,20 +1971,44 @@ impl RunCtx {
                             self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
                         }
                         (Some(b), Some(a)) if a > b => {
+                            stuck[k] = 0;
                             done[k] = a;
                             self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
                         }
-                        // same level = not enough money yet; doesn't count
-                        (Some(_), Some(_)) => {}
+                        // same level = not enough money yet (or MAX not read)
+                        (Some(_), Some(_)) => {
+                            stuck[k] += 1;
+                            if stuck[k] >= 3 {
+                                stuck[k] = 0;
+                                rest[k] = Some(Instant::now());
+                                self.log(format!(
+                                    "slot {slot} at {},{}: no change after 3 tries (MAX or no money) - next unit, back in a minute",
+                                    at.x, at.y
+                                ));
+                                save_upgrade_debug(self, scr);
+                            }
+                        }
                         (None, Some(a)) => done[k] = a,
                         // level text not readable: count the presses
-                        _ => done[k] += presses,
+                        _ => {
+                            done[k] += presses;
+                            stuck[k] += 1;
+                            if stuck[k] >= 3 {
+                                stuck[k] = 0;
+                                rest[k] = Some(Instant::now());
+                                self.log(format!(
+                                    "slot {slot} at {},{}: level not readable 3x - next unit, back in a minute",
+                                    at.x, at.y
+                                ));
+                                save_upgrade_debug(self, scr);
+                            }
+                        }
                     }
                 }
                 self.arb
                     .run(super::placing::cancel_batch(*h, keys))
                     .map_err(|e| format!("upgrade: {e}"))?;
-                if !(s.run.priority_upgrade && !finished(k, &done, &maxed)) {
+                if !(s.run.priority_upgrade && !finished(k, &done, &maxed) && !resting(k, &rest)) {
                     i += 1; // priority upgrade keeps on this one until it's done
                 }
                 self.sleep(300)?;
@@ -2007,18 +2055,26 @@ impl RunCtx {
         // small read of the UPG box may only catch "UPG [6]"
         if scr.has_ocr() {
             let max = crate::platform::urgent_ocr(|| scr.ocr_lines(&f)).is_some_and(|lines| {
-                lines.iter().any(|l| {
-                    let t: String = l
-                        .iter()
-                        .map(|(w, _)| w.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .to_lowercase();
-                    let flat: String = t.chars().filter(|c| c.is_alphanumeric()).collect();
-                    flat.contains("maxupgrade")
-                        || (flat.contains("upg") && flat.contains("max"))
-                        || t.contains("(max)")
-                })
+                // "Max" and "Upgrade" sit on two lines in the panel: look at
+                // the whole text as well as line by line
+                let all: String = lines
+                    .iter()
+                    .flat_map(|l| l.iter().map(|(w, _)| w.to_lowercase()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let all_flat: String = all.chars().filter(|c| c.is_alphanumeric()).collect();
+                all_flat.contains("maxupgrade")
+                    || all.contains("(max)")
+                    || all.contains("[max]")
+                    || lines.iter().any(|l| {
+                        let flat: String = l
+                            .iter()
+                            .flat_map(|(w, _)| w.chars())
+                            .filter(|c| c.is_alphanumeric())
+                            .flat_map(|c| c.to_lowercase())
+                            .collect();
+                        flat.contains("upg") && flat.contains("max")
+                    })
             });
             if max {
                 return Some(u32::MAX);
