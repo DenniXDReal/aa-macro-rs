@@ -263,14 +263,79 @@ pub fn is_green(name: &str) -> bool {
 
 /// Which card to take: the first in `priority` that's on offer.
 pub fn choose(names: &[Option<String>; 3], priority: &[String]) -> Option<usize> {
-    priority
+    // the card's place in your list: its exact name (with tier), else -
+    // when OCR got the tier wrong / missed it - the best entry of that card
+    let base = |n: &str| {
+        n.trim_end_matches(" III")
+            .trim_end_matches(" II")
+            .trim_end_matches(" I")
+            .to_string()
+    };
+    let rank = |n: &str| -> Option<(usize, u8)> {
+        if let Some(i) = priority.iter().position(|p| p == n) {
+            return Some((i, 0));
+        }
+        let b = base(n);
+        priority.iter().position(|p| base(p) == b).map(|i| (i, 1))
+    };
+    names
         .iter()
-        .find_map(|p| names.iter().position(|n| n.as_deref() == Some(p.as_str())))
+        .enumerate()
+        .filter_map(|(i, n)| n.as_deref().and_then(rank).map(|r| (r, i)))
+        .min()
+        .map(|(_, i)| i)
+}
+
+/// Card names read anywhere on the card screen (OCR lines with positions),
+/// given to the card whose box is nearest (left / middle / right).
+pub fn names_from_lines(lines: &[Vec<(String, Rect)>]) -> [Option<String>; 3] {
+    let mut out: [Option<String>; 3] = [None, None, None];
+    for l in lines {
+        let text: String = l
+            .iter()
+            .map(|(w, _)| w.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(name) = card_name(&text) else {
+            continue;
+        };
+        let x = l.iter().map(|(_, r)| r.x + r.w / 2).sum::<i32>() / l.len().max(1) as i32;
+        let i = (0..3)
+            .min_by_key(|k| (CARD_BOXES[*k].x + CARD_BOXES[*k].w / 2 - x).abs())
+            .unwrap_or(1);
+        if out[i].is_none() {
+            out[i] = Some(name);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod name_tests {
     use super::*;
+
+    #[test]
+    fn priority_survives_tier_misreads() {
+        let prio: Vec<String> = ["Enemy Health III", "Attack III", "Enemy Health I"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // exact match wins
+        let n = [
+            Some("Attack III".into()),
+            Some("Enemy Health III".into()),
+            None,
+        ];
+        assert_eq!(choose(&n, &prio), Some(1));
+        // "Enemy Health II" isn't in the list: ranks as its best entry (1st)
+        let n = [
+            Some("Attack III".into()),
+            Some("Enemy Health II".into()),
+            None,
+        ];
+        assert_eq!(choose(&n, &prio), Some(1));
+        assert_eq!(choose(&[None, None, None], &prio), None);
+    }
 
     #[test]
     fn names_from_ocr() {
