@@ -1889,8 +1889,9 @@ impl RunCtx {
         {
             let main = self.screen(self.main);
             let mut drops = vec![];
-            for _ in 0..3 {
-                self.sleep(1200)?;
+            // quick: one look (two if nothing read) - Next comes first
+            for _ in 0..2 {
+                self.sleep(600)?;
                 if let Some(f) = main.frame() {
                     drops = super::drops::parse(&main.ocr_text_lines(&f));
                 }

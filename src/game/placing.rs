@@ -535,7 +535,21 @@ pub fn place_slot_checked(
         }
         if i > 0 && delay_ms > 0 {
             // let the game catch up so the next look / click is right
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            // in short bits, checking for VICTORY / DEFEAT in between
+            let mut left = delay_ms;
+            let mut over = false;
+            while left > 700 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                left -= 500;
+                if !before_each() {
+                    over = true;
+                    break;
+                }
+            }
+            if over {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(left));
         }
         // right before placing: card pop-ups, and stop if the stage ended
         if !before_each() {
