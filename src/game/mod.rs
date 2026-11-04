@@ -454,6 +454,25 @@ impl LiveScreen {
         self.platform.ocr_lines(frame, all)
     }
 
+    /// The whole screen's text, quick (2x read), one line per line.
+    pub fn ocr_text_fast(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let Some(lines) = self.ocr_lines(frame) else {
+            return self.ocr_all(frame);
+        };
+        Some(
+            lines
+                .iter()
+                .map(|w| {
+                    w.iter()
+                        .map(|(t, _)| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
     /// The screen's text, one string per line.
     pub fn ocr_text_lines(&self, frame: &crate::capture::Frame) -> Vec<String> {
         if let Some(l) = self.ocr_lines(frame) {
