@@ -328,6 +328,25 @@ impl RunCtx {
             self.sleep(150)?;
         }
     }
+    /// Like `wait_any` for one name, but looks over the whole screen (and
+    /// reads the label with OCR as a backup).
+    fn wait_wide(&self, h: Hwnd, name: &str, ms: u64) -> R<Option<Point>> {
+        let s = self.screen(h);
+        let names = [name.to_string()];
+        let mut dl = self
+            .control
+            .deadline(self.secs(ms as f64 / 1000.0).max(0.05));
+        loop {
+            self.check()?;
+            if let Some(p) = s.find_wide(&names) {
+                return Ok(Some(p));
+            }
+            if dl.expired() {
+                return Ok(None);
+            }
+            self.sleep(200)?;
+        }
+    }
     fn click(&self, h: Hwnd, p: Point, why: &str) -> R<()> {
         self.arb
             .run(Batch::new(h, why).click(p.x, p.y))
@@ -926,7 +945,9 @@ impl RunCtx {
                         }
                     }
                 }
-                if (map.is_none() || !main.has("vote_start")) && ocr_due_for(self.main, 2) {
+                // OCR every 2 s: map name while unknown, and "Vote Start" always
+                // (backup for when the captured picture doesn't match)
+                if ocr_due_for(self.main, 2) {
                     if let Some(text) = main.frame().and_then(|f| main.ocr_all(&f)) {
                         if map.is_none() && !summer {
                             if let Some(m) = match_map(&text, &known) {
@@ -940,10 +961,16 @@ impl RunCtx {
                         }
                     }
                 }
-                if main.has("vote_start") && main.find(&vote, None).is_some() {
+                if main.find_wide(&vote).is_some() {
                     break;
                 }
-                if !main.has("vote_start") && ocr_vote {
+                if ocr_vote {
+                    self.log("Vote Start seen (OCR)");
+                    break;
+                }
+                // map known but Vote Start never matched: don't hang on it
+                if map.is_some() && started.elapsed() > Duration::from_secs_f64(self.secs(45.0)) {
+                    self.log("Vote Start not seen after 45 s - carrying on");
                     break;
                 }
                 if !main.has("vote_start") && map.is_some() {
@@ -1072,8 +1099,8 @@ impl RunCtx {
         // every client votes (alts first), then back on the main
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
         for h in self.main_last(all) {
-            if let Some((_, p)) =
-                self.wait_any(h, &["vote_start"], if h == self.main { 3000 } else { 1000 })?
+            if let Some(p) =
+                self.wait_wide(h, "vote_start", if h == self.main { 3000 } else { 1500 })?
             {
                 self.click(h, p, "vote start")?;
             }
