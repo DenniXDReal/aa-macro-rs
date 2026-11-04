@@ -1429,43 +1429,49 @@ impl RunCtx {
                             let mut c = scr.frame().and_then(|f| scr.ocr_counter(&f));
                             if c.is_none() {
                                 std::thread::sleep(Duration::from_millis(250));
-                                c = scr.frame().and_then(|f| scr.ocr_counter(&f));
+                                let f = scr.frame();
+                                c = f.as_ref().and_then(|f| scr.ocr_counter(f));
+                                // keep one picture of what it saw, to check where
+                                // the counter sits
+                                static SAVED: std::sync::atomic::AtomicBool =
+                                    std::sync::atomic::AtomicBool::new(false);
+                                if c.is_none() && !SAVED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                    if let Some(f) = f {
+                                        let path = super::data_dir().join("counter-debug.png");
+                                        if f.save_png(&path).is_ok() {
+                                            self.log(format!(
+                                                "counter (1/3) not found on screen - picture saved: {}",
+                                                path.display()
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                             let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
                             c
                         };
-                        let base = std::cell::Cell::new(if use_counter { read_counter() } else { None });
-                        let check_inner = |seen: bool| -> Check {
-                            let panel_says = badge.is_some() && seen;
-                            if panel_says && detect != PlacementDetect::Hotbar {
-                                if let Some((c, m)) = base.get() {
-                                    base.set(Some((c + 1, m)));
+                        // how many of this unit stand (that we know of). A
+                        // stage starts at 0, so no first read is needed; one
+                        // is taken anyway in case some are down already
+                        let known = std::cell::Cell::new(0u32);
+                        let limit = std::cell::Cell::new(None::<u32>);
+                        if use_counter {
+                            let first = read_counter().or_else(|| {
+                                std::thread::sleep(Duration::from_millis(300));
+                                read_counter()
+                            });
+                            match first {
+                                Some((c, m)) => {
+                                    self.log(format!("client {n}: slot {slot} counter {c}/{m}"));
+                                    known.set(c);
+                                    limit.set(Some(m));
                                 }
-                                return Check::Placed;
+                                None => self.log(format!(
+                                    "client {n}: slot {slot} counter not readable yet - starting from 0"
+                                )),
                             }
-                            let mut counted = false;
-                            if use_counter {
-                                if let Some((c, m)) = read_counter() {
-                                    let before = base.get().map(|b| b.0);
-                                    base.set(Some((c, m)));
-                                    match before {
-                                        Some(b) if c == b + 1 => {
-                                            if !panel_says {
-                                                self.log(format!(
-                                                    "client {n}: slot {slot} counter {b} -> {c}/{m} - counted as placed"
-                                                ));
-                                            }
-                                            let _ = m;
-                                            return Check::Placed;
-                                        }
-                                        Some(_) => counted = true,
-                                        None => {}
-                                    }
-                                }
-                            }
-                            if seen && !counted {
-                                return Check::Placed;
-                            }
+                        }
+                        let unique_or_failed = || -> Check {
                             // didn't go down: one of a unique unit already stands?
                             if ocr_due_for(h, 6) {
                                 let blocked = scr
@@ -1481,6 +1487,51 @@ impl RunCtx {
                             }
                             Check::Failed
                         };
+                        let check_inner = |seen: bool| -> Check {
+                            let panel_says = badge.is_some() && seen;
+                            if panel_says && detect != PlacementDetect::Hotbar {
+                                known.set(known.get() + 1);
+                                return Check::Placed;
+                            }
+                            if use_counter {
+                                if let Some((c, m)) = read_counter() {
+                                    limit.set(Some(m));
+                                    let before = known.get();
+                                    if c > before {
+                                        known.set(c);
+                                        self.log(format!(
+                                            "client {n}: slot {slot} counter {before} -> {c}/{m} - placed"
+                                        ));
+                                        return if c >= m {
+                                            Check::PlacedLast
+                                        } else {
+                                            Check::Placed
+                                        };
+                                    }
+                                    if c >= m {
+                                        self.log(format!(
+                                            "client {n}: slot {slot} is at its limit ({c}/{m}) - next unit"
+                                        ));
+                                        return Check::Stop;
+                                    }
+                                    // counter read and unchanged: really didn't go down
+                                    return unique_or_failed();
+                                }
+                                // counter unreadable: fall back on the panel
+                                if detect == PlacementDetect::Hotbar && badge.is_none() {
+                                    self.log(format!(
+                                        "client {n}: slot {slot} counter not readable - counting the click as placed"
+                                    ));
+                                    known.set(known.get() + 1);
+                                    return Check::Placed;
+                                }
+                            }
+                            if panel_says || badge.is_none() {
+                                known.set(known.get() + 1);
+                                return Check::Placed;
+                            }
+                            unique_or_failed()
+                        };
                         // misses in a row: after a few, ask the counter
                         // whether this unit is simply at its limit already
                         let misses = std::cell::Cell::new(0u32);
@@ -1488,7 +1539,7 @@ impl RunCtx {
                             let r = check_inner(seen);
                             if r == Check::Failed {
                                 misses.set(misses.get() + 1);
-                                if misses.get() >= 3 && misses.get() % 3 == 0 {
+                                if !use_counter && misses.get() % 3 == 0 {
                                     if let Some((c, m)) = read_counter() {
                                         if c >= m {
                                             self.log(format!(
