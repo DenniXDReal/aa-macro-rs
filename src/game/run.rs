@@ -1875,6 +1875,9 @@ impl RunCtx {
         // visits in a row where the presses changed nothing; after 3 the
         // unit is left alone for a minute (no money yet, or MAX not read)
         let mut stuck: Vec<u32> = vec![0; order.len()];
+        // safety: 60 upgrade presses on one unit and still not seen as done
+        // (MAX / its level not read) = treat it as done, go on to the others
+        let mut pressed: Vec<u32> = vec![0; order.len()];
         let mut rest: Vec<Option<Instant>> = vec![None; order.len()];
         let resting = |k: usize, rest: &[Option<Instant>]| {
             rest[k].is_some_and(|t| t.elapsed() < Duration::from_secs(60))
@@ -1956,6 +1959,15 @@ impl RunCtx {
                             .wait(180);
                     }
                     self.arb.run(b).map_err(|e| format!("upgrade: {e}"))?;
+                    pressed[k] += presses;
+                    if pressed[k] >= 60 {
+                        maxed[k] = true;
+                        self.log(format!(
+                            "slot {slot} at {},{}: 60 upgrade presses and still not MAX / its level - counting it as done, on to the next unit",
+                            at.x, at.y
+                        ));
+                        save_upgrade_debug(self, scr);
+                    }
                     self.sleep(s.upgrade_read_ms.max(500))?;
                     let mut after = Self::read_level(scr);
                     if after.is_none() || after == before {
