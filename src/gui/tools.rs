@@ -907,7 +907,9 @@ impl App {
 
     pub(super) fn page_patterns(&mut self, ui: &mut egui::Ui) {
         ui.heading("Patterns");
-        self.debug_tp_card(ui); // TEMPORARY
+        egui::CollapsingHeader::new(RichText::new("Teleport to Spawn debug").color(MUTED))
+            .id_salt("tpdebug")
+            .show(ui, |ui| self.debug_tp_card(ui)); // TEMPORARY
         ui.small("Drag a box around button text / an icon on the picture, name it, Save. Close pop-ups first.");
         egui::Frame::new().fill(CARD_HI).corner_radius(10).inner_margin(10).show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -66,6 +66,15 @@ const PAGES: [(Page, &str); 6] = [
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Input,
+    Game,
+    Discord,
+    Updates,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum HomeTab {
     Control,
     Schedule,
@@ -99,6 +108,7 @@ pub struct App {
     /// Which client is the main (the rest are alts).
     main: usize,
     page: Page,
+    settings_tab: SettingsTab,
     home_tab: HomeTab,
 
     // live picture of the selected client
@@ -260,6 +270,7 @@ impl App {
             sel: 0,
             main: 0,
             page: Page::Home,
+            settings_tab: SettingsTab::General,
             home_tab: HomeTab::Control,
             frame: None,
             tex: None,
@@ -965,133 +976,177 @@ impl App {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add_space(4.0);
+            // brand
+            let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
+            ui.painter().rect_filled(r, 7.0, PURPLE);
+            ui.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                "AA",
+                egui::FontId::proportional(11.0),
+                Color32::WHITE,
+            );
             ui.vertical(|ui| {
-                ui.label(RichText::new(APP_NAME).size(17.0).strong().color(TEXT));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(
+                    RichText::new("Anime Adventure Macro")
+                        .size(15.0)
+                        .strong()
+                        .color(TEXT),
+                );
                 ui.label(
                     RichText::new(format!("{APP_BY} · {}", update::version_label()))
-                        .size(11.0)
+                        .size(10.5)
                         .color(MUTED),
                 );
             });
-            ui.add_space(18.0);
+            ui.add_space(14.0);
+            // status
+            let (txt, c) = if self.running && self.paused {
+                (format!("Paused · {}", self.settings.run.mode.label()), WARN)
+            } else if self.running {
+                (
+                    format!("Running · {}", self.settings.run.mode.label()),
+                    GOOD,
+                )
+            } else {
+                ("Idle".to_string(), MUTED)
+            };
+            chip(ui, &txt, TEXT, Some(c));
             let n = self.clients.len();
-            chip(ui, "Roblox · 800×599 viewport", MUTED, None);
             chip(
                 ui,
                 &format!("{n} client{}", if n == 1 { "" } else { "s" }),
                 TEXT,
                 Some(if n > 0 { GOOD } else { BAD }),
             );
-            if ui.button("Refresh").clicked() {
-                self.refresh_clients();
-            }
-            if ui
-                .button("Tile")
-                .on_hover_text("F1 · every client to an 800×599 viewport, laid out on screen")
-                .clicked()
-            {
-                self.tile();
-            }
-            if ui
-                .button("Doctor")
-                .on_hover_text("check scaling, size and capture of every client")
-                .clicked()
-            {
-                self.doctor();
-            }
             if self.settings.dock {
                 chip(
                     ui,
                     if self.docked_ok {
-                        "Roblox docked"
+                        "Docked"
                     } else {
-                        "docking…"
+                        "Docking…"
                     },
                     TEXT,
                     Some(if self.docked_ok { GOOD } else { WARN }),
                 );
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("Undock").color(Color32::WHITE))
-                            .fill(PURPLE_DIM),
-                    )
-                    .clicked()
-                {
-                    self.settings.dock = false;
-                    self.docked_ok = false;
-                    self.set_top(None);
-                    self.dirty();
-                    self.tile();
-                }
-            } else if ui
-                .button("Dock")
-                .on_hover_text(
-                    "put the main client into the left column, always in front of the app",
-                )
-                .clicked()
-            {
-                self.settings.dock = true;
-                self.dirty();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        let stop =
-                            egui::Button::new(RichText::new("Stop").color(if self.running {
-                                BAD
-                            } else {
-                                MUTED
-                            }))
-                            .min_size(Vec2::new(92.0, 30.0));
-                        let pause = egui::Button::new(if self.paused { "Resume" } else { "Pause" })
-                            .min_size(Vec2::new(92.0, 30.0));
-                        let start = egui::Button::new(
-                            RichText::new("Start").strong().color(Color32::WHITE),
+                let start = egui::Button::new(
+                    RichText::new(if self.running { "Running" } else { "Start" })
+                        .strong()
+                        .color(Color32::WHITE),
+                )
+                .fill(if self.running { PURPLE_DIM } else { PURPLE })
+                .corner_radius(8)
+                .min_size(Vec2::new(104.0, 32.0));
+                if ui
+                    .add_enabled(!self.running, start)
+                    .on_hover_text("F2")
+                    .clicked()
+                {
+                    self.start();
+                }
+                let pause = egui::Button::new(if self.paused { "Resume" } else { "Pause" })
+                    .corner_radius(8)
+                    .min_size(Vec2::new(78.0, 32.0));
+                if ui
+                    .add_enabled(self.running, pause)
+                    .on_hover_text("F4")
+                    .clicked()
+                {
+                    self.toggle_pause();
+                }
+                let stop = egui::Button::new(RichText::new("Stop").color(if self.running {
+                    BAD
+                } else {
+                    MUTED
+                }))
+                .corner_radius(8)
+                .min_size(Vec2::new(70.0, 32.0));
+                if ui.add(stop).on_hover_text("F3").clicked() {
+                    self.stop();
+                }
+                ui.add_space(6.0);
+                // window tools tucked into one menu
+                ui.menu_button(RichText::new("Window").color(MUTED), |ui| {
+                    if ui.button("Refresh clients").clicked() {
+                        self.refresh_clients();
+                        ui.close();
+                    }
+                    if ui
+                        .button("Tile clients (F1)")
+                        .on_hover_text("every client to an 800×599 viewport, laid out on screen")
+                        .clicked()
+                    {
+                        self.tile();
+                        ui.close();
+                    }
+                    if ui
+                        .button("Doctor")
+                        .on_hover_text("check scaling, size and capture of every client")
+                        .clicked()
+                    {
+                        self.doctor();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if self.settings.dock {
+                        if ui.button("Undock Roblox").clicked() {
+                            self.settings.dock = false;
+                            self.docked_ok = false;
+                            self.set_top(None);
+                            self.dirty();
+                            self.tile();
+                            ui.close();
+                        }
+                    } else if ui
+                        .button("Dock Roblox into the app")
+                        .on_hover_text(
+                            "the main client sits in the left column, in front of the app",
                         )
-                        .fill(if self.running { PURPLE_DIM } else { PURPLE })
-                        .min_size(Vec2::new(120.0, 30.0));
-                        // right-to-left: add in reverse
-                        if ui.add(stop).clicked() {
-                            self.stop();
-                        }
-                        if ui.add_enabled(self.running, pause).clicked() {
-                            self.toggle_pause();
-                        }
-                        if ui.add_enabled(!self.running, start).clicked() {
-                            self.start();
-                        }
-                    });
-                    ui.label(
-                        RichText::new("F1 fit Roblox   F2 start   F3 stop   F4 pause")
-                            .size(11.0)
-                            .color(MUTED),
-                    );
+                        .clicked()
+                    {
+                        self.settings.dock = true;
+                        self.dirty();
+                        ui.close();
+                    }
                 });
             });
         });
     }
 
     fn rail(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         ui.vertical_centered(|ui| {
             for (p, name) in PAGES {
                 let selected = self.page == p;
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(46.0, 46.0), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(64.0, 54.0), Sense::click());
                 if selected {
-                    ui.painter().rect_filled(rect.shrink(2.0), 10.0, PURPLE_DIM);
+                    ui.painter()
+                        .rect_filled(rect.shrink2(Vec2::new(6.0, 2.0)), 10.0, PURPLE_DIM);
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(rect.shrink(2.0), 10.0, CARD_HI);
+                    ui.painter()
+                        .rect_filled(rect.shrink2(Vec2::new(6.0, 2.0)), 10.0, CARD_HI);
                 }
-                draw_icon(
-                    ui.painter(),
-                    rect,
-                    p,
-                    if selected { Color32::WHITE } else { MUTED },
+                let c = if selected { Color32::WHITE } else { MUTED };
+                let icon = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 20.0),
+                    Vec2::splat(30.0),
                 );
-                if resp.on_hover_text(name).clicked() {
+                draw_icon(ui.painter(), icon, p, c);
+                ui.painter().text(
+                    egui::pos2(rect.center().x, rect.bottom() - 9.0),
+                    egui::Align2::CENTER_CENTER,
+                    name,
+                    egui::FontId::proportional(10.0),
+                    c,
+                );
+                if resp.clicked() {
                     self.page = p;
                 }
-                ui.add_space(4.0);
+                ui.add_space(2.0);
             }
         });
     }
@@ -1256,13 +1311,13 @@ impl App {
                         .changed();
                     ui.label(RichText::new("(0 = no limit)").size(11.0).color(MUTED));
                     if ui
-                        .add_enabled(i > 0, egui::Button::new("▲").small())
+                        .add_enabled(i > 0, egui::Button::new("Up").small())
                         .clicked()
                     {
                         swap = Some((i, i - 1));
                     }
                     if ui
-                        .add_enabled(i + 1 < len, egui::Button::new("▼").small())
+                        .add_enabled(i + 1 < len, egui::Button::new("Down").small())
                         .clicked()
                     {
                         swap = Some((i, i + 1));
@@ -1786,106 +1841,83 @@ impl App {
         }
         let mut changed = false;
         let keys = self.settings.keybinds.units.clone();
-        let avail = ui.available_width();
-        let cols = if avail >= 3.0 * 200.0 + 16.0 { 3 } else { 2 };
-        let w = (avail - 8.0 * (cols as f32 - 1.0)) / cols as f32 - 1.0;
-        for row in 0..6usize.div_ceil(cols) {
-            ui.horizontal_top(|ui| {
-                for col in 0..cols {
-                    let i = row * cols + col;
-                    if i >= 6 {
-                        break;
+        // one compact row per hotbar slot
+        card(ui, |ui| {
+            egui::Grid::new("units_table")
+                .num_columns(8)
+                .spacing(Vec2::new(10.0, 8.0))
+                .min_row_height(26.0)
+                .show(ui, |ui| {
+                    for h in ["", "Key", "Unit", "Role", "Place", "Prio", "Upgrade", "Now"] {
+                        ui.label(RichText::new(h).size(10.5).color(MUTED));
                     }
-                    let key = keys.get(i).cloned().unwrap_or_default();
-                    let u = &mut self.settings.units[i];
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(w, 0.0),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            egui::Frame::new()
-                                .fill(if u.enabled { CARD_HI } else { CARD })
-                                .stroke(Stroke::new(1.0, if u.enabled { PURPLE_DIM } else { LINE }))
-                                .corner_radius(12)
-                                .inner_margin(10)
-                                .show(ui, |ui| {
-                                    ui.set_width(w - 22.0);
-                                    ui.horizontal(|ui| {
-                                        changed |=
-                                            toggle(ui, &mut u.enabled, &format!("Unit {}", i + 1));
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                ui.label(
-                                                    RichText::new(format!("key {key}"))
-                                                        .size(10.5)
-                                                        .color(MUTED),
-                                                );
-                                            },
-                                        );
-                                    });
-                                    changed |= ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut u.name)
-                                                .hint_text("unnamed")
-                                                .desired_width(f32::INFINITY),
-                                        )
-                                        .changed();
-                                    ui.horizontal(|ui| {
-                                        changed |= tag(ui, &mut u.farm, "FARM");
-                                        changed |= tag(ui, &mut u.buff, "BUFF");
-                                        changed |= tag(ui, &mut u.hill, "HILL");
-                                    });
-                                    changed |= stepper(ui, "Placement", &mut u.place, 0, 10);
-                                    changed |= stepper(ui, "Priority", &mut u.priority, 1, 6);
-                                    ui.horizontal(|ui| {
-                                        ui.label("Upgrade");
-                                        let label = |u: Upgrade| match u {
-                                            Upgrade::None => "none".to_string(),
-                                            Upgrade::Max => "MAX".to_string(),
-                                            Upgrade::Level(n) => format!("{n}x"),
-                                        };
-                                        ComboBox::from_id_salt(("upg", i))
-                                            .width(70.0)
-                                            .selected_text(label(u.upgrade))
-                                            .show_ui(ui, |ui| {
-                                                let mut opts = vec![Upgrade::None];
-                                                opts.extend((1..=8).map(Upgrade::Level));
-                                                opts.push(Upgrade::Max);
-                                                for o in opts {
-                                                    changed |= ui
-                                                        .selectable_value(
-                                                            &mut u.upgrade,
-                                                            o,
-                                                            label(o),
-                                                        )
-                                                        .changed();
-                                                }
-                                            });
-                                    });
+                    ui.end_row();
+                    for i in 0..6usize {
+                        let key = keys.get(i).cloned().unwrap_or_default();
+                        let u = &mut self.settings.units[i];
+                        changed |= toggle(ui, &mut u.enabled, "");
+                        ui.label(
+                            RichText::new(key.to_uppercase())
+                                .strong()
+                                .color(if u.enabled { PURPLE } else { MUTED }),
+                        )
+                        .on_hover_text(format!("hotbar slot {} (key {key})", i + 1));
+                        changed |= ui
+                            .add_sized(
+                                [104.0, 24.0],
+                                egui::TextEdit::singleline(&mut u.name)
+                                    .hint_text(format!("Unit {}", i + 1)),
+                            )
+                            .changed();
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            changed |= tag_tip(ui, &mut u.farm, "F", "Farm: placed first");
+                            changed |= tag_tip(ui, &mut u.buff, "B", "Buff: turns Auto ability on");
+                            changed |= tag_tip(
+                                ui,
+                                &mut u.hill,
+                                "H",
+                                "Hill: high ground first, ground if there's none",
+                            );
+                        });
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut u.place).range(0..=10).speed(0.1))
+                            .on_hover_text("how many to place")
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut u.priority)
+                                    .range(1..=6)
+                                    .speed(0.1),
+                            )
+                            .on_hover_text("upgrade order (1 first)")
+                            .changed();
+                        let label = |u: Upgrade| match u {
+                            Upgrade::None => "none".to_string(),
+                            Upgrade::Max => "MAX".to_string(),
+                            Upgrade::Level(n) => format!("{n}x"),
+                        };
+                        ComboBox::from_id_salt(("upg", i))
+                            .width(62.0)
+                            .selected_text(label(u.upgrade))
+                            .show_ui(ui, |ui| {
+                                let mut opts = vec![Upgrade::None];
+                                opts.extend((1..=8).map(Upgrade::Level));
+                                opts.push(Upgrade::Max);
+                                for o in opts {
                                     changed |=
-                                        toggle(ui, &mut u.upg_immediately, "UPG immediately");
-                                    let up = match u.upgrade {
-                                        Upgrade::None => "no upgrades".to_string(),
-                                        Upgrade::Max => "until MAX".to_string(),
-                                        Upgrade::Level(n) => format!("{n} upgrade(s)"),
-                                    };
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "slot {} · {} · x{} · {up}",
-                                            i + 1,
-                                            if u.enabled { "on" } else { "off" },
-                                            u.place
-                                        ))
-                                        .size(10.5)
-                                        .color(MUTED),
-                                    );
-                                });
-                        },
-                    );
-                }
-            });
-            ui.add_space(6.0);
-        }
+                                        ui.selectable_value(&mut u.upgrade, o, label(o)).changed();
+                                }
+                            });
+                        changed |= ui
+                            .checkbox(&mut u.upg_immediately, "")
+                            .on_hover_text("upgrade right after placing")
+                            .changed();
+                        ui.end_row();
+                    }
+                });
+        });
+        ui.add_space(4.0);
         ui.label(
             RichText::new(format!(
                 "Hotbar keys {} · upgrade {}",
@@ -2284,7 +2316,7 @@ impl App {
                     .size(11.0)
                     .color(MUTED),
             );
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui
                     .button("Import all from Roblox Account Manager")
                     .on_hover_text("one time: RAM open, Web Server on, Allow GetAccounts + Allow GetCookie ticked, password saved in the RAM mode of this page")
@@ -2877,13 +2909,13 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{}. {}", i + 1, list[i]));
                                 if ui
-                                    .add_enabled(i > 0, egui::Button::new("▲").small())
+                                    .add_enabled(i > 0, egui::Button::new("Up").small())
                                     .clicked()
                                 {
                                     swap = Some((i, i - 1));
                                 }
                                 if ui
-                                    .add_enabled(i + 1 < len, egui::Button::new("▼").small())
+                                    .add_enabled(i + 1 < len, egui::Button::new("Down").small())
                                     .clicked()
                                 {
                                     swap = Some((i, i + 1));
@@ -2906,20 +2938,34 @@ impl App {
 
     fn page_settings(&mut self, ui: &mut egui::Ui) {
         heading(ui, "Settings", "");
+        segmented(
+            ui,
+            &mut self.settings_tab,
+            &[
+                (SettingsTab::General, "General"),
+                (SettingsTab::Input, "Input & timing"),
+                (SettingsTab::Game, "Cards & picks"),
+                (SettingsTab::Discord, "Discord"),
+                (SettingsTab::Updates, "Updates"),
+            ],
+        );
+        ui.add_space(8.0);
+        let tab = self.settings_tab;
         let mut changed = false;
         let mut input_changed = false;
-        card(ui, |ui| {
-            ui.label(
-                RichText::new("MULTI-ROBLOX & DOCKING")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-            changed |= toggle(
-                ui,
-                &mut self.settings.multi_roblox,
-                "Multi-Roblox built in (no RAM Multi Roblox needed)",
-            );
-            ui.label(
+        if tab == SettingsTab::General {
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new("MULTI-ROBLOX & DOCKING")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                changed |= toggle(
+                    ui,
+                    &mut self.settings.multi_roblox,
+                    "Multi-Roblox built in (no RAM Multi Roblox needed)",
+                );
+                ui.label(
                 RichText::new(match &self.multi {
                     Some(l) if l.shared => "On - the lock is shared with RAM, that's fine.",
                     Some(_) => "On - every client opened from now on can stay open.",
@@ -2928,98 +2974,104 @@ impl App {
                 .size(11.0)
                 .color(if self.multi.is_some() { GOOD } else { MUTED }),
             );
-            if self.settings.multi_roblox && self.multi.is_none() {
-                if ui
-                    .button("Turn multi-Roblox on now")
-                    .on_hover_text("closes any open Roblox first, then takes the lock")
-                    .clicked()
-                {
-                    let p = self.platform.clone();
-                    let process = self.settings.process_name.clone();
-                    let names = self.settings.singleton_names.clone();
-                    let tx = self.ram_tx.clone();
-                    std::thread::spawn(move || {
-                        let log = |s: String| {
-                            let _ = tx.send(RamMsg::Log(s));
-                        };
-                        // `adding` 2 forces it even with nothing open
-                        match crate::multi::ensure(&*p, &process, &names, false, 2, &log) {
-                            Ok(Some(l)) => {
-                                let _ = tx.send(RamMsg::Lock(l));
+                if self.settings.multi_roblox && self.multi.is_none() {
+                    if ui
+                        .button("Turn multi-Roblox on now")
+                        .on_hover_text("closes any open Roblox first, then takes the lock")
+                        .clicked()
+                    {
+                        let p = self.platform.clone();
+                        let process = self.settings.process_name.clone();
+                        let names = self.settings.singleton_names.clone();
+                        let tx = self.ram_tx.clone();
+                        std::thread::spawn(move || {
+                            let log = |s: String| {
+                                let _ = tx.send(RamMsg::Log(s));
+                            };
+                            // `adding` 2 forces it even with nothing open
+                            match crate::multi::ensure(&*p, &process, &names, false, 2, &log) {
+                                Ok(Some(l)) => {
+                                    let _ = tx.send(RamMsg::Lock(l));
+                                }
+                                Ok(None) => {}
+                                Err(e) => log(format!("multi-Roblox failed: {e:#}")),
                             }
-                            Ok(None) => {}
-                            Err(e) => log(format!("multi-Roblox failed: {e:#}")),
-                        }
-                    });
+                        });
+                    }
                 }
-            }
-            ui.add_space(6.0);
-            changed |= toggle(
-                ui,
-                &mut self.settings.dock,
-                "Dock Roblox into the app (left column)",
-            );
-            ui.horizontal(|ui| {
-                ui.label("Nudge docked Roblox  x");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut self.settings.dock_dx).range(-200..=200))
-                    .changed();
-                ui.label("y");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut self.settings.dock_dy).range(-200..=200))
-                    .changed();
-                ui.label(
-                    RichText::new("px, only if it still sits off")
-                        .size(11.0)
-                        .color(MUTED),
+                ui.add_space(6.0);
+                changed |= toggle(
+                    ui,
+                    &mut self.settings.dock,
+                    "Dock Roblox into the app (left column)",
                 );
-            });
-            if !self.dock_note.is_empty() {
-                ui.label(RichText::new(&self.dock_note).size(11.0).color(MUTED));
-            }
-        });
-        ui.add_space(8.0);
-        self.card_priority_ui(ui);
-        ui.add_space(8.0);
-        self.adaptations_ui(ui);
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("KEYBINDS").size(11.0).color(MUTED));
-            let kb = &mut self.settings.keybinds;
-            ui.horizontal(|ui| {
-                for (i, k) in kb.units.iter_mut().enumerate() {
-                    ui.label(format!("Unit {}", i + 1));
+                ui.horizontal(|ui| {
+                    ui.label("Nudge docked Roblox  x");
                     changed |= ui
-                        .add(egui::TextEdit::singleline(k).desired_width(28.0))
+                        .add(egui::DragValue::new(&mut self.settings.dock_dx).range(-200..=200))
                         .changed();
+                    ui.label("y");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut self.settings.dock_dy).range(-200..=200))
+                        .changed();
+                    ui.label(
+                        RichText::new("px, only if it still sits off")
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                });
+                if !self.dock_note.is_empty() {
+                    ui.label(RichText::new(&self.dock_note).size(11.0).color(MUTED));
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label("Upgrade");
-                changed |= ui
-                    .add(egui::TextEdit::singleline(&mut kb.upgrade).desired_width(28.0))
-                    .changed();
-                ui.label("Cancel / close panel");
-                changed |= ui
-                    .add(egui::TextEdit::singleline(&mut kb.cancel).desired_width(28.0))
-                    .changed();
-            });
-            let bad: Vec<String> = kb
-                .units
-                .iter()
-                .chain([&kb.upgrade, &kb.cancel])
-                .filter(|k| crate::keys::Key::parse(k).is_none())
-                .cloned()
-                .collect();
-            if !bad.is_empty() {
-                ui.colored_label(BAD, format!("unknown key(s): {}", bad.join(", ")));
-            }
-        });
+        }
         ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("CLIENTS & INPUT").size(11.0).color(MUTED));
-            let s = &mut self.settings;
-            egui::Grid::new("settings")
+        if tab == SettingsTab::Game {
+            self.card_priority_ui(ui);
+            ui.add_space(8.0);
+            self.adaptations_ui(ui);
+        }
+        ui.add_space(8.0);
+        if tab == SettingsTab::General {
+            card(ui, |ui| {
+                ui.label(RichText::new("KEYBINDS").size(11.0).color(MUTED));
+                let kb = &mut self.settings.keybinds;
+                ui.horizontal(|ui| {
+                    for (i, k) in kb.units.iter_mut().enumerate() {
+                        ui.label(format!("Unit {}", i + 1));
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(k).desired_width(28.0))
+                            .changed();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Upgrade");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut kb.upgrade).desired_width(28.0))
+                        .changed();
+                    ui.label("Cancel / close panel");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut kb.cancel).desired_width(28.0))
+                        .changed();
+                });
+                let bad: Vec<String> = kb
+                    .units
+                    .iter()
+                    .chain([&kb.upgrade, &kb.cancel])
+                    .filter(|k| crate::keys::Key::parse(k).is_none())
+                    .cloned()
+                    .collect();
+                if !bad.is_empty() {
+                    ui.colored_label(BAD, format!("unknown key(s): {}", bad.join(", ")));
+                }
+            });
+        }
+        ui.add_space(8.0);
+        if tab == SettingsTab::Input {
+            card(ui, |ui| {
+                ui.label(RichText::new("CLIENTS & INPUT").size(11.0).color(MUTED));
+                let s = &mut self.settings;
+                egui::Grid::new("settings")
                 .spacing([14.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Roblox process");
@@ -3139,17 +3191,18 @@ impl App {
                         .changed();
                     ui.end_row();
                 });
-            ui.add_space(4.0);
-            ui.label(RichText::new("Client names").color(MUTED));
-            ui.horizontal(|ui| {
-                for (i, p) in self.settings.instances.iter_mut().enumerate().take(4) {
-                    ui.label(format!("#{}", i + 1));
-                    changed |= ui
-                        .add(egui::TextEdit::singleline(&mut p.label).desired_width(90.0))
-                        .changed();
-                }
+                ui.add_space(4.0);
+                ui.label(RichText::new("Client names").color(MUTED));
+                ui.horizontal(|ui| {
+                    for (i, p) in self.settings.instances.iter_mut().enumerate().take(4) {
+                        ui.label(format!("#{}", i + 1));
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(&mut p.label).desired_width(90.0))
+                            .changed();
+                    }
+                });
             });
-        });
+        }
         if input_changed && !self.running {
             self.arbiter = None; // next action uses the new click mode
         }
@@ -3157,33 +3210,42 @@ impl App {
             self.dirty();
         }
         ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("CAMERA (TOP-DOWN)").size(11.0).color(MUTED));
-            let c = &mut self.settings.camera;
-            ui.horizontal(|ui| {
-                ui.label("Zoom in (notches)");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut c.zoom_in).range(0..=40))
-                    .changed();
-                ui.label("Look down (px)");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut c.look_down_px).range(0..=1500))
-                    .changed();
-                ui.label("Zoom out (notches)");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut c.zoom_out).range(0..=60))
-                    .changed();
+        if tab == SettingsTab::General {
+            card(ui, |ui| {
+                ui.label(RichText::new("CAMERA (TOP-DOWN)").size(11.0).color(MUTED));
+                let c = &mut self.settings.camera;
+                ui.horizontal(|ui| {
+                    ui.label("Zoom in (notches)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut c.zoom_in).range(0..=40))
+                        .changed();
+                    ui.label("Look down (px)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut c.look_down_px).range(0..=1500))
+                        .changed();
+                    ui.label("Zoom out (notches)");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut c.zoom_out).range(0..=60))
+                        .changed();
+                });
+                ui.label(RichText::new("Zoom fully in (first person), look at the floor, zoom back out = top-down view. Try it with Placement > Camera top-down.").size(11.0).color(MUTED));
             });
-            ui.label(RichText::new("Zoom fully in (first person), look at the floor, zoom back out = top-down view. Try it with Placement > Camera top-down.").size(11.0).color(MUTED));
-        });
+        }
         if changed {
             self.dirty();
         }
         ui.add_space(8.0);
-        card(ui, |ui| self.webhook_section(ui));
+        if tab == SettingsTab::Discord {
+            card(ui, |ui| self.webhook_section(ui));
+        }
         ui.add_space(8.0);
-        card(ui, |ui| self.updates_section(ui));
+        if tab == SettingsTab::Updates {
+            card(ui, |ui| self.updates_section(ui));
+        }
         ui.add_space(8.0);
+        if tab != SettingsTab::General {
+            return;
+        }
         ui.label(
             RichText::new(format!("Settings: {}", self.settings_path.display()))
                 .size(11.0)
@@ -3471,8 +3533,8 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(CARD)
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(8)
-        .inner_margin(12)
+        .corner_radius(12)
+        .inner_margin(14)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -3616,39 +3678,23 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
 }
 
 /// Small on/off pill (FARM / BUFF).
-fn tag(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
-    let txt = RichText::new(label)
-        .size(10.5)
-        .color(if *on { Color32::WHITE } else { MUTED });
+/// `tag` with a tooltip.
+fn tag_tip(ui: &mut egui::Ui, on: &mut bool, label: &str, tip: &str) -> bool {
+    let txt =
+        RichText::new(label)
+            .size(10.5)
+            .strong()
+            .color(if *on { Color32::WHITE } else { MUTED });
     let b = egui::Button::new(txt)
         .fill(if *on { PURPLE } else { CARD })
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(8);
-    if ui.add(b).clicked() {
+        .corner_radius(8)
+        .min_size(Vec2::new(24.0, 22.0));
+    if ui.add(b).on_hover_text(tip).clicked() {
         *on = !*on;
         return true;
     }
     false
-}
-
-/// `label   –  n  +`
-fn stepper(ui: &mut egui::Ui, label: &str, v: &mut u8, min: u8, max: u8) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(MUTED));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("+").clicked() && *v < max {
-                *v += 1;
-                changed = true;
-            }
-            ui.label(RichText::new(v.to_string()).strong().color(TEXT));
-            if ui.small_button("–").clicked() && *v > min {
-                *v -= 1;
-                changed = true;
-            }
-        });
-    });
-    changed
 }
 
 /// Pill-shaped segmented control. Returns true when the choice changed.
@@ -3739,13 +3785,13 @@ fn apply_theme(ctx: &egui::Context) {
     v.window_stroke = Stroke::new(1.0, LINE);
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(6);
-    let r = CornerRadius::same(6);
+    let r = CornerRadius::same(8);
     v.widgets.noninteractive.bg_fill = CARD;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
     v.widgets.noninteractive.corner_radius = r;
     v.widgets.inactive.bg_fill = CARD_HI;
     v.widgets.inactive.weak_bg_fill = CARD_HI;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
+    v.widgets.inactive.bg_stroke = Stroke::NONE;
     v.widgets.inactive.corner_radius = r;
     v.widgets.hovered.bg_fill = Color32::from_rgb(40, 30, 78);
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(40, 30, 78);
@@ -3758,8 +3804,9 @@ fn apply_theme(ctx: &egui::Context) {
     v.widgets.open.corner_radius = r;
     ctx.set_visuals(v);
     ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = Vec2::new(8.0, 7.0);
-        s.spacing.button_padding = Vec2::new(10.0, 5.0);
+        s.spacing.item_spacing = Vec2::new(8.0, 8.0);
+        s.spacing.button_padding = Vec2::new(12.0, 5.0);
+        s.spacing.interact_size.y = 26.0;
     });
 }
 
@@ -3785,7 +3832,7 @@ impl eframe::App for App {
                 self.top_bar(ui);
             });
         egui::Panel::left("rail")
-            .exact_size(62.0)
+            .exact_size(70.0)
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
                 self.rail(ui);
