@@ -2025,6 +2025,11 @@ impl RunCtx {
                             }
                         }
                         Err(e) => {
+                            // a client dropped out (Roblox "Disconnected" / error
+                            // code box): no point retrying - relaunch everything
+                            if let Some(who) = self.disconnected() {
+                                return Err(format!("{who} disconnected from the game ({e})"));
+                            }
                             fails += 1;
                             if fails > 3 {
                                 return Err(format!("{e} (3 tries in a row)"));
@@ -2051,6 +2056,18 @@ impl RunCtx {
         }
     }
 
+    /// A client showing Roblox's "Disconnected" / "Error Code" box.
+    fn disconnected(&self) -> Option<String> {
+        for (i, (_, scr)) in self.clients.iter().enumerate() {
+            let Some(f) = scr.frame() else { continue };
+            let Some(t) = scr.ocr_all(&f) else { continue };
+            if disconnect_text(&t) {
+                return Some(format!("client {}", i + 1));
+            }
+        }
+        None
+    }
+
     /// Leave the stage for the lobby (end screen or mid-stage).
     fn return_to_lobby_now(&self) -> R<()> {
         if self.where_am_i() == "end" {
@@ -2058,6 +2075,16 @@ impl RunCtx {
         }
         Ok(())
     }
+}
+
+/// Roblox's disconnect box ("Disconnected", "Error Code: 277", "lost
+/// connection", "You were kicked").
+pub fn disconnect_text(t: &str) -> bool {
+    let t = t.to_lowercase();
+    t.contains("error code")
+        || (t.contains("disconnected") && (t.contains("reconnect") || t.contains("leave")))
+        || t.contains("lost connection")
+        || t.contains("you were kicked")
 }
 
 /// When a schedule step is done.
@@ -2071,6 +2098,14 @@ struct StepLimit {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn disconnect_box() {
+        assert!(disconnect_text(
+            "Disconnected\nLost connection to the game server (Error Code: 277)\nLeave Reconnect"
+        ));
+        assert!(!disconnect_text("Wave 12 Vote Start"));
+    }
 
     #[test]
     fn map_by_ocr_text() {

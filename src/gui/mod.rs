@@ -2493,7 +2493,7 @@ impl App {
                     Err(e) => log(format!("multi-Roblox failed: {e} - launching anyway")),
                 }
             }
-            let pids = || {
+            let pids = || -> Vec<u32> {
                 p.list_windows(&process)
                     .into_iter()
                     .map(|w| w.pid)
@@ -2501,19 +2501,19 @@ impl App {
             };
             let mut waited = false;
             let main_failed = std::cell::Cell::new(false);
-            let mut launch = |n: &str| -> anyhow::Result<String> {
-                let is_main = main.as_deref() == Some(n);
-                // main first, then give it time to load in before any alt
-                if !is_main && main_in_batch && !waited {
-                    log(format!(
-                        "waiting {}s for {} to load in before the alts",
-                        delay.as_secs(),
-                        main.as_deref().unwrap_or_default()
-                    ));
-                    std::thread::sleep(delay);
-                    waited = true;
-                    log("waited - launching the alts now".into());
+            // which Roblox window (pid) each account got
+            let pid_of: std::cell::RefCell<std::collections::HashMap<String, u32>> =
+                Default::default();
+            // built-in accounts: is it really in the game? (Roblox presence)
+            let status = |n: &str| -> Option<crate::rbx::Presence> {
+                let (c, id) = logins.get(n)?;
+                if *id == 0 {
+                    return None;
                 }
+                crate::rbx::presence(c, *id).ok()
+            };
+            let start_one = |n: &str| -> anyhow::Result<String> {
+                let is_main = main.as_deref() == Some(n);
                 // can't follow a main that didn't launch: use the server link instead
                 let follow_now = follow && !main_failed.get();
                 if follow && main_failed.get() && !is_main {
@@ -2580,17 +2580,113 @@ impl App {
                     crate::rbx::Target::Game { .. } => "launched".into(),
                 })
             };
+            // close an account's Roblox and launch it again
+            let relaunch = |n: &str| {
+                if let Some(pid) = pid_of.borrow_mut().remove(n) {
+                    let _ = p.kill_pid(pid);
+                }
+                std::thread::sleep(Duration::from_secs(3));
+                let before: std::collections::HashSet<u32> = pids().into_iter().collect();
+                match start_one(n) {
+                    Ok(m) => log(format!("{n}: {m}")),
+                    Err(e) => {
+                        log(format!("{n}: launch failed - {e:#}"));
+                        return;
+                    }
+                }
+                let t = Instant::now();
+                while t.elapsed() < Duration::from_secs(60) {
+                    if let Some(np) = pids().into_iter().find(|x| !before.contains(x)) {
+                        pid_of.borrow_mut().insert(n.to_string(), np);
+                        let _ = tx.send(RamMsg::Pid(np, n.to_string()));
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            };
+            // wait for `n` to really be in the game (at least `min`); a join
+            // that failed (stuck, error, kicked to the app) is relaunched, 2x max
+            let wait_in_game = |n: &str, min: Duration| -> bool {
+                let mut started = Instant::now();
+                let mut tries = 0;
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    let st = status(n);
+                    match st {
+                        // no way to ask (RAM / unknown id): just the wait
+                        None => {
+                            if started.elapsed() >= min {
+                                return true;
+                            }
+                        }
+                        Some(crate::rbx::Presence::InGame { .. }) => {
+                            if started.elapsed() >= min {
+                                log(format!("{n}: in the game"));
+                                return true;
+                            }
+                        }
+                        Some(other) => {
+                            let limit = Duration::from_secs(min.as_secs().max(90));
+                            if started.elapsed() >= limit {
+                                tries += 1;
+                                if tries > 2 {
+                                    log(format!(
+                                        "{n}: still not in the game ({}) after 3 tries - giving up on it",
+                                        other.label()
+                                    ));
+                                    return false;
+                                }
+                                log(format!(
+                                    "{n}: not in the game after {}s ({}) - the join failed, closing it and launching again",
+                                    limit.as_secs(),
+                                    other.label()
+                                ));
+                                relaunch(n);
+                                started = Instant::now();
+                            }
+                        }
+                    }
+                }
+            };
+            let mut launch = |n: &str| -> anyhow::Result<String> {
+                let is_main = main.as_deref() == Some(n);
+                // main first, and really in the game before any alt
+                if !is_main && main_in_batch && !waited {
+                    let m = main.clone().unwrap_or_default();
+                    log(format!(
+                        "waiting for {m} to load in before the alts (at least {}s)",
+                        delay.as_secs()
+                    ));
+                    if !wait_in_game(&m, delay) {
+                        main_failed.set(true);
+                    }
+                    waited = true;
+                    log("launching the alts now".into());
+                }
+                start_one(n)
+            };
             crate::multi::launch_each(
                 &names,
                 &pids,
                 &mut launch,
                 &mut |pid, n| {
+                    pid_of.borrow_mut().insert(n.to_string(), pid);
                     let _ = tx.send(RamMsg::Pid(pid, n.to_string()));
                 },
                 &log,
                 Duration::from_secs(60),
                 Duration::from_millis(500),
             );
+            // every alt (and a main launched alone) in the game too?
+            if builtin {
+                for n in &names {
+                    let is_main = main.as_deref() == Some(n.as_str());
+                    if is_main && waited {
+                        continue; // checked before the alts
+                    }
+                    wait_in_game(n, Duration::from_secs(20));
+                }
+            }
             log("launch done".into());
             let _ = tx.send(RamMsg::LaunchDone);
         });

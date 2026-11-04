@@ -71,6 +71,10 @@ pub trait Platform: Send + Sync {
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
     }
+    /// Close one process (force).
+    fn kill_pid(&self, _pid: u32) -> Result<()> {
+        Ok(())
+    }
     /// Stop Windows from sleeping / turning the screen off / locking on
     /// idle while the macro runs (input can't reach a locked desktop).
     fn keep_awake(&self, _on: bool) {}

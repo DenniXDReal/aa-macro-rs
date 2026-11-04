@@ -492,6 +492,17 @@ impl Platform for Win32Platform {
         Ok(text.matches("SUCCESS").count() as u32)
     }
 
+    fn kill_pid(&self, pid: u32) -> Result<()> {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .context("taskkill")?;
+        Ok(())
+    }
+
     fn raise(&self, hwnd: Hwnd) -> Result<()> {
         use windows::Win32::UI::WindowsAndMessaging::{HWND_TOP, SWP_NOMOVE, SWP_NOSIZE};
         unsafe {

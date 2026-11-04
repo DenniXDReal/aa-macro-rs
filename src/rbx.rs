@@ -86,6 +86,64 @@ fn csrf(cookie: &str) -> Result<String> {
         })
 }
 
+/// Where an account is right now (Roblox presence).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    Offline,
+    /// On the website / app, not in a game.
+    Online,
+    /// In a game (`place` when Roblox shows it).
+    InGame {
+        place: Option<u64>,
+    },
+    Studio,
+    Unknown,
+}
+
+impl Presence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Presence::Offline => "offline",
+            Presence::Online => "online, not in a game",
+            Presence::InGame { .. } => "in game",
+            Presence::Studio => "in Studio",
+            Presence::Unknown => "unknown",
+        }
+    }
+}
+
+/// Presence of `user_id`, asked with its own cookie (so the place shows).
+pub fn presence(cookie: &str, user_id: u64) -> Result<Presence> {
+    let token = csrf(cookie)?;
+    let mut r = agent()
+        .post("https://presence.roblox.com/v1/presence/users")
+        .header("Cookie", &cookie_header(cookie))
+        .header("x-csrf-token", &token)
+        .header("Content-Type", "application/json")
+        .send(format!("{{\"userIds\":[{user_id}]}}").as_bytes())
+        .map_err(|e| anyhow!("Roblox unreachable: {e}"))?;
+    let code = r.status().as_u16();
+    let body = r.body_mut().read_to_string().unwrap_or_default();
+    if code != 200 {
+        bail!("presence: HTTP {code}");
+    }
+    Ok(parse_presence(&body))
+}
+
+pub fn parse_presence(body: &str) -> Presence {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let p = &v["userPresences"][0];
+    match p["userPresenceType"].as_u64() {
+        Some(0) => Presence::Offline,
+        Some(1) => Presence::Online,
+        Some(2) => Presence::InGame {
+            place: p["rootPlaceId"].as_u64().or_else(|| p["placeId"].as_u64()),
+        },
+        Some(3) => Presence::Studio,
+        _ => Presence::Unknown,
+    }
+}
+
 /// One-time ticket that logs the Roblox client in.
 pub fn auth_ticket(cookie: &str) -> Result<String> {
     let token = csrf(cookie)?;
@@ -302,6 +360,23 @@ pub fn check(cookie: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_kinds() {
+        assert_eq!(
+            parse_presence(
+                r#"{"userPresences":[{"userPresenceType":2,"rootPlaceId":8304191830}]}"#
+            ),
+            Presence::InGame {
+                place: Some(8304191830)
+            }
+        );
+        assert_eq!(
+            parse_presence(r#"{"userPresences":[{"userPresenceType":1}]}"#),
+            Presence::Online
+        );
+        assert_eq!(parse_presence("junk"), Presence::Unknown);
+    }
 
     #[test]
     fn cookies_and_links() {
