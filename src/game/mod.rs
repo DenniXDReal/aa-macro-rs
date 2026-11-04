@@ -29,6 +29,9 @@ mod level_tests {
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
         assert_eq!(parse_level(""), None);
+        assert_eq!(super::end_text("V I C T O R Y  Wave 25"), Some(true));
+        assert_eq!(super::end_text("DEFEAT"), Some(false));
+        assert_eq!(super::end_text("Wave 3 Vote Start"), None);
         let r = crate::geom::Rect::new(100, 200, 30, 12);
         let lines = vec![
             vec![("Sell".to_string(), r)],
@@ -161,6 +164,30 @@ pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
         return digits[1..].parse().ok().map(Ok);
     }
     Some(Ok(n))
+}
+
+/// VICTORY (true) / DEFEAT (false) in OCR text, tolerant of OCR slips.
+pub fn end_text(t: &str) -> Option<bool> {
+    let flat: String = t
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    let win = [
+        "victory",
+        "victorv",
+        "vict0ry",
+        "stagecleared",
+        "stagecomplete",
+    ];
+    let loss = ["defeat", "defeal", "deteat", "gameover", "stagefailed"];
+    if win.iter().any(|w| flat.contains(w)) {
+        Some(true)
+    } else if loss.iter().any(|w| flat.contains(w)) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// The OCR line with the unit panel's "UPG [n]": (its text, where "UPG" is).
@@ -460,16 +487,11 @@ impl LiveScreen {
 
     /// VICTORY (true) / DEFEAT (false) read with OCR from the upper middle.
     pub fn ocr_end(&self, frame: &crate::capture::Frame) -> Option<bool> {
-        let area = Rect::new(150, 60, 500, 220);
-        let t = self.platform.ocr(frame, area)?.to_lowercase();
-        let flat: String = t.chars().filter(|c| c.is_alphabetic()).collect();
-        if flat.contains("victory") {
-            Some(true)
-        } else if flat.contains("defeat") {
-            Some(false)
-        } else {
-            None
-        }
+        // the upper 60% of the screen (the title sits in different places on
+        // the VICTORY and DEFEAT screens)
+        let area = Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5);
+        let t = self.platform.ocr(frame, area)?;
+        end_text(&t)
     }
 
     /// One OCR read of the whole screen: (card screen weather, weather shift).

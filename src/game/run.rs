@@ -672,23 +672,45 @@ impl RunCtx {
             }
         };
         self.log(why);
-        self.click(h, p, "card")?;
-        self.sleep(500)?;
-        match self.wait_any(
-            h,
-            &["card_confirm"],
-            if scr.has("card_confirm") { 2500 } else { 0 },
-        )? {
-            Some((_, c)) => self.click(h, c, "confirm card")?,
-            // no confirm pattern: the button sits under the card
-            None => self.click(h, Point::new(p.x, (p.y + 120).min(580)), "confirm card")?,
-        }
-        let mut dl = self.control.deadline(self.secs(3.0));
-        while (scr.find(&Self::names(&["choose_card"]), None).is_some()
-            || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some())
-            && !dl.expired()
-        {
-            self.sleep(300)?;
+        // click the card, then its vote / confirm button; check the screen
+        // went away, else once more (3 tries)
+        let up = || {
+            (scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some())
+                || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some()
+        };
+        for attempt in 0..3 {
+            self.click(h, p, "card")?;
+            self.sleep(500)?;
+            // the button: your card_confirm picture, else its text (Vote /
+            // Confirm / Select, "Vote 0/2" too), else right under the card
+            let button = match self.wait_any(
+                h,
+                &["card_confirm"],
+                if scr.has("card_confirm") { 1500 } else { 0 },
+            )? {
+                Some((_, c)) => Some(c),
+                None => scr
+                    .find_words_now(&["~vote", "~confirm", "select"])
+                    .filter(|q| q.y > 250),
+            };
+            match button {
+                Some(c) => self.click(h, c, "vote card")?,
+                None => self.click(
+                    h,
+                    Point::new(p.x, (p.y + 120).min(580)),
+                    "vote card (under it)",
+                )?,
+            }
+            let mut dl = self.control.deadline(self.secs(3.0));
+            while up() && !dl.expired() {
+                self.sleep(300)?;
+            }
+            if !up() {
+                break;
+            }
+            if attempt < 2 {
+                self.log("card screen still up - picking again");
+            }
         }
         Ok(true)
     }
