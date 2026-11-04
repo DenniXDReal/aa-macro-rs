@@ -607,9 +607,9 @@ pub fn place_slot_checked(
                 .then(Action::KeyTap { key, hold_ms: 50 })
                 .wait(gap())
                 .move_to(at.x, at.y)
-                .wait(250)
+                .wait(150)
                 .click(at.x, at.y)
-                .wait(400)
+                .wait(250)
         } else {
             place_open_batch(hwnd, keys, slot, *at)
         };
@@ -624,7 +624,7 @@ pub fn place_slot_checked(
                         seen.store(true, Ordering::Relaxed);
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    std::thread::sleep(std::time::Duration::from_millis(120));
                 }
             }
             b = Batch::new(hwnd, "placed check done");
@@ -634,7 +634,7 @@ pub fn place_slot_checked(
                         key: keys.cancel,
                         hold_ms: 40,
                     })
-                    .wait(300);
+                    .wait(150);
             }
         } else if let Some(p) = &badge {
             let (f, s2) = (p.find.clone(), seen.clone());

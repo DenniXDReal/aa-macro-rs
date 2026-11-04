@@ -25,12 +25,15 @@ pub struct Settings {
     /// Pause after every click the game loop / routes make (menus, settings).
     pub step_delay_ms: u64,
     /// Pause after switching to another account before clicking there.
+    #[serde(rename = "parallel_swap_delay_ms")]
     pub swap_delay_ms: u64,
     /// Pause between unit placements so the game can register each one.
+    /// (parallel test build: own key, so it starts on the fast default)
+    #[serde(rename = "parallel_place_delay_ms")]
     pub place_delay_ms: u64,
     /// Pause between each step of a placement: select > click > check >
     /// swap to the next account (ms). (key kept for old saves)
-    #[serde(rename = "place_step_ms")]
+    #[serde(rename = "parallel_place_step_ms")]
     pub place_settle_ms: u64,
     /// How long the placed check (unit_placed / "UPG [0]" OCR) may look (ms).
     pub place_check_ms: u64,
@@ -471,11 +474,11 @@ impl Default for Settings {
             adaptations: Adaptations::default(),
             schedule: Schedule::default(),
             step_delay_ms: 800,
-            place_delay_ms: 2000,
-            place_settle_ms: 2000,
+            place_delay_ms: 300,
+            place_settle_ms: 500,
             place_check_ms: 3000,
             parallel_checks: true,
-            swap_delay_ms: 1200,
+            swap_delay_ms: 400,
             place_shape: Default::default(),
             shape_scale: 1.8,
             idle_click: true,
