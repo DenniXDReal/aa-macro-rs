@@ -1173,12 +1173,20 @@ impl RunCtx {
         let names = Self::names(&["vote_start"]);
         for h in self.main_last(all) {
             let scr = self.screen(h);
-            // picture first, then read "Vote Start" / "Yes" with OCR right away
-            let mut at =
-                self.wait_wide(h, "vote_start", if h == self.main { 3000 } else { 1500 })?;
+            // the vote box's "Yes" button by OCR first (a vote_start picture
+            // may be the box's title, not the button), then the picture
+            let mut at = scr
+                .has_ocr()
+                .then(|| scr.find_words_now(&["~yes"]))
+                .flatten();
+            if at.is_none() {
+                at = self.wait_wide(h, "vote_start", if h == self.main { 3000 } else { 1500 })?;
+            }
             let mut tries = 0;
             while at.is_none() && tries < 4 {
-                at = scr.find_label_now(&names);
+                at = scr
+                    .find_words_now(&["~yes", "vote start"])
+                    .or_else(|| scr.find_label_now(&names));
                 if at.is_none() {
                     self.sleep(700)?;
                 }

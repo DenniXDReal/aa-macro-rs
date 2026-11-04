@@ -5,11 +5,12 @@
 use crate::geom::{Point, Rect};
 
 /// Pattern name -> labels the button can show. One-word labels must be the
-/// whole text line ("Start" never matches "Vote Start"); longer labels may
-/// sit inside a line.
+/// whole text line ("Start" never matches "Vote Start") unless they start
+/// with "~"; longer labels may sit inside a line.
 pub const LABELS: &[(&str, &[&str])] = &[
     ("start_button", &["start"]),
-    ("vote_start", &["vote start", "yes", "vote"]),
+    // the vote box's "Yes" may share its line with a count ("Yes 0/2")
+    ("vote_start", &["vote start", "~yes"]),
     ("play_here", &["play here"]),
     ("join_matchmaking", &["join matchmaking", "matchmaking"]),
     ("find_match", &["find match"]),
@@ -65,13 +66,18 @@ pub fn find_all(
     let mut out: Vec<Point> = vec![];
     for line in lines {
         for label in labels {
-            let want: Vec<String> = label.split_whitespace().map(flat).collect();
+            let loose = label.starts_with('~');
+            let want: Vec<String> = label
+                .trim_start_matches('~')
+                .split_whitespace()
+                .map(flat)
+                .collect();
             let n = want.len();
             if n == 0 || line.len() < n {
                 continue;
             }
-            // one word labels: the line is just that word
-            if n == 1 && line.len() != 1 {
+            // one word labels: the line is just that word (unless "~")
+            if n == 1 && line.len() != 1 && !loose {
                 continue;
             }
             for i in 0..=line.len() - n {
@@ -136,6 +142,13 @@ mod tests {
         // outside the area -> nothing
         assert!(find_all(&lines, start, Some(Rect::new(0, 0, 200, 200))).is_empty());
         assert!(labels_for("settings_button").is_none());
+    }
+
+    #[test]
+    fn vote_yes_with_a_count() {
+        let lines = vec![line(&[("Yes", 300), ("0/2", 345)]), line(&[("No", 500)])];
+        let v = labels_for("vote_start").unwrap();
+        assert_eq!(find_all(&lines, v, None), vec![Point::new(320, 110)]);
     }
 
     #[test]
