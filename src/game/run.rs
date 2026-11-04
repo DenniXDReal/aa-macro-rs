@@ -563,9 +563,6 @@ impl RunCtx {
         if !weather.is_empty() {
             self.log(format!("card screen - weather: {weather}"));
         }
-        if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir(), &weather) {
-            self.log(format!("card screen saved: {}", path.display()));
-        }
         // read the three card titles and take the first one in your order
         let names: [Option<String>; 3] = std::array::from_fn(|i| {
             scr.ocr_rect(&f, super::cards::title_box(i))
@@ -576,6 +573,21 @@ impl RunCtx {
         } else {
             self.settings.run.card_priority.clone()
         };
+        // screenshot only when a card shows up that wasn't seen before
+        let read: Vec<String> = names.iter().flatten().cloned().collect();
+        if read.is_empty() {
+            // titles unreadable: fall back to "new looking screen"
+            if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir(), &weather) {
+                self.log(format!("card screen saved: {}", path.display()));
+            }
+        } else if let Some(path) =
+            super::cardlog::save_if_new_cards(&f, &super::cardlog::dir(), &read, &weather)
+        {
+            self.log(format!(
+                "new card(s) seen - screenshot saved: {}",
+                path.display()
+            ));
+        }
         let pick = super::cards::choose(&names, &prio);
         let shown: Vec<String> = names
             .iter()
@@ -990,8 +1002,13 @@ impl RunCtx {
             }
         } else if let (Some(m), Some(f)) = (map.as_ref(), main.frame()) {
             // other modes know the map: learn its minimap for free
-            if super::minimap::save_named_if_missing(&f, &super::minimap::dir(), &route_map(m)) {
-                self.log(format!("minimap of {} learned", route_map(m)));
+            let name = if s.run.mode == Mode::SummerHunt {
+                format!("{}_summerevent", route_map(m))
+            } else {
+                route_map(m)
+            };
+            if super::minimap::save_named_if_missing(&f, &super::minimap::dir(), &name) {
+                self.log(format!("minimap of {name} learned"));
             }
         }
         let map = match (map, fixed) {
@@ -1018,11 +1035,13 @@ impl RunCtx {
         // first time on this map: keep a top-down picture of it (maps/)
         // for planning exact unit spots later
         if !map.is_empty() {
-            let dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("maps")))
-                .unwrap_or_else(|| std::path::PathBuf::from("maps"));
-            let path = dir.join(format!("{}.png", crate::vision::key(&route_map(&map))));
+            let dir = super::data_dir().join("maps");
+            let base = crate::vision::key(&route_map(&map));
+            let path = if s.run.mode == Mode::SummerHunt && !map.starts_with("Summer map") {
+                dir.join(format!("{base}_summerevent.png"))
+            } else {
+                dir.join(format!("{base}.png"))
+            };
             if !path.exists() {
                 self.sleep(800)?;
                 if let Some(f) = self.screen(self.main).frame() {

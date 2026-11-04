@@ -339,3 +339,19 @@ impl RouteEnv for Blind {
         Probe::new(patterns.join(" | "), || None)
     }
 }
+
+/// Folder the macro keeps its pictures in (next to the exe). Tests get a
+/// fresh folder per run so old pictures never leak between runs.
+pub fn data_dir() -> std::path::PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("aa-macro-test-{}", std::process::id()))
+    }
+    #[cfg(not(test))]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+}

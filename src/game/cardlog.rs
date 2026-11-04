@@ -6,10 +6,7 @@ use crate::capture::Frame;
 use std::path::{Path, PathBuf};
 
 pub fn dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("cards")))
-        .unwrap_or_else(|| PathBuf::from("cards"))
+    super::data_dir().join("cards")
 }
 
 /// 128-bit fingerprint of the card area (16x8 grey, above / below average).
@@ -36,6 +33,48 @@ pub fn fingerprint(f: &Frame) -> u128 {
         0u128,
         |acc, (i, v)| if *v > avg { acc | (1 << i) } else { acc },
     )
+}
+
+/// Save the screen when at least one of `cards` wasn't seen before (names
+/// kept in cards/seen.txt). The file name lists the new cards.
+pub fn save_if_new_cards(
+    f: &Frame,
+    folder: &Path,
+    cards: &[String],
+    weather: &str,
+) -> Option<PathBuf> {
+    let _ = std::fs::create_dir_all(folder);
+    let seen_path = folder.join("seen.txt");
+    let mut seen: Vec<String> = std::fs::read_to_string(&seen_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let new: Vec<&String> = cards.iter().filter(|c| !seen.contains(c)).collect();
+    if new.is_empty() {
+        return None;
+    }
+    let tag: String = new
+        .iter()
+        .map(|c| c.replace(' ', ""))
+        .collect::<Vec<_>>()
+        .join("+");
+    let w: String = weather.chars().filter(|c| c.is_alphanumeric()).collect();
+    let name = format!(
+        "new-{}-{tag}{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        if w.is_empty() {
+            String::new()
+        } else {
+            format!("-{w}")
+        }
+    );
+    let path = folder.join(format!("{name}.png"));
+    f.save_png(&path).ok()?;
+    seen.extend(new.into_iter().cloned());
+    let _ = std::fs::write(&seen_path, seen.join("\n") + "\n");
+    Some(path)
 }
 
 /// Save this card screen if it looks new. Returns the file when saved.
@@ -104,6 +143,13 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(save_if_new(&g, &dir, "Rainy").is_some(), "different cards");
+        // by card name: only new names trigger a screenshot
+        let a = ["Attack I".to_string(), "Enemy Speed II".to_string()];
+        assert!(save_if_new_cards(&f, &dir, &a, "").is_some());
+        assert!(save_if_new_cards(&f, &dir, &a, "").is_none(), "nothing new");
+        let b = ["Attack I".to_string(), "Yen III".to_string()];
+        let p = save_if_new_cards(&f, &dir, &b, "Rainy").unwrap();
+        assert!(p.to_string_lossy().contains("YenIII"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

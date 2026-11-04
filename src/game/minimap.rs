@@ -17,10 +17,7 @@ pub const MINIMAP: Rect = Rect {
 const N: u32 = 24;
 
 pub fn dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("maps").join("minimap")))
-        .unwrap_or_else(|| PathBuf::from("maps/minimap"))
+    super::data_dir().join("maps").join("minimap")
 }
 
 /// The minimap cut out of a full client picture.
@@ -87,6 +84,8 @@ pub fn library(folder: &Path) -> Vec<(String, Vec<u8>)> {
                 return None;
             }
             // "Magic Hills 2" = a second look of Magic Hills
+            // "Magic Hills_summerevent" = the Summer version of Magic Hills
+            let name = name.trim_end_matches("_summerevent").to_string();
             let map = name
                 .rsplit_once(' ')
                 .filter(|_| !name.starts_with("Summer map"))
@@ -126,7 +125,7 @@ pub fn save_new(f: &Frame, folder: &Path) -> Option<String> {
 pub fn save_named_if_missing(f: &Frame, folder: &Path, map: &str) -> bool {
     let clean: String = map
         .chars()
-        .filter(|c| c.is_alphanumeric() || " ()-".contains(*c))
+        .filter(|c| c.is_alphanumeric() || " ()-_".contains(*c))
         .collect();
     let p = folder.join(format!("{clean}.png"));
     if clean.is_empty() || p.exists() {
