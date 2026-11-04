@@ -2609,48 +2609,64 @@ impl App {
                 }
             });
             ui.label(
-                RichText::new("The macro reads the 3 cards with OCR and takes the first one in this list. Red cards pay Summer Pearls + secret drop chance (I +30%, II +70% & +25% drops, III +150% & +50% drops); green cards help you. Default: Plated / Health / Speed at the highest tier first.")
+                RichText::new("Put them in any order: drag a card onto another, type its number, or use Top / Up / Down / Bottom. The macro reads the 3 cards with OCR and takes the first one in this list. Red cards pay Summer Pearls + secret drop chance (I +30%, II +70% & +25% drops, III +150% & +50% drops); green cards help you. Default: Plated / Health / Speed at the highest tier first.")
                     .size(11.0)
                     .color(MUTED),
             );
             let list = &mut self.settings.run.card_priority;
-            let mut mv: Option<(usize, i32)> = None;
+            // move (from, to): drag a row onto another, or type its new number
+            let mut mv: Option<(usize, usize)> = None;
+            let n = list.len();
             egui::ScrollArea::vertical()
                 .id_salt("cardprio")
-                .max_height(260.0)
+                .max_height(320.0)
                 .show(ui, |ui| {
                     for (i, c) in list.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("{:>2}.", i + 1))
-                                    .color(MUTED)
-                                    .monospace(),
-                            );
+                        let row = ui.horizontal(|ui| {
+                            let mut pos = i + 1;
+                            if ui
+                                .add(egui::DragValue::new(&mut pos).range(1..=n).speed(0.1))
+                                .on_hover_text("type the place you want it in")
+                                .changed()
+                            {
+                                mv = Some((i, pos - 1));
+                            }
                             let col = if crate::game::cards::is_green(c) {
                                 GOOD
                             } else {
                                 BAD
                             };
-                            ui.label(RichText::new(c).color(col));
+                            ui.dnd_drag_source(egui::Id::unique(("cardrow", i)), i, |ui| {
+                                ui.label(RichText::new(format!("=  {c}")).color(col));
+                            })
+                            .response
+                            .on_hover_text("drag onto another card to move it there");
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("Down").clicked() {
-                                    mv = Some((i, 1));
+                                if ui.small_button("Bottom").clicked() {
+                                    mv = Some((i, n - 1));
                                 }
-                                if ui.small_button("Up").clicked() {
-                                    mv = Some((i, -1));
+                                if ui.small_button("Down").clicked() && i + 1 < n {
+                                    mv = Some((i, i + 1));
+                                }
+                                if ui.small_button("Up").clicked() && i > 0 {
+                                    mv = Some((i, i - 1));
                                 }
                                 if ui.small_button("Top").clicked() {
-                                    mv = Some((i, -1000));
+                                    mv = Some((i, 0));
                                 }
                             });
                         });
+                        if let Some(from) = row.response.dnd_release_payload::<usize>() {
+                            mv = Some((*from, i));
+                        }
                     }
                 });
-            if let Some((i, d)) = mv {
-                let item = list.remove(i);
-                let j = (i as i32 + d).clamp(0, list.len() as i32) as usize;
-                list.insert(j, item);
-                changed = true;
+            if let Some((from, to)) = mv {
+                if from != to && from < list.len() {
+                    let item = list.remove(from);
+                    list.insert(to.min(list.len()), item);
+                    changed = true;
+                }
             }
         });
         if changed {
