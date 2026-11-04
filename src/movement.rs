@@ -137,6 +137,10 @@ fn yes() -> bool {
 pub trait RouteEnv {
     /// A probe that finds any of `patterns` (inside `region` when given).
     fn probe(&self, patterns: &[String], region: Option<Rect>) -> Probe;
+    /// A fixed button's known spot (clicked straight away, no search).
+    fn remembered(&self, _pattern: &str) -> Option<Point> {
+        None
+    }
 }
 
 /// Values for `{map}` / `{act}` in pattern names (filled as pattern keys:
@@ -285,12 +289,25 @@ fn flatten(steps: &[Step], env: &dyn RouteEnv, v: &Vars, out: &mut Vec<Action>) 
                 offset,
                 once,
             } => {
+                // fixed button seen before: click its spot, no searching
+                if *offset == [0, 0] {
+                    if let Some(at) = env.remembered(&v.fill(pattern)) {
+                        out.push(Action::Click {
+                            at,
+                            button: button(b),
+                        });
+                        if v.click_wait_ms > 0 {
+                            out.push(Action::Wait(v.click_wait_ms));
+                        }
+                        continue;
+                    }
+                }
                 let mut probe = env
                     .probe(&[v.fill(pattern)], None)
                     .shifted(offset[0], offset[1]);
                 // toggles stay on screen after the click: never click twice
                 let name = crate::vision::key(&v.fill(pattern));
-                if *once || name == "settings_button" || name.ends_with("_toggle") {
+                if *once || crate::game::buttonmem::is_toggle(&name) {
                     probe.stays = true;
                 }
                 out.push(Action::ClickWhen {

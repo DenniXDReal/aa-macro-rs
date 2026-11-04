@@ -49,7 +49,11 @@ fn w(h: HWND) -> Hwnd {
 
 /// Windows' own OCR (the same engine the AHK macro's OCR.ahk uses): the crop
 /// is greyed and scaled 4x first, which small game text needs.
-fn ocr_run(frame: &Frame, area: Rect) -> Result<(windows::Media::Ocr::OcrResult, Rect, i32)> {
+fn ocr_run(
+    frame: &Frame,
+    area: Rect,
+    max_k: i32,
+) -> Result<(windows::Media::Ocr::OcrResult, Rect, i32)> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
     use windows::Media::Ocr::OcrEngine;
     use windows::Security::Cryptography::CryptographicBuffer;
@@ -61,7 +65,7 @@ fn ocr_run(frame: &Frame, area: Rect) -> Result<(windows::Media::Ocr::OcrResult,
         .intersect(&Rect::new(0, 0, frame.width as i32, frame.height as i32))
         .ok_or_else(|| anyhow!("OCR area outside the picture"))?;
     // small text wants 4x; big areas less (Windows OCR caps the picture size)
-    let k = (2400 / a.w.max(a.h).max(1)).clamp(1, 4);
+    let k = (2400 / a.w.max(a.h).max(1)).clamp(1, max_k);
     let (w, h) = (a.w * k, a.h * k);
     let mut buf = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
@@ -80,13 +84,14 @@ fn ocr_run(frame: &Frame, area: Rect) -> Result<(windows::Media::Ocr::OcrResult,
 }
 
 pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
-    let (res, _, _) = ocr_run(frame, area)?;
+    let (res, _, _) = ocr_run(frame, area, 4)?;
     Ok(res.Text()?.to_string())
 }
 
 /// OCR with word boxes, mapped back to `frame` coordinates.
 pub fn ocr_lines(frame: &Frame, area: Rect) -> Result<Vec<Vec<(String, Rect)>>> {
-    let (res, a, k) = ocr_run(frame, area)?;
+    // button labels are big: 2x is plenty and much quicker than 3-4x
+    let (res, a, k) = ocr_run(frame, area, 2)?;
     let mut out = vec![];
     for line in res.Lines()? {
         let mut words = vec![];

@@ -2984,6 +2984,12 @@ impl App {
                         input_changed = true;
                     }
                     ui.end_row();
+                    ui.label("Fixed buttons")
+                        .on_hover_text("Settings cog, its X, party close: once found, their spot is kept and clicked straight away (no search).");
+                    if ui.button("Forget kept spots").clicked() {
+                        crate::game::buttonmem::forget(None);
+                    }
+                    ui.end_row();
                     ui.label("Placement check")
                         .on_hover_text("How the macro knows a unit went down. Try the hotbar counter if units are placed but not counted.");
                     egui::ComboBox::from_id_salt("placement_detect")

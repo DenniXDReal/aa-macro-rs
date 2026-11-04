@@ -2,6 +2,7 @@
 //! input arbiter can wait on. Shared by the Movement tester and the game loop.
 
 pub mod adaptation;
+pub mod buttonmem;
 pub mod cardlog;
 pub mod cards;
 pub mod drops;
@@ -171,15 +172,44 @@ impl LiveScreen {
     /// Centre of the first of `names` found now (inside `region` if given).
     pub fn find(&self, names: &[String], region: Option<Rect>) -> Option<Point> {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
-        names
+        let hit = names.iter().find_map(|n| {
+            self.pats
+                .get(&key(n))
+                .and_then(|p| p.find_in(&frame, region))
+                .map(|h| {
+                    buttonmem::remember(&key(n), h.center());
+                    h.center()
+                })
+        });
+        self.seen(names, hit.is_some());
+        hit.or_else(|| self.find_text(&frame, names, region).into_iter().next())
+    }
+
+    /// Track how long `names` have been missing: the OCR backup only runs for
+    /// a button that hasn't been seen for a while (OCR is slow).
+    fn seen(&self, names: &[String], found: bool) {
+        use std::time::Instant;
+        let k = names.join("|");
+        let mut m = MISSING.lock().unwrap_or_else(|e| e.into_inner());
+        if found {
+            m.retain(|(h, n, _)| !(*h == self.hwnd && *n == k));
+        } else if !m.iter().any(|(h, n, _)| *h == self.hwnd && *n == k) {
+            if m.len() > 200 {
+                m.clear();
+            }
+            m.push((self.hwnd, k, Instant::now()));
+        }
+    }
+
+    fn missing_for(&self, names: &[String]) -> std::time::Duration {
+        let k = names.join("|");
+        MISSING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .find_map(|n| {
-                self.pats
-                    .get(&key(n))
-                    .and_then(|p| p.find_in(&frame, region))
-                    .map(|h| h.center())
-            })
-            .or_else(|| self.find_text(&frame, names, region).into_iter().next())
+            .find(|(h, n, _)| *h == self.hwnd && *n == k)
+            .map(|(_, _, t)| t.elapsed())
+            .unwrap_or_default()
     }
 
     /// Backup: the buttons' labels read with OCR (when the picture isn't
@@ -201,9 +231,15 @@ impl LiveScreen {
         if labels.is_empty() {
             return vec![];
         }
+        // captured and only just gone: don't OCR yet (it's slow, and a
+        // "wait until it's gone" loop would crawl)
+        let captured = names.iter().any(|n| self.pats.contains_key(&key(n)));
+        if captured && self.missing_for(names) < Duration::from_millis(2500) {
+            return vec![];
+        }
         let cached = CACHE.lock().ok().and_then(|c| {
             c.iter()
-                .find(|(h, t, _)| *h == self.hwnd && t.elapsed() < Duration::from_millis(700))
+                .find(|(h, t, _)| *h == self.hwnd && t.elapsed() < Duration::from_millis(1200))
                 .map(|(_, _, l)| l.clone())
         });
         let lines = match cached {
@@ -358,16 +394,18 @@ impl LiveScreen {
     pub fn find_wide(&self, names: &[String]) -> Option<Point> {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
-        names
-            .iter()
-            .find_map(|n| {
-                self.pats.get(&key(n)).and_then(|p| {
-                    p.find_in(&frame, None)
-                        .or_else(|| p.find_in(&frame, Some(all)))
-                        .map(|h| h.center())
-                })
+        let hit = names.iter().find_map(|n| {
+            self.pats.get(&key(n)).and_then(|p| {
+                p.find_in(&frame, None)
+                    .or_else(|| p.find_in(&frame, Some(all)))
+                    .map(|h| {
+                        buttonmem::remember(&key(n), h.center());
+                        h.center()
+                    })
             })
-            .or_else(|| self.find_text(&frame, names, None).into_iter().next())
+        });
+        self.seen(names, hit.is_some());
+        hit.or_else(|| self.find_text(&frame, names, None).into_iter().next())
     }
 
     /// Every place `name` shows on the whole picture (e.g. one Invite button
@@ -418,7 +456,14 @@ impl RouteEnv for LiveScreen {
         let names = patterns.to_vec();
         Probe::new(patterns.join(" | "), move || me.find(&names, region))
     }
+    fn remembered(&self, pattern: &str) -> Option<Point> {
+        buttonmem::get(&key(pattern))
+    }
 }
+
+/// (client, names, missing since) for the OCR backup's patience.
+static MISSING: std::sync::Mutex<Vec<(Hwnd, String, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Never sees anything: used to check a route's syntax.
 pub struct Blind;

@@ -359,10 +359,17 @@ impl RunCtx {
     }
     /// Wait for `name` then click it; error when it never shows.
     fn click_when(&self, h: Hwnd, name: &str, ms: u64) -> R<()> {
+        // fixed button seen before: straight to its spot
+        if let Some(p) = super::buttonmem::get(name) {
+            return self.click(h, p, name);
+        }
         match self.wait_any(h, &[name], ms)? {
             Some((_, p)) => {
                 self.click(h, p, name)?;
-                if self.settings.click_mode == crate::input::ClickMode::Safe {
+                // a toggle stays on screen: clicking again would undo it
+                if self.settings.click_mode == crate::input::ClickMode::Safe
+                    && !super::buttonmem::is_toggle(name)
+                {
                     // still there, same place = the click didn't register
                     self.sleep(400)?;
                     if let Some(q) = self.screen(h).find(&[name.to_string()], None) {
@@ -1181,6 +1188,9 @@ impl RunCtx {
             .map_err(|e| e.to_string())?;
         if let Err(e) = self.arb.run(b) {
             self.log(format!("teleport to spawn: {e}"));
+            // the kept settings spots may be off: search for them next time
+            super::buttonmem::forget(Some("settings_button"));
+            super::buttonmem::forget(Some("settings_close"));
             // don't leave the settings open
             if let Some(p) = scr.find(&Self::names(&["settings_close"]), None) {
                 let _ = self.click(h, p, "close settings");
