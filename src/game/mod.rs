@@ -326,8 +326,30 @@ impl LiveScreen {
     /// Where the unit panel's "UPG [n]" (or MAX) text is, read with OCR over
     /// the whole screen: the unit panel is open = a unit was just placed.
     pub fn find_upg(&self, frame: &crate::capture::Frame) -> Option<Point> {
-        let lines = self.ocr_lines(frame)?;
-        upg_line(&lines).map(|(_, p)| p)
+        // where it was last time on this client (read sharper, 4x), then the
+        // usual unit panel spot, then the whole screen (2x)
+        static LAST: std::sync::Mutex<Vec<(Hwnd, Rect)>> = std::sync::Mutex::new(Vec::new());
+        let last = LAST
+            .lock()
+            .ok()
+            .and_then(|v| v.iter().find(|(h, _)| *h == self.hwnd).map(|(_, r)| *r));
+        let mut tries: Vec<Rect> = last.into_iter().collect();
+        let la = self.level_area();
+        tries.push(Rect::new(la.x - 60, la.y - 20, la.w + 120, la.h + 40));
+        tries.push(Rect::new(0, 0, frame.width as i32, frame.height as i32));
+        for r in tries {
+            let Some(lines) = self.platform.ocr_lines(frame, r) else {
+                continue;
+            };
+            if let Some((_, p)) = upg_line(&lines) {
+                if let Ok(mut v) = LAST.lock() {
+                    v.retain(|(h, _)| *h != self.hwnd);
+                    v.push((self.hwnd, Rect::new(p.x - 150, p.y - 25, 300, 50)));
+                }
+                return Some(p);
+            }
+        }
+        None
     }
 
     /// Card pick screen by OCR: Some(weather) when "Choose a card" is on

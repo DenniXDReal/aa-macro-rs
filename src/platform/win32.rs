@@ -78,8 +78,21 @@ fn ocr_run(
     }
     let ib = CryptographicBuffer::CreateFromByteArray(&buf)?;
     let bmp = SoftwareBitmap::CreateCopyFromBuffer(&ib, BitmapPixelFormat::Bgra8, w, h)?;
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
-    let res = engine.RecognizeAsync(&bmp)?.get()?;
+    // one OCR at a time: several accounts' threads reading at once made the
+    // engine fail now and then; and one retry when it does
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let run = || -> windows::core::Result<windows::Media::Ocr::OcrResult> {
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
+        engine.RecognizeAsync(&bmp)?.get()
+    };
+    let res = match run() {
+        Ok(r) => r,
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            run()?
+        }
+    };
     Ok((res, a, k))
 }
 
@@ -90,8 +103,10 @@ pub fn ocr_text(frame: &Frame, area: Rect) -> Result<String> {
 
 /// OCR with word boxes, mapped back to `frame` coordinates.
 pub fn ocr_lines(frame: &Frame, area: Rect) -> Result<Vec<Vec<(String, Rect)>>> {
-    // button labels are big: 2x is plenty and much quicker than 3-4x
-    let (res, a, k) = ocr_run(frame, area, 2)?;
+    // whole screen (button labels are big): 2x is plenty and much quicker;
+    // a small area (e.g. around the unit panel's UPG text): up to 4x
+    let big = area.w as i64 * area.h as i64 > 200_000;
+    let (res, a, k) = ocr_run(frame, area, if big { 2 } else { 4 })?;
     let mut out = vec![];
     for line in res.Lines()? {
         let mut words = vec![];
