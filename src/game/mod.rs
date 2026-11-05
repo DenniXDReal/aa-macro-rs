@@ -30,6 +30,21 @@ mod level_tests {
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
         assert_eq!(parse_level(""), None);
         assert_eq!(super::end_text("V I C T O R Y  Wave 25"), Some(true));
+        // vote box: green Yes left of a red No
+        let mut f = crate::capture::Frame::solid(800, 599, 20, 20, 20);
+        for y in 92..114 {
+            for x in 302..402 {
+                let i = ((y * 800 + x) * 4) as usize;
+                f.bgra[i..i + 3].copy_from_slice(&[10, 210, 70]);
+            }
+            for x in 405..495 {
+                let i = ((y * 800 + x) * 4) as usize;
+                f.bgra[i..i + 3].copy_from_slice(&[20, 20, 220]);
+            }
+        }
+        let p = super::vote_yes(&f).unwrap();
+        assert!((p.x - 351).abs() <= 2 && (p.y - 102).abs() <= 2, "{p:?}");
+        assert!(super::vote_yes(&crate::capture::Frame::solid(800, 599, 20, 20, 20)).is_none());
         assert_eq!(super::end_text("DEFEAT"), Some(false));
         assert_eq!(super::end_text("Wave 3 Vote Start"), None);
         let r = crate::geom::Rect::new(100, 200, 30, 12);
@@ -190,6 +205,28 @@ pub fn end_text(t: &str) -> Option<bool> {
     }
 }
 
+/// The "Vote start" box's green Yes button (next to the red No), by colour:
+/// same place on every map (around 352,103), no picture / OCR needed.
+pub fn vote_yes(f: &crate::capture::Frame) -> Option<Point> {
+    let (mut n, mut sx, mut sy, mut red) = (0i64, 0i64, 0i64, 0i64);
+    for y in 80..125 {
+        for x in 280..500 {
+            let Some((r, g, b)) = f.rgb(x, y) else {
+                continue;
+            };
+            let (r, g, b) = (r as i32, g as i32, b as i32);
+            if g > 150 && r < 130 && b < 90 && g - r > 60 {
+                n += 1;
+                sx += x as i64;
+                sy += y as i64;
+            } else if r > 170 && g < 70 && b < 70 {
+                red += 1;
+            }
+        }
+    }
+    (n >= 600 && red >= 400).then(|| Point::new((sx / n) as i32, (sy / n) as i32))
+}
+
 /// The OCR line with the unit panel's "UPG [n]": (its text, where "UPG" is).
 pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
     // the unit panel's own words (as AA Spiral v17 checks): Sell, and the
@@ -277,6 +314,11 @@ impl LiveScreen {
         labels
             .iter()
             .find_map(|l| textbuttons::find_all(&lines, &[l], None).into_iter().next())
+    }
+
+    /// The vote box's Yes button right now (by colour).
+    pub fn find_vote_yes(&self) -> Option<Point> {
+        self.frame().and_then(|f| vote_yes(&f))
     }
 
     /// Read button labels right now (no waiting for the picture first).

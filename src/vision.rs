@@ -245,6 +245,9 @@ pub struct Pattern {
     template: Option<Frame>,
 }
 
+/// Lowest mismatch fraction text patterns are matched with.
+pub const MIN_TEXT_ERR: f32 = 0.12;
+
 fn d_err() -> f32 {
     0.08
 }
@@ -323,7 +326,14 @@ impl Pattern {
                 let pat = self.compiled.as_ref()?;
                 let (a, g) = gray(frame, area);
                 let img = BitImage::from_gray(a.w as usize, a.h as usize, &g, self.threshold);
-                let (x, y, miss) = find_bits(&img, pat, self.err1, self.err0)?;
+                // captures made in one light often sit just over 8% off in
+                // another (anti-aliasing, the world showing through): 12% floor
+                let (x, y, miss) = find_bits(
+                    &img,
+                    pat,
+                    self.err1.max(MIN_TEXT_ERR),
+                    self.err0.max(MIN_TEXT_ERR),
+                )?;
                 let n = (pat.w * pat.h) as f32;
                 Some(Hit {
                     at: Point::new(a.x + x as i32, a.y + y as i32),
