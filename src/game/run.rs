@@ -2538,9 +2538,12 @@ impl RunCtx {
                                 "input refused by Windows ({blocked_n}x) - retrying"
                             ));
                             if blocked_n >= 3 && !blocked_told {
-                                let _ = self.tx.send(Event::Attention(
-                                "Input is blocked (PC locked, screen off or a UAC prompt) - the macro waits and carries on once it's unlocked".into(),
-                            ));
+                                let why = if e.contains("Remote Desktop") {
+                                    "Input is blocked: the Remote Desktop window is minimized or disconnected (Windows stops all input then) - restore it and the macro carries on"
+                                } else {
+                                    "Input is blocked (PC locked, screen off or a UAC prompt) - the macro waits and carries on once it's unlocked"
+                                };
+                                let _ = self.tx.send(Event::Attention(why.into()));
                                 blocked_told = true;
                             }
                             self.sleep(if blocked_n >= 3 { 10_000 } else { 2_000 })?;

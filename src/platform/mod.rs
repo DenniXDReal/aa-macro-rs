@@ -82,6 +82,10 @@ pub trait Platform: Send + Sync {
     fn open_uri(&self, _uri: &str) -> Result<()> {
         anyhow::bail!("opening links needs Windows")
     }
+    /// Running inside a Remote Desktop session?
+    fn is_remote_session(&self) -> bool {
+        false
+    }
     /// Is OCR available here?
     fn has_ocr(&self) -> bool {
         false

@@ -302,6 +302,11 @@ fn title(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+/// Running inside a Remote Desktop session?
+pub fn remote_session() -> bool {
+    unsafe { GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_REMOTESESSION) != 0 }
+}
+
 fn send(inputs: &[INPUT]) -> Result<()> {
     let mut sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     // Windows refuses input for a moment now and then (focus change, a
@@ -313,8 +318,19 @@ fn send(inputs: &[INPUT]) -> Result<()> {
         tries += 1;
     }
     if sent as usize != inputs.len() {
+        let err = unsafe { GetLastError() }.0;
+        // SM_REMOTESESSION (0x1000): running inside Remote Desktop
+        let rdp =
+            unsafe { GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_REMOTESESSION) }
+                != 0;
+        if rdp {
+            bail!(
+                "SendInput sent {sent}/{} (error {err}) - input blocked: this PC is used over Remote Desktop and the RDP window is minimized or disconnected (Windows stops all input then). Keep the RDP window open, or see Settings > Remote Desktop",
+                inputs.len()
+            );
+        }
         bail!(
-            "SendInput sent {sent}/{} - input blocked (PC locked / screen off / UAC prompt, or Roblox runs as admin)",
+            "SendInput sent {sent}/{} (error {err}) - input blocked (PC locked / screen off / UAC prompt, or Roblox runs as admin)",
             inputs.len()
         );
     }
@@ -617,6 +633,10 @@ impl Platform for Win32Platform {
 
     fn has_ocr(&self) -> bool {
         true
+    }
+
+    fn is_remote_session(&self) -> bool {
+        remote_session()
     }
 
     fn ocr(&self, frame: &Frame, area: Rect) -> Option<String> {
