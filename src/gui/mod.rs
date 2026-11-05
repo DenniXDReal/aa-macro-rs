@@ -3049,6 +3049,29 @@ impl App {
         let tab = self.settings_tab;
         let mut changed = false;
         let mut input_changed = false;
+        if tab == SettingsTab::General && self.platform.is_remote_session() {
+            card(ui, |ui| {
+                ui.label(RichText::new("REMOTE DESKTOP").size(11.0).color(WARN));
+                ui.label(
+                    "You're using this PC over Remote Desktop. When the RDP window is minimized or disconnected, Windows stops all mouse / keyboard input to this PC and the macro can't click (\"Input is blocked\").",
+                );
+                ui.label(RichText::new("Fix (on the PC you connect FROM):").strong());
+                ui.label(
+                    RichText::new(
+                        "1. Open regedit > HKEY_CURRENT_USER\\Software\\Microsoft\\Terminal Server Client\n2. New DWORD (32-bit) named RemoteDesktop_SuppressWhenMinimized, value 2\n3. Close and reopen Remote Desktop. Now minimizing it is fine.",
+                    )
+                    .size(11.0),
+                );
+                ui.label(
+                    RichText::new(
+                        "Don't just close / disconnect RDP either - that locks this PC. To leave it running: on this PC open cmd as admin, run  query session  to see your session ID, then  tscon <ID> /dest:console  (it disconnects you but keeps this PC unlocked).",
+                    )
+                    .size(11.0)
+                    .color(MUTED),
+                );
+            });
+            ui.add_space(8.0);
+        }
         if tab == SettingsTab::General {
             card(ui, |ui| {
                 ui.label(
