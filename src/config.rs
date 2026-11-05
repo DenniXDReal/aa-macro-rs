@@ -34,6 +34,9 @@ pub struct Settings {
     pub place_settle_ms: u64,
     /// How long the placed check (unit_placed / "UPG [0]" OCR) may look (ms).
     pub place_check_ms: u64,
+    /// Optional safety: after this many upgrade presses on one unit without
+    /// seeing MAX / its level, count it as done (0 = off).
+    pub upgrade_press_cap: u32,
     /// Upgrades: wait this long (ms) after opening a unit / pressing upgrade
     /// before reading its level (OCR).
     pub upgrade_read_ms: u64,
@@ -475,6 +478,7 @@ impl Default for Settings {
             place_settle_ms: 2000,
             place_check_ms: 3000,
             upgrade_read_ms: 800,
+            upgrade_press_cap: 0,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.8,

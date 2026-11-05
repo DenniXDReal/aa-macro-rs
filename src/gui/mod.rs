@@ -3277,6 +3277,28 @@ impl App {
                         .add(egui::DragValue::new(&mut s.place_settle_ms).range(100..=5000))
                         .changed();
                     ui.end_row();
+                    ui.label("Upgrade press limit").on_hover_text(
+                        "optional safety: after this many upgrade presses on one unit without seeing MAX / its level, count it as done and move to the next unit",
+                    );
+                    ui.horizontal(|ui| {
+                        let mut on = s.upgrade_press_cap > 0;
+                        if ui.checkbox(&mut on, "").changed() {
+                            s.upgrade_press_cap = if on { 60 } else { 0 };
+                            changed = true;
+                        }
+                        if on {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut s.upgrade_press_cap)
+                                        .range(1..=999)
+                                        .suffix(" presses"),
+                                )
+                                .changed();
+                        } else {
+                            ui.label(RichText::new("off").color(MUTED));
+                        }
+                    });
+                    ui.end_row();
                     ui.label("Upgrade read wait (ms)").on_hover_text(
                         "after opening a unit / pressing upgrade, wait this long before reading its level",
                     );
