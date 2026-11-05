@@ -152,6 +152,75 @@ pub fn title_box(i: usize) -> Rect {
     Rect::new(b.x + 4, b.y + 12, b.w - 8, 34)
 }
 
+/// The card's text under its title ("+70% SummerPearls", the effect).
+pub fn body_box(i: usize) -> Rect {
+    let b = CARD_BOXES[i];
+    Rect::new(b.x + 6, b.y + 45, b.w - 12, 85)
+}
+
+/// The vote count under a card ("0", "1", ...).
+pub fn count_box(i: usize) -> Rect {
+    let b = CARD_BOXES[i];
+    Rect::new(b.x + b.w / 2 - 24, b.y + 208, 48, 28)
+}
+
+/// A red card's tier from the pearls it pays: +30% = I, +70% = II,
+/// +150% = III (more reliable than reading "II" / "III" in the title).
+pub fn tier_from_pearls(text: &str) -> Option<&'static str> {
+    let t: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    let i = t.find("%summer").or_else(|| t.find("%pearl"))?;
+    let num: String = t[..i]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    match num.parse::<u32>().ok()? {
+        30 => Some("I"),
+        70 => Some("II"),
+        150 => Some("III"),
+        _ => None,
+    }
+}
+
+/// "Enemy Health I" with the tier replaced.
+pub fn with_tier(name: &str, tier: &str) -> String {
+    let base = name
+        .trim_end_matches(" III")
+        .trim_end_matches(" II")
+        .trim_end_matches(" I");
+    format!("{base} {tier}")
+}
+
+/// Weather shift: the card with the least red text (a debuff) and, among
+/// those, the most green text (a buff) - buffs over debuffs.
+pub fn weather_pick(f: &Frame) -> usize {
+    let score = |i: usize| {
+        let r = body_box(i);
+        let (mut red, mut green) = (0i32, 0i32);
+        for y in r.y..r.y + r.h {
+            for x in r.x..r.x + r.w {
+                if let Some((cr, cg, cb)) = f.rgb(x, y) {
+                    let (cr, cg, cb) = (cr as i32, cg as i32, cb as i32);
+                    if cr > 180 && cg < 90 && cb < 90 {
+                        red += 1;
+                    } else if cg > 170 && cr < 130 && cb < 130 {
+                        green += 1;
+                    }
+                }
+            }
+        }
+        (red, -green)
+    };
+    (0..3).min_by_key(|i| score(*i)).unwrap_or(1)
+}
+
 /// Every Summer Event card seen so far (from your cards/ screenshots).
 /// Green = helps you, red = buffs enemies but pays Summer Pearls.
 pub const CARD_BASES: &[(&str, bool)] = &[
@@ -325,6 +394,36 @@ pub fn names_from_lines(lines: &[Vec<(String, Rect)>]) -> [Option<String>; 3] {
 #[cfg(test)]
 mod name_tests {
     use super::*;
+
+    #[test]
+    fn tier_from_the_pearls_line() {
+        assert_eq!(
+            tier_from_pearls("+70% SummerPearls +150 Enemy Physical"),
+            Some("II")
+        );
+        assert_eq!(tier_from_pearls("+150%Summer Pearls"), Some("III"));
+        assert_eq!(tier_from_pearls("+30% SummerPearls"), Some("I"));
+        assert_eq!(tier_from_pearls("+25% Attack"), None);
+        assert_eq!(with_tier("Plated Enemies I", "II"), "Plated Enemies II");
+    }
+
+    #[test]
+    fn weather_prefers_the_buff() {
+        let mut f = Frame::solid(800, 599, 30, 20, 20);
+        let mut paint = |i: usize, rgb: [u8; 3]| {
+            let r = body_box(i);
+            for y in r.y + 10..r.y + 20 {
+                for x in r.x + 10..r.x + 60 {
+                    let k = ((y * 800 + x) * 4) as usize;
+                    f.bgra[k..k + 3].copy_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+                }
+            }
+        };
+        paint(0, [230, 40, 40]); // red text: debuff
+        paint(1, [230, 40, 40]);
+        paint(2, [60, 220, 60]); // green only: buff
+        assert_eq!(weather_pick(&f), 2);
+    }
 
     #[test]
     fn priority_survives_tier_misreads() {
