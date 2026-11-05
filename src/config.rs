@@ -40,6 +40,9 @@ pub struct Settings {
     /// Test: each account only holds the input to select + click, then
     /// checks its own placement on its own while the next account places.
     pub parallel_checks: bool,
+    /// Optional safety: after this many upgrade presses on one unit without
+    /// seeing MAX / its level, count it as done (0 = off).
+    pub upgrade_press_cap: u32,
     /// Upgrades: wait this long (ms) after opening a unit / pressing upgrade
     /// before reading its level (OCR).
     pub upgrade_read_ms: u64,
@@ -483,6 +486,7 @@ impl Default for Settings {
             parallel_checks: true,
             swap_delay_ms: 400,
             upgrade_read_ms: 800,
+            upgrade_press_cap: 0,
             place_shape: Default::default(),
             shape_scale: 1.8,
             idle_click: true,

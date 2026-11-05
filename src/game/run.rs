@@ -2002,10 +2002,11 @@ impl RunCtx {
                     }
                     self.arb.run(b).map_err(|e| format!("upgrade: {e}"))?;
                     pressed[k] += presses;
-                    if pressed[k] >= 60 {
+                    let cap = s.upgrade_press_cap;
+                    if cap > 0 && pressed[k] >= cap {
                         maxed[k] = true;
                         self.log(format!(
-                            "slot {slot} at {},{}: 60 upgrade presses and still not MAX / its level - counting it as done, on to the next unit",
+                            "slot {slot} at {},{}: {cap} upgrade presses and still not MAX / its level - counting it as done, on to the next unit",
                             at.x, at.y
                         ));
                         save_upgrade_debug(self, scr);
