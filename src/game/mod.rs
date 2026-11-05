@@ -390,6 +390,17 @@ impl LiveScreen {
         {
             return Some(l);
         }
+        // thin "1" / brackets lost: same box once more with the strokes
+        // thickened by 1 px
+        let a = self.level_area();
+        if let Some(a) = a.intersect(&Rect::new(0, 0, frame.width as i32, frame.height as i32)) {
+            let crop = frame.crop(a.x as u32, a.y as u32, a.w as u32, a.h as u32);
+            let thick = crate::vision::dilate_h(&crop);
+            let all = Rect::new(0, 0, thick.width as i32, thick.height as i32);
+            if let Some(l) = self.platform.ocr(&thick, all).and_then(|t| parse_level(&t)) {
+                return Some(l);
+            }
+        }
         // the panel may sit elsewhere: find "UPG" anywhere and read its line
         let lines = self.ocr_lines(frame)?;
         upg_line(&lines)
