@@ -1920,15 +1920,11 @@ impl RunCtx {
                 self.arb
                     .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
                     .map_err(|e| format!("upgrade: {e}"))?;
-                // let the panel draw before reading it
-                self.sleep(s.upgrade_read_ms)?;
+                // let the panel start drawing; the stable read below polls
+                self.sleep(s.upgrade_read_ms / 2)?;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
-                let mut before = Self::read_level(scr);
-                if before.is_none() {
-                    self.sleep(400)?;
-                    before = Self::read_level(scr);
-                }
+                let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -1969,12 +1965,8 @@ impl RunCtx {
                         save_upgrade_debug(self, scr);
                     }
                     self.sleep(s.upgrade_read_ms.max(500))?;
-                    let mut after = Self::read_level(scr);
-                    if after.is_none() || after == before {
-                        // slow panel: one more look
-                        self.sleep(s.upgrade_read_ms / 2 + 300)?;
-                        after = Self::read_level(scr).or(after);
-                    }
+                    // poll until the level settles on a new value (or time's up)
+                    let after = self.read_level_stable(scr, s.upgrade_read_ms + 1500, before)?;
                     match (before, after) {
                         (_, Some(u32::MAX)) => {
                             maxed[k] = true;
@@ -2059,6 +2051,44 @@ impl RunCtx {
     /// The unit panel's level ("UPG [n]"): Windows OCR first (nothing to
     /// capture), else your upg_1 .. upg_10 patterns (unit_placed = 0).
     /// Some(u32::MAX) = MAX.
+    /// Poll the panel's level until it's trustworthy, up to `ms`:
+    /// - MAX: once is enough (it's never a misread of a number)
+    /// - a number: the same value twice in a row (a half-drawn panel or an
+    ///   OCR slip rarely repeats itself)
+    /// - with `changed_from`: stop early once two reads agree on a value
+    ///   other than that one (the upgrade went through)
+    /// Gives the last value read when time runs out (None = never read).
+    fn read_level_stable(
+        &self,
+        scr: &super::LiveScreen,
+        ms: u64,
+        changed_from: Option<u32>,
+    ) -> R<Option<u32>> {
+        let mut dl = self.control.deadline(self.secs(ms as f64 / 1000.0));
+        let mut last: Option<u32> = None;
+        let mut agreed: Option<u32> = None;
+        loop {
+            let v = Self::read_level(scr);
+            if v == Some(u32::MAX) {
+                return Ok(v);
+            }
+            if v.is_some() && v == last {
+                agreed = v;
+                // reading the level before an upgrade: settled
+                if changed_from.is_none() || v != changed_from {
+                    return Ok(v);
+                }
+            }
+            if v.is_some() {
+                last = v;
+            }
+            if dl.expired() {
+                return Ok(agreed.or(last));
+            }
+            self.sleep(250)?;
+        }
+    }
+
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
         // upgrade reads of different accounts may run at the same time
         crate::platform::urgent_ocr(|| Self::read_level_now(scr))
