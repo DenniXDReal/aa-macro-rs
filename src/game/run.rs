@@ -567,6 +567,7 @@ impl RunCtx {
         // card screen: your choose_card capture, or OCR reading "Choose a card"
         let mut weather = String::new();
         let mut shift: Option<String> = None;
+        let mut shift_cards = false;
         let seen =
             if scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some() {
                 true
@@ -588,6 +589,8 @@ impl RunCtx {
                         }
                         None => {
                             shift = super::weather_shift_text(&t);
+                            // cards to vote on with it ("Vote ends in")
+                            shift_cards = t.to_lowercase().contains("vote");
                             false
                         }
                     },
@@ -598,6 +601,22 @@ impl RunCtx {
             };
         if let Some(w) = shift {
             self.weather_shift(h, &w)?;
+            // the shift comes with 3 cards to vote on: buff over debuff,
+            // once per account
+            let voted = LAST_PICK
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(c, t)| *c == h && t.elapsed() < Duration::from_secs(30));
+            if !voted && shift_cards {
+                {
+                    let mut l = LAST_PICK.lock().unwrap();
+                    l.retain(|(c, _)| *c != h);
+                    l.push((h, Instant::now()));
+                }
+                self.weather_cards(h)?;
+                return Ok(true);
+            }
             return Ok(false);
         }
         if !seen {
@@ -669,6 +688,17 @@ impl RunCtx {
                 }
             }
         }
+        // red cards: the tier from the pearls line beats the title's I/II/III
+        for i in 0..3 {
+            if let Some(n) = names[i].clone() {
+                if let Some(t) = scr
+                    .ocr_rect(&f, super::cards::body_box(i))
+                    .and_then(|b| super::cards::tier_from_pearls(&b))
+                {
+                    names[i] = Some(super::cards::with_tier(&n, t));
+                }
+            }
+        }
         let shift = LAST_SHIFT
             .lock()
             .unwrap()
@@ -731,47 +761,64 @@ impl RunCtx {
             }
         };
         self.log(why);
-        // click the card, then its vote / confirm button; check the screen
-        // went away, else once more (3 tries)
-        let up = || {
-            (scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some())
-                || scr.frame().and_then(|f| scr.ocr_card_screen(&f)).is_some()
-        };
-        for attempt in 0..3 {
-            self.click(h, p, "card")?;
-            self.sleep(500)?;
-            // the button: your card_confirm picture, else its text (Vote /
-            // Confirm / Select, "Vote 0/2" too), else right under the card
-            let button = match self.wait_any(
-                h,
-                &["card_confirm"],
-                if scr.has("card_confirm") { 1500 } else { 0 },
-            )? {
-                Some((_, c)) => Some(c),
-                None => scr
-                    .find_words_now(&["~vote", "~confirm", "select"])
-                    .filter(|q| q.y > 250),
-            };
-            match button {
-                Some(c) => self.click(h, c, "vote card")?,
-                None => self.click(
-                    h,
-                    Point::new(p.x, (p.y + 120).min(580)),
-                    "vote card (under it)",
-                )?,
-            }
-            let mut dl = self.control.deadline(self.secs(3.0));
-            while up() && !dl.expired() {
-                self.sleep(300)?;
-            }
-            if !up() {
-                break;
-            }
-            if attempt < 2 {
-                self.log("card screen still up - picking again");
-            }
-        }
+        self.vote_card(h, pick.unwrap_or(1), p)?;
         Ok(true)
+    }
+
+    /// Vote for card `i` (centre `p`): there's no confirm button - clicking
+    /// the card IS the vote (clicking again would take it back). The count
+    /// under it should go up; if it didn't, click once more. Then wait for
+    /// the vote to end (the screen closes by itself).
+    fn vote_card(&self, h: Hwnd, i: usize, p: Point) -> R<()> {
+        let scr = self.screen(h);
+        let count = || -> Option<u32> {
+            let f = scr.frame()?;
+            let t = scr.ocr_rect(&f, super::cards::count_box(i))?;
+            let d: String = t
+                .chars()
+                .map(|c| match c {
+                    'O' | 'o' => '0',
+                    'l' | 'I' | '|' => '1',
+                    c => c,
+                })
+                .filter(|c| c.is_ascii_digit())
+                .collect();
+            d.parse().ok()
+        };
+        let before = count();
+        self.click(h, p, "vote card")?;
+        self.sleep(900)?;
+        let after = count();
+        match (before, after) {
+            (Some(b), Some(a)) if a > b => self.log(format!("vote counted ({b} -> {a})")),
+            (Some(b), Some(a)) if a == b => {
+                self.log("vote not counted yet - clicking the card once more");
+                self.click(h, p, "vote card (again)")?;
+            }
+            _ => {}
+        }
+        // the vote ends by itself (timer under the cards); not waited for
+        // here so the other accounts get to vote in time
+        Ok(())
+    }
+
+    /// "The weather shifts..." cards: a buff over a debuff, always.
+    fn weather_cards(&self, h: Hwnd) -> R<()> {
+        let scr = self.screen(h);
+        let Some(f) = scr.frame() else { return Ok(()) };
+        let i = super::cards::weather_pick(&f);
+        let title = scr
+            .ocr_rect(&f, super::cards::title_box(i))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        self.log(format!(
+            "weather shift: card {} ({}) - buff over debuff",
+            i + 1,
+            if title.is_empty() { "?" } else { &title }
+        ));
+        let b = super::cards::CARD_BOXES[i];
+        self.vote_card(h, i, Point::new(b.x + b.w / 2, b.y + b.h / 2))
     }
 
     /// Mahoraga's "Choose an Adaptation": take the first choice in your
@@ -1922,15 +1969,11 @@ impl RunCtx {
                 self.arb
                     .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
                     .map_err(|e| format!("upgrade: {e}"))?;
-                // let the panel draw before reading it
-                self.sleep(s.upgrade_read_ms)?;
+                // let the panel start drawing; the stable read below polls
+                self.sleep(s.upgrade_read_ms / 2)?;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
-                let mut before = Self::read_level(scr);
-                if before.is_none() {
-                    self.sleep(400)?;
-                    before = Self::read_level(scr);
-                }
+                let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -1971,12 +2014,8 @@ impl RunCtx {
                         save_upgrade_debug(self, scr);
                     }
                     self.sleep(s.upgrade_read_ms.max(500))?;
-                    let mut after = Self::read_level(scr);
-                    if after.is_none() || after == before {
-                        // slow panel: one more look
-                        self.sleep(s.upgrade_read_ms / 2 + 300)?;
-                        after = Self::read_level(scr).or(after);
-                    }
+                    // poll until the level settles on a new value (or time's up)
+                    let after = self.read_level_stable(scr, s.upgrade_read_ms + 1500, before)?;
                     match (before, after) {
                         (_, Some(u32::MAX)) => {
                             maxed[k] = true;
@@ -2061,6 +2100,44 @@ impl RunCtx {
     /// The unit panel's level ("UPG [n]"): Windows OCR first (nothing to
     /// capture), else your upg_1 .. upg_10 patterns (unit_placed = 0).
     /// Some(u32::MAX) = MAX.
+    /// Poll the panel's level until it's trustworthy, up to `ms`:
+    /// - MAX: once is enough (it's never a misread of a number)
+    /// - a number: the same value twice in a row (a half-drawn panel or an
+    ///   OCR slip rarely repeats itself)
+    /// - with `changed_from`: stop early once two reads agree on a value
+    ///   other than that one (the upgrade went through)
+    /// Gives the last value read when time runs out (None = never read).
+    fn read_level_stable(
+        &self,
+        scr: &super::LiveScreen,
+        ms: u64,
+        changed_from: Option<u32>,
+    ) -> R<Option<u32>> {
+        let mut dl = self.control.deadline(self.secs(ms as f64 / 1000.0));
+        let mut last: Option<u32> = None;
+        let mut agreed: Option<u32> = None;
+        loop {
+            let v = Self::read_level(scr);
+            if v == Some(u32::MAX) {
+                return Ok(v);
+            }
+            if v.is_some() && v == last {
+                agreed = v;
+                // reading the level before an upgrade: settled
+                if changed_from.is_none() || v != changed_from {
+                    return Ok(v);
+                }
+            }
+            if v.is_some() {
+                last = v;
+            }
+            if dl.expired() {
+                return Ok(agreed.or(last));
+            }
+            self.sleep(250)?;
+        }
+    }
+
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
         // upgrade reads of different accounts may run at the same time
         crate::platform::urgent_ocr(|| Self::read_level_now(scr))

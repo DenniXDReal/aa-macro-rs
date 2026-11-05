@@ -922,3 +922,39 @@ mod real_capture {
         }
     }
 }
+
+/// 1 px horizontal dilation (each pixel = the brighter of itself and its left
+/// neighbour): thickens thin bright strokes ("1", "|", "I") before OCR.
+pub fn dilate_h(f: &Frame) -> Frame {
+    let (w, h) = (f.width as usize, f.height as usize);
+    let mut out = f.bgra.clone();
+    for y in 0..h {
+        for x in 1..w {
+            let i = (y * w + x) * 4;
+            let l = (y * w + x - 1) * 4;
+            for c in 0..3 {
+                out[i + c] = out[i + c].max(f.bgra[l + c]);
+            }
+        }
+    }
+    Frame::new(f.width, f.height, out)
+}
+
+#[cfg(test)]
+mod dilate_tests {
+    use super::*;
+
+    #[test]
+    fn thickens_a_one_pixel_stroke() {
+        let mut f = Frame::solid(5, 3, 0, 0, 0);
+        for y in 0..3 {
+            let i = (y * 5 + 2) * 4;
+            f.bgra[i..i + 3].copy_from_slice(&[255, 255, 255]);
+        }
+        let d = dilate_h(&f);
+        assert_eq!(d.rgb(2, 1), Some((255, 255, 255)));
+        assert_eq!(d.rgb(3, 1), Some((255, 255, 255)), "one wider to the right");
+        assert_eq!(d.rgb(1, 1), Some((0, 0, 0)));
+        assert_eq!(d.rgb(4, 1), Some((0, 0, 0)));
+    }
+}

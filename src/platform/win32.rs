@@ -86,7 +86,13 @@ fn ocr_run(
     let urgent = super::OCR_IS_URGENT.with(|c| c.get());
     let _g = (!urgent).then(|| ONE.lock().unwrap_or_else(|e| e.into_inner()));
     let run = || -> windows::core::Result<windows::Media::Ocr::OcrResult> {
-        let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
+        // English on purpose (the game is in English): the user-profile
+        // language may be another one, or several
+        let engine = windows::Globalization::Language::CreateLanguage(
+            &windows::core::HSTRING::from("en-US"),
+        )
+        .and_then(|l| OcrEngine::TryCreateFromLanguage(&l))
+        .or_else(|_| OcrEngine::TryCreateFromUserProfileLanguages())?;
         engine.RecognizeAsync(&bmp)?.get()
     };
     let res = match run() {
