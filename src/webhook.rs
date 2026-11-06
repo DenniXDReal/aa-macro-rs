@@ -20,6 +20,9 @@ pub struct WebhookSettings {
     pub on_disconnect: bool,
     pub on_start_stop: bool,
     pub screenshot: bool,
+    /// Loot report after every run (sent by the game loop, which waits for
+    /// the upload before Replay). Replaces the plain win / loss message.
+    pub loot_report: bool,
 }
 
 impl Default for WebhookSettings {
@@ -31,6 +34,7 @@ impl Default for WebhookSettings {
             on_disconnect: true,
             on_start_stop: true,
             screenshot: true,
+            loot_report: true,
         }
     }
 }
@@ -60,6 +64,8 @@ pub struct Message {
     pub body: String,
     pub screenshot: Option<Frame>,
     pub ping: bool,
+    /// Embed fields: (name, value, inline).
+    pub fields: Vec<(String, String, bool)>,
 }
 
 /// `https://discord.com/api/webhooks/<id>/<token>` (also ptb./canary., discordapp.com).
@@ -104,6 +110,13 @@ pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Val
     });
     if has_image {
         embed["image"] = serde_json::json!({"url": "attachment://screenshot.png"});
+    }
+    if !m.fields.is_empty() {
+        embed["fields"] = m
+            .fields
+            .iter()
+            .map(|(n, v, inline)| serde_json::json!({"name": n, "value": v, "inline": inline}))
+            .collect();
     }
     let mut p = serde_json::json!({
         "username": "Anime Adventure Macro",
@@ -180,6 +193,48 @@ pub fn send(url: &str, ping_user: &str, m: &Message) -> Result<()> {
     Ok(())
 }
 
+/// `send`, and when that fails with a picture: once more without it.
+/// Ok(note) = sent (note says the picture was dropped).
+pub fn send_with_fallback(url: &str, ping_user: &str, m: &mut Message) -> Result<Option<String>> {
+    let res = send(url, ping_user, m);
+    match res {
+        Ok(()) => Ok(None),
+        Err(e) if m.screenshot.is_some() => {
+            m.screenshot = None;
+            send(url, ping_user, m)?;
+            Ok(Some(format!("sent without the picture ({e})")))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Send on a background thread and wait for it, at most `max`: the caller
+/// knows the upload finished (or gave up) before it moves on, and a hung
+/// Discord can't hold it longer than `max`.
+pub fn send_and_wait(
+    url: &str,
+    ping_user: &str,
+    m: Message,
+    max: Duration,
+) -> Result<Option<String>> {
+    let (tx, rx) = mpsc::channel();
+    let (url, ping) = (url.to_string(), ping_user.to_string());
+    std::thread::Builder::new()
+        .name("webhook-now".into())
+        .spawn(move || {
+            let mut m = m;
+            let _ = tx.send(send_with_fallback(&url, &ping, &mut m).map_err(|e| e.to_string()));
+        })
+        .map_err(|e| anyhow!("webhook thread: {e}"))?;
+    match rx.recv_timeout(max) {
+        Ok(r) => r.map_err(|e| anyhow!(e)),
+        Err(_) => bail!(
+            "Discord didn't answer within {} s - moving on (it may still arrive)",
+            max.as_secs()
+        ),
+    }
+}
+
 /// Background sender. `notify` never blocks; when the queue is full the
 /// message is dropped (and logged).
 pub struct Notifier {
@@ -200,27 +255,11 @@ impl Notifier {
                     }
                 };
                 for (url, ping, mut m) in rx {
-                    let mut res = send(&url, &ping, &m);
-                    if res.is_err() && m.screenshot.is_some() {
-                        // the picture is the usual trouble maker: send without it
-                        let first = res
-                            .as_ref()
-                            .err()
-                            .map(|e| e.to_string())
-                            .unwrap_or_default();
-                        m.screenshot = None;
-                        res = send(&url, &ping, &m);
-                        if res.is_ok() {
-                            say(format!(
-                                "Discord: '{}' sent without the screenshot ({first})",
-                                m.title
-                            ));
-                        }
-                    } else if res.is_ok() {
-                        say(format!("Discord: '{}' sent", m.title));
-                    }
-                    if let Err(e) = res {
-                        say(format!("Discord: '{}' failed - {e}", m.title));
+                    // the picture is the usual trouble maker: retried without it
+                    match send_with_fallback(&url, &ping, &mut m) {
+                        Ok(None) => say(format!("Discord: '{}' sent", m.title)),
+                        Ok(Some(note)) => say(format!("Discord: '{}' {note}", m.title)),
+                        Err(e) => say(format!("Discord: '{}' failed - {e}", m.title)),
                     }
                     std::thread::sleep(Duration::from_millis(700)); // stay under Discord's rate limit
                 }
@@ -268,6 +307,7 @@ mod tests {
             body: "wave 30".into(),
             screenshot: None,
             ping: true,
+            fields: vec![("Pearls".into(), "15".into(), true)],
         };
         let p = payload(&m, "123456789", true);
         assert_eq!(p["content"], "<@123456789>");
@@ -277,6 +317,8 @@ mod tests {
         );
         assert_eq!(p["embeds"][0]["color"], 0x4ADE80);
         assert_eq!(p["attachments"][0]["filename"], "screenshot.png");
+        assert_eq!(p["embeds"][0]["fields"][0]["name"], "Pearls");
+        assert_eq!(p["embeds"][0]["fields"][0]["inline"], true);
         let p2 = payload(&m, "@everyone", false);
         assert_eq!(p2["content"], "");
         assert!(p2["embeds"][0].get("image").is_none());

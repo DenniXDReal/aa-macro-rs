@@ -163,6 +163,8 @@ pub struct App {
     dock_rect: Option<egui::Rect>,
     /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
+    /// The game loop sends the Discord loot report (no plain win / loss).
+    loot_reports: bool,
     /// Another copy of the macro was already running at launch.
     other_instance: bool,
     own_hwnd: Option<crate::geom::Hwnd>,
@@ -323,6 +325,7 @@ impl App {
             dock_rect: None,
             dash: command::Dash::default(),
             other_instance: false,
+            loot_reports: false,
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
@@ -460,6 +463,13 @@ impl App {
             })
             .collect();
         let (tx, rx) = mpsc::channel();
+        // the game loop sends the loot report itself (and waits for it)
+        let w = &self.settings.webhook;
+        let loot_hook = (w.enabled && w.on_result && w.loot_report)
+            .then(|| self.secrets.get(crate::webhook::URL_KEY))
+            .flatten()
+            .filter(|u| crate::webhook::valid_url(u))
+            .map(|u| (u, w.ping_user.clone()));
         let ctx = crate::game::run::RunCtx {
             arb,
             control: self.control.clone(),
@@ -472,7 +482,11 @@ impl App {
             speed: 1.0,
             memory: self.memory.clone(),
             resume,
+            loot_hook: loot_hook.clone(),
+            session: Default::default(),
         };
+        self.loot_reports = loot_hook.is_some();
+        crate::status::reset();
         std::thread::Builder::new()
             .name("game-loop".into())
             .spawn(move || ctx.run())
@@ -539,13 +553,26 @@ impl App {
                     self.wins += 1;
                     let text = self.result_text();
                     self.say("VICTORY");
-                    self.hook(crate::webhook::Kind::Win, "Victory", &text, false);
+                    if !self.loot_reports {
+                        self.hook(crate::webhook::Kind::Win, "Victory", &text, false);
+                    }
                 }
                 Event::Loss => {
                     self.losses += 1;
                     let text = self.result_text();
                     self.say("DEFEAT");
-                    self.hook(crate::webhook::Kind::Loss, "Defeat", &text, false);
+                    if !self.loot_reports {
+                        self.hook(crate::webhook::Kind::Loss, "Defeat", &text, false);
+                    }
+                }
+                Event::Run(r, _reported) => {
+                    if let Some(p) = &r.image {
+                        self.say(format!(
+                            "run #{}: item picture saved: {}",
+                            r.run,
+                            p.display()
+                        ));
+                    }
                 }
                 Event::Attention(s) => {
                     self.say(format!("needs you: {s}"));
@@ -719,6 +746,7 @@ impl App {
                 body: body.into(),
                 screenshot: shot,
                 ping,
+                fields: vec![],
             },
         );
     }
@@ -3574,6 +3602,7 @@ impl App {
                         body: "Notifications from Anime Adventure Macro will arrive here.".into(),
                         screenshot: shot,
                         ping: true,
+                        fields: vec![],
                     };
                     let _ = tx.send(match webhook::send(&url, &ping, &m) {
                         Ok(()) => "webhook test sent - check Discord".into(),
@@ -3595,10 +3624,16 @@ impl App {
         ui.horizontal(|ui| {
             let w = &mut self.settings.webhook;
             changed |= toggle(ui, &mut w.on_result, "Win / loss");
+            changed |= toggle(ui, &mut w.loot_report, "as loot report");
             changed |= toggle(ui, &mut w.screenshot, "with screenshot");
             changed |= toggle(ui, &mut w.on_disconnect, "Disconnects");
             changed |= toggle(ui, &mut w.on_start_stop, "Start / stop");
         });
+        ui.label(
+            RichText::new("Loot report: after every run - Run #, event currency, pearls, charm (+ its picture), session totals. The macro waits for the upload (max 15 s) before Replay. History: runtime/run_history.json.")
+                .size(11.0)
+                .color(MUTED),
+        );
         ui.label(
             RichText::new("The URL is stored encrypted and never shown again. User ID: Discord > Settings > Advanced > Developer Mode, then right-click your name > Copy User ID.")
                 .size(11.0)
