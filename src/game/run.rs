@@ -290,6 +290,9 @@ pub(crate) struct EndOnce {
     pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
 }
 
+/// Pause between placing and upgrading, after placement mode is closed.
+pub const PLACE_TO_UPGRADE_MS: u64 = 1500;
+
 /// Next button pictures, tried in this order (capture with F6).
 pub const NEXT_PICS: &[&str] = &["defeat_next_btn", "victory_next_btn", "next_button"];
 
@@ -1971,6 +1974,77 @@ impl RunCtx {
     }
 
     /// Upgrade by priority until VICTORY / DEFEAT shows. Returns true on a win.
+    /// Place > Upgrade hand-over: placement mode closed on every client that
+    /// placed (Cancel twice: an open ghost / unit panel), a moment for the
+    /// game's UI to settle, then a log line per client with what's on screen
+    /// (unit panel open? card pick? end screen?). A panel still open gets
+    /// another Cancel, so the first unit click selects the unit.
+    pub(crate) fn place_to_upgrade(&self, placed: &[(Hwnd, usize, Point)]) -> R<()> {
+        let keys = Keys::from(&self.settings.keybinds)?;
+        let mut hs: Vec<Hwnd> = vec![];
+        for (h, _, _) in placed {
+            if !hs.contains(h) {
+                hs.push(*h);
+            }
+        }
+        let num = |h: Hwnd| self.clients.iter().position(|c| c.0 == h).unwrap_or(0) + 1;
+        self.log(format!(
+            "place > upgrade: {} unit(s) on {} client(s) - closing placement mode, then {} ms to settle",
+            placed.len(),
+            hs.len(),
+            PLACE_TO_UPGRADE_MS
+        ));
+        for h in self.main_last(hs.clone()) {
+            let _seq = seq_lock(h, Duration::from_secs(10));
+            self.arb
+                .run(
+                    super::placing::cancel_batch(h, &keys)
+                        .wait(150)
+                        .then(Action::KeyTap {
+                            key: keys.cancel,
+                            hold_ms: 40,
+                        })
+                        .wait(150),
+                )
+                .map_err(|e| format!("close placement: {e}"))?;
+        }
+        self.sleep(PLACE_TO_UPGRADE_MS)?;
+        let end = Self::names(&["victory", "defeat"]);
+        for h in &hs {
+            let scr = self.screen(*h);
+            let open = self.panel_open(scr, 300)?;
+            let cards = scr.has("choose_card")
+                && scr
+                    .find_picture_wide(&Self::names(&["choose_card"]))
+                    .is_some();
+            let over = scr.find_picture_wide(&end).is_some();
+            let units: Vec<String> = placed
+                .iter()
+                .filter(|(ph, _, _)| ph == h)
+                .map(|(_, slot, at)| format!("slot {slot} at {},{}", at.x, at.y))
+                .collect();
+            self.log(format!(
+                "place > upgrade: client {}: unit panel {}, card pick {}, end screen {} - units: {}",
+                num(*h),
+                if open { "OPEN" } else { "closed" },
+                if cards { "on screen" } else { "no" },
+                if over { "on screen" } else { "no" },
+                if units.is_empty() { "none".into() } else { units.join(", ") }
+            ));
+            if open {
+                self.log(format!(
+                    "place > upgrade: client {}: panel still open - closing it",
+                    num(*h)
+                ));
+                let _seq = seq_lock(*h, Duration::from_secs(10));
+                self.arb
+                    .run(super::placing::cancel_batch(*h, &keys).wait(200))
+                    .map_err(|e| format!("close placement: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn upgrade_until_end(&self, placed: &[(Hwnd, usize, Point)]) -> R<bool> {
         let s = &self.settings;
         let keys = Keys::from(&s.keybinds)?;
@@ -1998,6 +2072,18 @@ impl RunCtx {
                 })
                 .collect();
             self.log(format!("upgrade order: {}", list.join(" > ")));
+        }
+        // placed, but its Upgrade setting is None: never upgraded
+        for (h, slot, _) in placed {
+            if unit(h, *slot).upgrade == Upgrade::None {
+                let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+                self.log(format!(
+                    "c{n} slot {slot}: Upgrade is set to None on the units page - not upgraded"
+                ));
+            }
+        }
+        if order.is_empty() && !placed.is_empty() {
+            self.log("WARN nothing to upgrade: every placed unit has Upgrade = None");
         }
         // a unit that should be upgraded but never registered as placed
         for (h, _) in &per {
@@ -2969,6 +3055,7 @@ impl RunCtx {
         placed: Vec<(Hwnd, usize, Point)>,
     ) -> R<()> {
         let mode = self.settings.run.mode.label();
+        self.place_to_upgrade(&placed)?;
         super::trace::step(
             "upgrade",
             serde_json::json!({
