@@ -347,7 +347,12 @@ pub fn end<'a>() -> Simple<'a> {
         move |c| {
             let (won, map, last) = {
                 let r = c.round();
-                (r.won.unwrap_or(false), r.map.clone(), r.last)
+                // a Challenge reset passed: back to the lobby for it
+                (
+                    r.won.unwrap_or(false),
+                    r.map.clone(),
+                    r.last || c.run.challenge_owed(),
+                )
             };
             match c.run.end_round(won, &map, last, &once) {
                 Ok(lobby) => {
@@ -455,6 +460,12 @@ pub(crate) fn run_rounds(
     let mut resume = run.resume.clone();
     run.log("step machine: on");
     loop {
+        // Challenge reset passed: one Challenge run from the lobby
+        if in_lobby && resume.is_none() && run.challenge_owed() {
+            run.run_challenge_now()?;
+            in_lobby = true;
+            prev_map.clear();
+        }
         let mut round = Round {
             in_lobby,
             prev_map: prev_map.clone(),

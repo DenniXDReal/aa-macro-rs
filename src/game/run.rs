@@ -298,6 +298,47 @@ pub(crate) struct EndOnce {
     pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
 }
 
+impl RunCtx {
+    /// "Challenge every 30 min" is on, this isn't a Challenge run already,
+    /// and a reset (:00 / :30 local) has passed since the last one.
+    pub(crate) fn challenge_owed(&self) -> bool {
+        self.settings.run.challenge_every_30
+            && self.settings.run.mode != Mode::Challenge
+            && super::challenge::due()
+    }
+
+    /// One Challenge run from the lobby (its own team if it has one), then
+    /// back to the lobby; the farm carries on after. A failed Challenge is
+    /// logged and skipped until the next reset - the farm goes on.
+    pub(crate) fn run_challenge_now(&self) -> R<()> {
+        super::challenge::mark_done();
+        self.log("Challenge reset - one Challenge run, then back to the farm");
+        let mut c = self.clone();
+        c.settings.team_for_mode(Mode::Challenge);
+        c.settings.run.mode = Mode::Challenge;
+        c.settings.run.challenge_every_30 = false;
+        c.settings.run.return_to_lobby = true;
+        c.resume = None;
+        match c.run_loop(
+            Some(StepLimit {
+                runs: 1,
+                until: None,
+            }),
+            true,
+        ) {
+            Ok(()) => self.log("Challenge done - back to the farm"),
+            Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
+            Err(e) => {
+                self.log(format!("WARN Challenge failed: {e} - back to the farm"));
+                if self.where_am_i() != "lobby" {
+                    let _ = self.return_to_lobby_now();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Pause between placing and upgrading, after placement mode is closed.
 pub const PLACE_TO_UPGRADE_MS: u64 = 1500;
 
@@ -3470,6 +3511,8 @@ impl RunCtx {
             sc.spawn(|| self.anti_afk(&finished));
             // disconnect box / captcha on any client
             sc.spawn(|| self.watchdog(&finished));
+            // Challenge runs from the next :00 / :30 on
+            super::challenge::reset();
             let r = (|| -> R<()> {
                 if self.settings.run.own_team
                     && self.settings.run.party_invite
@@ -3555,10 +3598,16 @@ impl RunCtx {
                 let again = super::resume::from_trace;
                 loop {
                     let done_after = rounds + 1;
+                    // Challenge reset passed: one Challenge run from the lobby
+                    if in_lobby && resume.is_none() && self.challenge_owed() {
+                        self.run_challenge_now()?;
+                        in_lobby = true;
+                        map.clear();
+                    }
                     match self.one_round(
                         &mut in_lobby,
                         &mut map,
-                        &|| reached(done_after),
+                        &|| reached(done_after) || self.challenge_owed(),
                         &mut resume,
                     ) {
                         Ok(()) => {

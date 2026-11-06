@@ -1705,7 +1705,21 @@ impl App {
             changed |= toggle(ui, &mut r.priority_upgrade, "Priority upgrade");
             changed |= toggle(ui, &mut r.one_at_a_time, "One unit at a time");
             changed |= toggle(ui, &mut r.auto_ability, "Auto ability");
-            changed |= toggle(ui, &mut r.challenge_every_30, "Challenge every 30 min");
+            changed |= toggle(
+                ui,
+                &mut r.challenge_every_30,
+                "Auto-run Challenge on 30m reset",
+            );
+            if r.challenge_every_30 {
+                ui.label(
+                    RichText::new(format!(
+                        "next reset in {} min (:00 / :30 your time) - the round that ends after it goes to the lobby, one Challenge, then back to farming",
+                        crate::game::challenge::minutes_to_next(&chrono::Local::now())
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+            }
         });
         if changed {
             self.dirty();

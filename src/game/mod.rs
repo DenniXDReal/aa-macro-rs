@@ -4,6 +4,7 @@
 pub mod adaptation;
 pub mod buttonmem;
 pub mod cards;
+pub mod challenge;
 pub mod drops;
 pub mod dump;
 pub mod hotbar;
@@ -230,14 +231,28 @@ pub fn end_text(t: &str) -> Option<bool> {
         .filter(|c| c.is_alphabetic())
         .flat_map(|c| c.to_lowercase())
         .collect();
+    // raids / infinite say it their own way (to be checked against your
+    // screenshots of those end screens)
     let win = [
         "victory",
         "victorv",
         "vict0ry",
         "stagecleared",
         "stagecomplete",
+        "raidcomplete",
+        "raidcleared",
+        "raidclear",
+        "challengecomplete",
     ];
-    let loss = ["defeat", "defeal", "deteat", "gameover", "stagefailed"];
+    let loss = [
+        "defeat",
+        "defeal",
+        "deteat",
+        "gameover",
+        "stagefailed",
+        "raidfailed",
+        "challengefailed",
+    ];
     if win.iter().any(|w| flat.contains(w)) {
         Some(true)
     } else if loss.iter().any(|w| flat.contains(w)) {
@@ -955,6 +970,22 @@ pub fn data_dir() -> std::path::PathBuf {
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod end_text_tests {
+    use super::end_text;
+
+    #[test]
+    fn raid_and_infinite_endings() {
+        assert_eq!(end_text("RAID COMPLETE!"), Some(true));
+        assert_eq!(end_text("Raid Cleared"), Some(true));
+        assert_eq!(end_text("Raid Failed"), Some(false));
+        // infinite ends in a defeat / game over at some wave
+        assert_eq!(end_text("GAME OVER\nWave 87"), Some(false));
+        assert_eq!(end_text("DEFEAT"), Some(false));
+        assert_eq!(end_text("Wave 12"), None);
     }
 }
 
