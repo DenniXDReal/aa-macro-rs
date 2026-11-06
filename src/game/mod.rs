@@ -210,6 +210,35 @@ pub fn end_text(t: &str) -> Option<bool> {
     }
 }
 
+/// Where the end panel's Next button sits (VICTORY / DEFEAT, 800x599): the
+/// fallback click when neither your picture nor its green is found.
+pub const NEXT_SPOT: Point = Point::new(320, 395);
+
+/// The end panel's big green Next button by colour: the block of bright
+/// green in the middle of the screen (on DEFEAT at 268..372 x 377..411).
+/// The minimap's green path (bottom right) is outside the area looked at.
+pub fn next_green(f: &crate::capture::Frame) -> Option<Point> {
+    let (mut n, mut x0, mut x1, mut y0, mut y1) = (0u32, i32::MAX, 0, i32::MAX, 0);
+    for y in (300..480).step_by(2) {
+        for x in (150..620).step_by(2) {
+            let Some((r, g, b)) = f.rgb(x, y) else {
+                continue;
+            };
+            if g > 170 && r < 140 && b < 90 {
+                n += 1;
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    // a button-sized block (sampled every 2nd pixel: ~1/4 of the pixels)
+    let (w, h) = (x1 - x0, y1 - y0);
+    (n >= 300 && (60..=200).contains(&w) && (20..=60).contains(&h))
+        .then(|| Point::new((x0 + x1) / 2, (y0 + y1) / 2))
+}
+
 /// The "Vote start" box's green Yes button (next to the red No), by colour:
 /// same place on every map (around 352,103), no picture / OCR needed.
 pub fn vote_yes(f: &crate::capture::Frame) -> Option<Point> {
@@ -761,6 +790,22 @@ impl LiveScreen {
         hit.or_else(|| self.find_text(&frame, names, None).into_iter().next())
     }
 
+    /// `find_wide` with pictures only - no OCR fallback (stylised buttons
+    /// like Next, where OCR misreads).
+    pub fn find_picture_wide(&self, names: &[String]) -> Option<Point> {
+        let pats = self.pats.load_full();
+        let frame = self.platform.capture_client(self.hwnd).ok()?;
+        let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
+        names.iter().find_map(|n| {
+            let p = pats.get(&key(n))?;
+            let h = p
+                .find_in(&frame, None)
+                .or_else(|| p.find_in(&frame, Some(all)))?;
+            crate::debugbus::hit(self.hwnd, Rect::new(h.at.x, h.at.y, h.w, h.h), n, h.score);
+            Some(h.center())
+        })
+    }
+
     /// Every place `name` shows on the whole picture (e.g. one Invite button
     /// per alt in the party list), top to bottom.
     pub fn find_all_wide(&self, name: &str) -> Vec<Point> {
@@ -850,5 +895,29 @@ pub fn data_dir() -> std::path::PathBuf {
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod next_tests {
+    use super::{next_green, NEXT_SPOT};
+
+    #[test]
+    fn next_found_by_its_green_on_the_defeat_panel() {
+        let f = crate::capture::Frame::load_png(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/end_defeat_pearls.png"
+        )))
+        .unwrap();
+        let p = next_green(&f).expect("green Next button");
+        // the button: 268..372 x 377..411
+        assert!(
+            (268..=372).contains(&p.x) && (377..=411).contains(&p.y),
+            "{p:?}"
+        );
+        // the fixed fallback spot is on the button too
+        assert!((268..=372).contains(&NEXT_SPOT.x) && (377..=411).contains(&NEXT_SPOT.y));
+        // nothing green: nothing found
+        assert!(next_green(&crate::capture::Frame::solid(800, 599, 20, 20, 20)).is_none());
     }
 }

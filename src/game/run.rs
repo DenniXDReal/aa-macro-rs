@@ -216,8 +216,8 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
         true,
     ));
     out.push(step(
-        "End: VICTORY / DEFEAT > Next",
-        &["victory", "defeat", "next_button"],
+        "End: VICTORY / DEFEAT > Next (your defeat_next_btn picture, else its green)",
+        &["victory", "defeat"],
         false,
     ));
     if s.run.return_to_lobby {
@@ -289,6 +289,9 @@ pub(crate) struct EndOnce {
     /// End-screen drops + pearls, as first read.
     pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
 }
+
+/// Next button pictures, tried in this order (capture with F6).
+pub const NEXT_PICS: &[&str] = &["defeat_next_btn", "victory_next_btn", "next_button"];
 
 /// What `check()` / `sleep()` return past the step deadline.
 pub const STEP_TIMED_OUT: &str = "step timed out";
@@ -2499,11 +2502,14 @@ impl RunCtx {
         let main = self.screen(self.main);
         let want = if lobby { "return_to_lobby" } else { "replay" };
         let title = Self::names(&["victory", "defeat"]);
-        let next = Self::names(&["next_button"]);
+        // your Next pictures (no OCR: the white-on-green font misreads)
+        let next = Self::names(NEXT_PICS);
         let end = Self::names(&[
             "victory",
             "defeat",
             "next_button",
+            "defeat_next_btn",
+            "victory_next_btn",
             "replay",
             "return_to_lobby",
         ]);
@@ -2533,10 +2539,16 @@ impl RunCtx {
                 self.log(format!("{want} didn't take - clicking again"));
                 continue;
             }
-            // Next, wherever it is on this end screen
-            if let Some(p) = main.find_wide(&next) {
+            // Next, wherever it is on this end screen: your picture, else
+            // the big green button by its colour
+            let green = || main.frame().and_then(|f| super::next_green(&f));
+            if let Some((p, how)) = main
+                .find_picture_wide(&next)
+                .map(|p| (p, "next"))
+                .or_else(|| green().map(|p| (p, "next (green)")))
+            {
                 self.arb
-                    .run(Batch::new(self.main, "next").click(p.x, p.y))
+                    .run(Batch::new(self.main, how).click(p.x, p.y))
                     .map_err(|e| format!("next: {e}"))?;
                 self.sleep(600)?;
                 continue;
@@ -2561,7 +2573,7 @@ impl RunCtx {
             // only OCR sees VICTORY / DEFEAT: Next's usual spot
             if let Some(f) = main.frame() {
                 if main.ocr_end(&f).is_some() {
-                    let p = Point::new(318, 397);
+                    let p = super::NEXT_SPOT;
                     if blind % 5 == 0 {
                         self.log("end screen read by OCR - clicking Next's usual spot");
                     }
@@ -2774,7 +2786,14 @@ impl RunCtx {
         let main = self.screen(self.main);
         if main
             .find(
-                &Self::names(&["victory", "defeat", "next_button", "replay"]),
+                &Self::names(&[
+                    "victory",
+                    "defeat",
+                    "next_button",
+                    "defeat_next_btn",
+                    "victory_next_btn",
+                    "replay",
+                ]),
                 None,
             )
             .is_some()
@@ -3301,7 +3320,6 @@ mod tests {
             "open_button",
             "start_button",
             "victory",
-            "next_button",
             "replay",
         ] {
             assert!(all.iter().any(|a| a == n), "summer needs {n}");
