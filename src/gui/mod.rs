@@ -484,6 +484,7 @@ impl App {
             resume,
             loot_hook: loot_hook.clone(),
             session: Default::default(),
+            step_deadline: Default::default(),
         };
         self.loot_reports = loot_hook.is_some();
         crate::status::reset();
