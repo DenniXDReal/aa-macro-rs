@@ -6,28 +6,26 @@
 //! stripped (`WS_POPUP`). No `SetParent` - the window stays a normal
 //! top-level window, so DirectX keeps drawing and capture keeps working.
 //!
-//! Macro state reaches the UI through [`Bus`] (`ArcSwap`): the macro threads
-//! publish a snapshot, the UI just loads the latest - it never blocks them.
-//! For now a demo feeder publishes dummy data (wired to the real macro next).
+//! Real macro state only: step + retry attempts from `crate::status`
+//! (`ArcSwap`, written by the macro threads), input generation per client
+//! from `input::generation`, log lines from the app log (the macro sends
+//! them over a channel). Nothing here blocks the macro.
 
 use super::{App, Page, BAD, BG, CARD, GOOD, MUTED, PURPLE, TEXT, WARN};
 use crate::geom::Hwnd;
-use arc_swap::ArcSwap;
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Cards on the dashboard (2x2).
 pub const CARDS: usize = 4;
-/// Log lines kept in the snapshot.
-pub const LOG_KEEP: usize = 500;
 /// How often docked windows are re-checked / moved to follow their slots.
 const DOCK_EVERY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Health {
+    /// Macro not running.
     #[default]
+    Idle,
     Ok,
     Retrying,
     Paused,
@@ -36,6 +34,7 @@ pub enum Health {
 impl Health {
     fn color(self) -> Color32 {
         match self {
+            Health::Idle => MUTED,
             Health::Ok => GOOD,
             Health::Retrying => WARN,
             Health::Paused => BAD,
@@ -43,15 +42,53 @@ impl Health {
     }
 }
 
-/// One client's card, as the macro last published it.
+/// One client's card.
 #[derive(Clone, Debug, Default)]
 pub struct ClientView {
     pub step: String,
-    /// Input generation of that client.
+    /// Input generation of that client (0 = no input sent yet).
     pub gen: u64,
-    pub attempt: u32,
-    pub attempts: u32,
+    /// Current try (1-based) and how many there are; None = nothing retried.
+    pub attempt: Option<(u32, u32)>,
     pub health: Health,
+}
+
+/// A retry shown on its card for this long after its last try.
+const ATTEMPT_SHOWN: Duration = Duration::from_secs(10);
+
+impl ClientView {
+    /// The card of client `h` from the live state.
+    fn build(st: &crate::status::Status, h: Option<Hwnd>, running: bool, paused: bool) -> Self {
+        let gen = h.map(crate::input::generation).unwrap_or(0);
+        if !running {
+            return ClientView {
+                step: "IDLE".into(),
+                gen,
+                attempt: None,
+                health: Health::Idle,
+            };
+        }
+        let att = h
+            .and_then(|h| st.attempt(h))
+            .filter(|a| a.at.elapsed() < ATTEMPT_SHOWN);
+        let health = if paused {
+            Health::Paused
+        } else if att.is_some_and(|a| a.n > 1) {
+            Health::Retrying
+        } else {
+            Health::Ok
+        };
+        ClientView {
+            step: if st.step.is_empty() {
+                "STARTING".into()
+            } else {
+                st.step.to_uppercase()
+            },
+            gen,
+            attempt: att.map(|a| (a.n, a.of)),
+            health,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -94,137 +131,15 @@ impl Level {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LogLine {
-    /// "HH:MM:SS"
-    pub at: String,
-    pub level: Level,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Snapshot {
-    pub clients: Vec<ClientView>,
-    pub logs: Vec<LogLine>,
-    /// Demo data (not from the macro yet).
-    pub demo: bool,
-}
-
-/// Macro -> UI state. Cheap to clone; `load` never blocks a writer.
-#[derive(Clone, Default)]
-pub struct Bus(Arc<ArcSwap<Snapshot>>);
-
-impl Bus {
-    pub fn load(&self) -> Arc<Snapshot> {
-        self.0.load_full()
-    }
-    /// Replace one client's card (grows the list as needed).
-    pub fn set_client(&self, i: usize, v: ClientView) {
-        self.0.rcu(|s| {
-            let mut s = (**s).clone();
-            if s.clients.len() <= i {
-                s.clients.resize(i + 1, ClientView::default());
-            }
-            s.clients[i] = v.clone();
-            s
-        });
-    }
-    /// Add a log line (keeps the last [`LOG_KEEP`]).
-    pub fn log(&self, at: String, text: String) {
-        let line = LogLine {
-            at,
-            level: Level::of(&text),
-            text,
-        };
-        self.0.rcu(|s| {
-            let mut s = (**s).clone();
-            s.logs.push(line.clone());
-            let n = s.logs.len();
-            if n > LOG_KEEP {
-                s.logs.drain(..n - LOG_KEEP);
-            }
-            s
-        });
-    }
-    fn set_demo(&self, on: bool) {
-        self.0.rcu(|s| Snapshot {
-            demo: on,
-            ..(**s).clone()
-        });
-    }
-}
-
-fn clock() -> String {
-    let s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // local time is wired with the real data; demo shows UTC+8 (SG)
-    let s = (s + 8 * 3600) % 86_400;
-    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-}
-
-/// Dummy feeder: fake step / gen / attempt for 4 clients + log lines.
-fn spawn_demo(bus: Bus, stop: Arc<AtomicBool>) {
-    bus.set_demo(true);
-    std::thread::Builder::new()
-        .name("dashboard-demo".into())
-        .spawn(move || {
-            const STEPS: [&str; 6] = ["LOBBY", "WALK", "VOTE", "PLACE", "UPGRADE", "END"];
-            let mut t: u64 = 0;
-            let mut gens = [284u64, 368, 120, 77];
-            while !stop.load(Ordering::Relaxed) {
-                for (i, g) in gens.iter_mut().enumerate() {
-                    *g += 1 + (t + i as u64) % 3;
-                    let step = STEPS[((t / 12 + i as u64) % STEPS.len() as u64) as usize];
-                    let attempt = 1 + ((t / 4 + i as u64) % 3) as u32;
-                    let health = match (t / 8 + i as u64) % 7 {
-                        5 => Health::Retrying,
-                        6 if i == 3 => Health::Paused,
-                        _ => Health::Ok,
-                    };
-                    bus.set_client(
-                        i,
-                        ClientView {
-                            step: step.into(),
-                            gen: *g,
-                            attempt,
-                            attempts: 3,
-                            health,
-                        },
-                    );
-                }
-                if t.is_multiple_of(3) {
-                    let c = 1 + (t / 3) % 2;
-                    let text = match (t / 3) % 9 {
-                        4 => {
-                            format!("Client {c}: WARN panel didn't open, clicking unit again (1/3)")
-                        }
-                        7 => {
-                            format!("Client {c}: ERROR input dispatch failed (error 5) - retrying")
-                        }
-                        8 if t.is_multiple_of(2) => format!("Client {c}: FATAL demo fatal line"),
-                        _ => format!("Client {c}: slot {} upgraded to {}.", 1 + t % 6, 1 + t % 9),
-                    };
-                    bus.log(clock(), text);
-                }
-                t += 1;
-                std::thread::sleep(Duration::from_millis(700));
-            }
-        })
-        .ok();
-}
-
 /// Dashboard state kept in the App.
 pub struct Dash {
-    pub bus: Bus,
-    demo_stop: Arc<AtomicBool>,
     /// This frame's slots: (client, slot rect in UI points, fully on show).
     slots: Vec<(Hwnd, egui::Rect, bool)>,
     /// Clients whose borders we stripped (restored on release).
     borderless: Vec<Hwnd>,
-    /// Clients we made topmost.
+    /// Clients we made topmost, and when that was last re-asserted.
     tops: Vec<Hwnd>,
+    tops_at: Instant,
     last: Instant,
     pub log_open: bool,
     log_filter: Level,
@@ -234,26 +149,16 @@ pub struct Dash {
 
 impl Default for Dash {
     fn default() -> Self {
-        let bus = Bus::default();
-        let demo_stop = Arc::new(AtomicBool::new(false));
-        spawn_demo(bus.clone(), demo_stop.clone());
         Dash {
-            bus,
-            demo_stop,
             slots: vec![],
             borderless: vec![],
             tops: vec![],
+            tops_at: Instant::now(),
             last: Instant::now() - DOCK_EVERY,
             log_open: true,
             log_filter: Level::Info,
             note: String::new(),
         }
-    }
-}
-
-impl Drop for Dash {
-    fn drop(&mut self) {
-        self.demo_stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -276,7 +181,7 @@ impl App {
     // ---------------- Dashboard ----------------
 
     pub(super) fn page_dashboard(&mut self, ui: &mut egui::Ui) {
-        let snap = self.dash.bus.load();
+        let st = crate::status::snapshot();
         let ppp = ui.ctx().pixels_per_point();
         // the slot is the client's exact pixel size: the macro's coordinates
         // are for an 800x599 viewport, so the window is never scaled
@@ -294,9 +199,14 @@ impl App {
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new("Dashboard").size(18.0).strong().color(TEXT));
-            if snap.demo {
-                super::chip(ui, "DEMO DATA", TEXT, Some(WARN));
-            }
+            let (txt, c) = if !self.running {
+                ("Stopped - press START ALL (F2)", MUTED)
+            } else if self.paused {
+                ("Paused", WARN)
+            } else {
+                ("Running", GOOD)
+            };
+            super::chip(ui, txt, TEXT, Some(c));
             if !self.settings.dock {
                 super::chip(ui, "docking off - Window ▸ Dock Roblox", TEXT, Some(MUTED));
             }
@@ -317,12 +227,8 @@ impl App {
                         break;
                     }
                     let client = self.clients.get(i).map(|c| c.hwnd);
-                    let view = snap.clients.get(i).cloned().unwrap_or_default();
-                    let health = if self.paused {
-                        Health::Paused
-                    } else {
-                        view.health
-                    };
+                    let view = ClientView::build(&st, client, self.running, self.paused);
+                    let health = view.health;
                     let label = if client.is_some() {
                         self.client_label(i)
                     } else {
@@ -386,6 +292,7 @@ impl App {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             let (txt, c) = match health {
+                                                Health::Idle => ("IDLE", MUTED),
                                                 Health::Ok => ("OK", GOOD),
                                                 Health::Retrying => ("RETRYING", WARN),
                                                 Health::Paused => ("PAUSED", BAD),
@@ -396,10 +303,11 @@ impl App {
                                 });
                                 ui.label(mono(
                                     format!(
-                                        "Gen: {}  |  Attempt: {}/{}",
+                                        "Gen: {}  |  Attempt: {}",
                                         view.gen,
-                                        view.attempt.max(1),
-                                        view.attempts.max(1)
+                                        view.attempt
+                                            .map(|(n, of)| format!("{n}/{of}"))
+                                            .unwrap_or_else(|| "-".into())
                                     ),
                                     TEXT,
                                 ));
@@ -500,16 +408,23 @@ impl App {
         }
     }
 
-    /// Exactly `want` topmost (only touching what changed).
+    /// Exactly `want` topmost: only what changed, plus a re-assert every 2 s
+    /// (a focus change can bump it). Never activates a window, so it doesn't
+    /// fight the macro focusing the client it's sending input to.
     fn dash_tops(&mut self, want: Vec<Hwnd>) {
+        let reassert = self.dash.tops_at.elapsed() > Duration::from_secs(2);
         for h in self.dash.tops.clone() {
             if !want.contains(&h) {
                 let _ = self.platform.set_topmost(h, false);
             }
         }
         for h in &want {
-            // re-assert: a focus change can bump it
-            let _ = self.platform.set_topmost(*h, true);
+            if reassert || !self.dash.tops.contains(h) {
+                let _ = self.platform.set_topmost(*h, true);
+            }
+        }
+        if reassert {
+            self.dash.tops_at = Instant::now();
         }
         self.dash.tops = want;
     }
@@ -528,29 +443,48 @@ impl App {
 
     // ---------------- logs ----------------
 
-    fn log_lines(&self, ui: &mut egui::Ui, snap: &super::command::Snapshot, min: Level) {
+    /// App log line "[HH:MM:SS] text" -> (time, text).
+    fn split_line(l: &str) -> (&str, &str) {
+        l.strip_prefix('[')
+            .and_then(|r| r.split_once("] "))
+            .unwrap_or(("", l))
+    }
+
+    fn log_lines(&self, ui: &mut egui::Ui, min: Level) {
         egui::ScrollArea::vertical()
             .id_salt(("logscroll", min as u8))
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
-                for l in snap.logs.iter().filter(|l| l.level >= min) {
+                if self.log.is_empty() {
+                    ui.label(
+                        RichText::new("no log lines yet")
+                            .monospace()
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                }
+                for l in &self.log {
+                    let lv = Level::of(l);
+                    if lv < min {
+                        continue;
+                    }
+                    let (at, text) = Self::split_line(l);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&l.at).monospace().size(12.0).color(MUTED));
+                        ui.label(RichText::new(at).monospace().size(12.0).color(MUTED));
                         ui.label(
-                            RichText::new(l.level.tag())
+                            RichText::new(lv.tag())
                                 .monospace()
                                 .size(12.0)
-                                .color(l.level.color()),
+                                .color(lv.color()),
                         );
-                        ui.label(RichText::new(&l.text).monospace().size(12.0).color(
-                            if l.level == Level::Info {
-                                TEXT
-                            } else {
-                                l.level.color()
-                            },
-                        ));
+                        ui.label(
+                            RichText::new(text)
+                                .monospace()
+                                .size(12.0)
+                                .color(if lv == Level::Info { TEXT } else { lv.color() }),
+                        );
                     });
                 }
             });
@@ -558,7 +492,6 @@ impl App {
 
     /// Bottom panel: one line when collapsed, a terminal when open.
     pub(super) fn log_dock(&mut self, ui: &mut egui::Ui) {
-        let snap = self.dash.bus.load();
         ui.horizontal(|ui| {
             let arrow = if self.dash.log_open { "▾" } else { "▸" };
             if ui
@@ -576,27 +509,24 @@ impl App {
                 self.dash.log_open = !self.dash.log_open;
             }
             if !self.dash.log_open {
-                if let Some(l) = snap.logs.last() {
+                if let Some(l) = self.log.last() {
                     ui.label(
-                        RichText::new(format!("[{}] {}", l.at, l.text))
+                        RichText::new(l.as_str())
                             .monospace()
                             .size(12.0)
-                            .color(l.level.color()),
+                            .color(Level::of(l).color()),
                     );
                 }
-            } else if snap.demo {
-                super::chip(ui, "DEMO", TEXT, Some(WARN));
             }
         });
         if self.dash.log_open {
             ui.allocate_ui(Vec2::new(ui.available_width(), 150.0), |ui| {
-                self.log_lines(ui, &snap, Level::Info)
+                self.log_lines(ui, Level::Info)
             });
         }
     }
 
     pub(super) fn page_logs(&mut self, ui: &mut egui::Ui) {
-        let snap = self.dash.bus.load();
         ui.horizontal(|ui| {
             ui.label(RichText::new("Logs").size(18.0).strong().color(TEXT));
             ui.add_space(12.0);
@@ -617,7 +547,7 @@ impl App {
             .inner_margin(10)
             .show(ui, |ui| {
                 ui.set_min_height(ui.available_height().max(300.0));
-                self.log_lines(ui, &snap, min)
+                self.log_lines(ui, min)
             });
     }
 }
@@ -650,23 +580,36 @@ mod tests {
     }
 
     #[test]
-    fn bus_keeps_last_lines_and_grows_clients() {
-        let b = Bus::default();
-        for i in 0..LOG_KEEP + 20 {
-            b.log("00:00:00".into(), format!("line {i}"));
-        }
-        let s = b.load();
-        assert_eq!(s.logs.len(), LOG_KEEP);
-        assert_eq!(s.logs[0].text, "line 20");
-        b.set_client(
-            2,
-            ClientView {
-                step: "UPGRADE".into(),
-                ..Default::default()
-            },
+    fn card_from_live_state() {
+        let h = Hwnd(0xCA4D);
+        let st = crate::status::Status {
+            step: "upgrade".into(),
+            step_since: Some(Instant::now()),
+            attempts: vec![crate::status::Attempt {
+                hwnd: h,
+                n: 2,
+                of: 4,
+                at: Instant::now(),
+            }],
+        };
+        let idle = ClientView::build(&st, Some(h), false, false);
+        assert_eq!((idle.step.as_str(), idle.health), ("IDLE", Health::Idle));
+        let v = ClientView::build(&st, Some(h), true, false);
+        assert_eq!(v.step, "UPGRADE");
+        assert_eq!(v.attempt, Some((2, 4)));
+        assert_eq!(v.health, Health::Retrying);
+        let p = ClientView::build(&st, Some(h), true, true);
+        assert_eq!(p.health, Health::Paused);
+        let other = ClientView::build(&st, Some(Hwnd(1)), true, false);
+        assert_eq!((other.attempt, other.health), (None, Health::Ok));
+    }
+
+    #[test]
+    fn log_line_split() {
+        assert_eq!(
+            App::split_line("[21:04:10] slot 2 upgraded to 5."),
+            ("21:04:10", "slot 2 upgraded to 5.")
         );
-        let s = b.load();
-        assert_eq!(s.clients.len(), 3);
-        assert_eq!(s.clients[2].step, "UPGRADE");
+        assert_eq!(App::split_line("plain"), ("", "plain"));
     }
 }

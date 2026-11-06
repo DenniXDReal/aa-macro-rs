@@ -31,6 +31,7 @@ pub fn step(name: &str, params: serde_json::Value) {
         since_wall: SystemTime::now(),
     };
     *STEP.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
+    crate::status::set_step(name);
     let hooks: Vec<fn(&StepNow)> = ON_STEP.lock().unwrap_or_else(|e| e.into_inner()).clone();
     for h in hooks {
         h(&s);

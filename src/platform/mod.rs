@@ -69,6 +69,12 @@ pub trait Platform: Send + Sync {
     fn set_owner(&self, _hwnd: Hwnd, _owner: Option<Hwnd>) -> Result<()> {
         Ok(())
     }
+    /// Another copy of this macro is already running on this PC (two
+    /// copies would both drive the same Roblox windows). The first call takes
+    /// the marker; later calls repeat the answer.
+    fn another_instance(&self) -> bool {
+        false
+    }
     /// Strip the window frame (`WS_POPUP`, for docking) or put the original
     /// style back. Not reparenting: it stays a top-level window.
     fn set_borderless(&self, _hwnd: Hwnd, _on: bool) -> Result<()> {

@@ -31,6 +31,7 @@ pub mod rbx;
 pub mod robloxlog;
 pub mod secrets;
 pub mod spotmem;
+pub mod status;
 pub mod update;
 pub mod vision;
 pub mod webhook;
