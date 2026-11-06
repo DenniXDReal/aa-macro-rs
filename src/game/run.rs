@@ -290,6 +290,20 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     }
 }
 
+/// Placed units as JSON (client number, slot, x, y) for the step state.
+fn placed_json(
+    clients: &[(Hwnd, super::LiveScreen)],
+    placed: &[(Hwnd, usize, Point)],
+) -> serde_json::Value {
+    placed
+        .iter()
+        .map(|(h, slot, p)| {
+            let n = clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+            serde_json::json!([n, slot, p.x, p.y])
+        })
+        .collect()
+}
+
 /// One picture of an upgrade panel the macro couldn't make sense of
 /// (upgrade-debug.png next to the macro), to see what OCR is given.
 fn save_upgrade_debug(ctx: &RunCtx, scr: &super::LiveScreen) {
@@ -321,7 +335,38 @@ static LAST_PICK: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new
 
 impl RunCtx {
     fn log(&self, s: impl Into<String>) {
-        let _ = self.tx.send(Event::Log(s.into()));
+        let s = s.into();
+        super::trace::log(&s);
+        let _ = self.tx.send(Event::Log(s));
+    }
+
+    /// Failure dump of every client (+ `crops` on client `h`), logged.
+    fn dump_failure(
+        &self,
+        step: &str,
+        reason: &str,
+        h: Option<Hwnd>,
+        crops: Vec<super::dump::Crop>,
+    ) {
+        let shots = self
+            .clients
+            .iter()
+            .enumerate()
+            .map(|(i, (ch, scr))| super::dump::ClientShot {
+                n: i + 1,
+                frame: scr.frame(),
+                crops: if Some(*ch) == h {
+                    crops.clone()
+                } else {
+                    vec![]
+                },
+            })
+            .collect();
+        if let Some(d) = super::dump::dump(step, reason, shots) {
+            let _ = self
+                .tx
+                .send(Event::Log(format!("failure dump: {}", d.display())));
+        }
     }
     fn screen(&self, h: Hwnd) -> &LiveScreen {
         &self.clients.iter().find(|c| c.0 == h).expect("client").1
@@ -354,6 +399,27 @@ impl RunCtx {
                 }
             }
             if dl.expired() {
+                // a waited-for pattern never showed: dump it when asked to
+                if ms >= 1000 {
+                    let crops: Vec<super::dump::Crop> = names
+                        .iter()
+                        .filter_map(|n| s.pattern(n))
+                        .filter(|p| p.dump_on_miss || self.settings.dump_on_miss)
+                        .map(|p| super::dump::Crop {
+                            what: p.name.clone(),
+                            rect: p.search,
+                            info: serde_json::json!({"pattern": p.name, "waited_ms": ms, "found": false}),
+                        })
+                        .collect();
+                    if !crops.is_empty() {
+                        self.dump_failure(
+                            &super::trace::current_name(),
+                            &format!("{} never showed", names.join(" / ")),
+                            Some(h),
+                            crops,
+                        );
+                    }
+                }
                 return Ok(None);
             }
             self.sleep(150)?;
@@ -1969,6 +2035,20 @@ impl RunCtx {
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
                 let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
+                if before.is_none() {
+                    // OCR below the bar: what did it look at?
+                    let la = scr.level_area();
+                    self.dump_failure(
+                        "upgrade",
+                        "level not readable",
+                        Some(*h),
+                        vec![super::dump::Crop {
+                            what: "upg_num".into(),
+                            rect: la,
+                            info: serde_json::json!({ "slot": slot, "unit_at": [at.x, at.y] }),
+                        }],
+                    );
+                }
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -2390,20 +2470,42 @@ impl RunCtx {
 
     /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
     fn one_round(&self, in_lobby: &mut bool, map: &mut String, last: &dyn Fn() -> bool) -> R<()> {
+        let mode = self.settings.run.mode.label();
         if *in_lobby {
+            super::trace::step("lobby", serde_json::json!({ "mode": mode }));
             self.enter_stage()?;
             map.clear();
         }
+        super::trace::step(
+            "stage_setup",
+            serde_json::json!({ "mode": mode, "map": map.clone() }),
+        );
         *map = self.stage_setup(map)?;
         self.cards_all()?;
         let started = Instant::now();
+        super::trace::step(
+            "place",
+            serde_json::json!({ "mode": mode, "map": map.clone() }),
+        );
         let placed = self.place_all(map)?;
         self.log(format!(
             "placed {} unit(s) in {:.0}s",
             placed.len(),
             started.elapsed().as_secs_f32()
         ));
+        super::trace::step(
+            "upgrade",
+            serde_json::json!({
+                "mode": mode,
+                "map": map.clone(),
+                "placed": placed_json(&self.clients, &placed),
+            }),
+        );
         let won = self.upgrade_until_end(&placed)?;
+        super::trace::step(
+            "end",
+            serde_json::json!({ "mode": mode, "map": map.clone(), "won": won }),
+        );
         // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
         {
             let main = self.screen(self.main);
@@ -2554,6 +2656,9 @@ impl RunCtx {
                             }
                         }
                         Err(e) => {
+                            if e != "stopped" {
+                                self.dump_failure(&super::trace::current_name(), &e, None, vec![]);
+                            }
                             // a client dropped out (Roblox "Disconnected" / error
                             // code box): no point retrying - relaunch everything
                             if let Some(who) = self.disconnected() {

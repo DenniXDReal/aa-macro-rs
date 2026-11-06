@@ -69,6 +69,9 @@ pub struct Settings {
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
+    /// Save a failure dump (debug/ folder) whenever a waited-for pattern
+    /// never shows (every pattern; or tick dump_on_miss on single ones).
+    pub dump_on_miss: bool,
     /// Farm one thing after another (each step: mode + map + team, for a
     /// number of runs or minutes).
     pub schedule: Schedule,
@@ -473,6 +476,7 @@ impl Default for Settings {
             placement_detect: PlacementDetect::Panel,
             adaptations: Adaptations::default(),
             schedule: Schedule::default(),
+            dump_on_miss: false,
             step_delay_ms: 800,
             place_delay_ms: 2000,
             place_settle_ms: 2000,

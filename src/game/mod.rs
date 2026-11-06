@@ -6,6 +6,7 @@ pub mod buttonmem;
 pub mod cardlog;
 pub mod cards;
 pub mod drops;
+pub mod dump;
 pub mod hotbar;
 pub mod minimap;
 pub mod placing;
@@ -13,6 +14,7 @@ pub mod run;
 #[cfg(test)]
 pub mod sim;
 pub mod textbuttons;
+pub mod trace;
 
 #[cfg(test)]
 mod level_tests {
@@ -319,6 +321,11 @@ impl LiveScreen {
     /// The vote box's Yes button right now (by colour).
     pub fn find_vote_yes(&self) -> Option<Point> {
         self.frame().and_then(|f| vote_yes(&f))
+    }
+
+    /// A captured pattern by name.
+    pub fn pattern(&self, name: &str) -> Option<&Pattern> {
+        self.pats.get(&key(name))
     }
 
     /// Read button labels right now (no waiting for the picture first).

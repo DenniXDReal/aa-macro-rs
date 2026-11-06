@@ -236,6 +236,11 @@ enum RamMsg {
 
 impl App {
     pub fn new(platform: Arc<dyn Platform>, settings: Settings, settings_path: PathBuf) -> Self {
+        // failure dumps: keep the newest ones only
+        let _ = crate::game::dump::prune(
+            &crate::game::dump::root(),
+            crate::game::dump::FAILURE_DUMP_RETENTION,
+        );
         let (lib, defaults) = Library::load_with_defaults(&Library::default_dir())
             .unwrap_or_else(|_| (Library::default(), 0));
         let placements_path = Placements::default_path();
@@ -3328,6 +3333,20 @@ impl App {
                         changed = true;
                         input_changed = true;
                     }
+                    ui.end_row();
+                    ui.label("Failure dumps").on_hover_text(
+                        "on a failed step / unreadable read the macro saves screenshots, crops, state and log to debug/ (newest 50 kept)",
+                    );
+                    ui.horizontal(|ui| {
+                        changed |= ui
+                            .checkbox(&mut s.dump_on_miss, "also when a waited-for picture never shows")
+                            .changed();
+                        if ui.button("Open debug folder").clicked() {
+                            let d = crate::game::dump::root();
+                            let _ = std::fs::create_dir_all(&d);
+                            let _ = self.platform.open_uri(&d.display().to_string());
+                        }
+                    });
                     ui.end_row();
                     ui.label("Fixed buttons")
                         .on_hover_text("Settings cog, its X, party close: once found, their spot is kept and clicked straight away (no search).");
