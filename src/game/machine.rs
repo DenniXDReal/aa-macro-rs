@@ -373,18 +373,45 @@ pub fn end<'a>() -> Simple<'a> {
     )
 }
 
+/// Dungeon: the whole floor (doors by your room order, shop, shrines) -
+/// a skeleton until the dungeon screens are known.
+pub fn dungeon<'a>() -> Simple<'a> {
+    Simple::new(
+        Step::Dungeon,
+        |c| {
+            let won = c.run.dungeon_floor()?;
+            c.round().won = Some(won);
+            Ok(())
+        },
+        base,
+    )
+}
+
 /// One round's steps, from `from` on (resume skips the ones before; Walk is
 /// never redone).
 pub fn round_steps<'a>(from: Step) -> Vec<Box<dyn StepRunner<Ctx<'a>> + 'a>> {
-    let all = [
-        Step::Lobby,
-        Step::StageSetup,
-        Step::Walk,
-        Step::Vote,
-        Step::Place,
-        Step::Upgrade,
-        Step::End,
-    ];
+    round_steps_for(crate::config::Mode::SummerHunt, from)
+}
+
+/// `round_steps` for `mode`: Dungeon runs its floor in place of
+/// Walk / Vote / Place / Upgrade.
+pub fn round_steps_for<'a>(
+    mode: crate::config::Mode,
+    from: Step,
+) -> Vec<Box<dyn StepRunner<Ctx<'a>> + 'a>> {
+    let all: &[Step] = if mode == crate::config::Mode::Dungeon {
+        &[Step::Lobby, Step::StageSetup, Step::Dungeon, Step::End]
+    } else {
+        &[
+            Step::Lobby,
+            Step::StageSetup,
+            Step::Walk,
+            Step::Vote,
+            Step::Place,
+            Step::Upgrade,
+            Step::End,
+        ]
+    };
     let i = all.iter().position(|s| *s == from).unwrap_or(0);
     all[i..]
         .iter()
@@ -396,6 +423,7 @@ pub fn round_steps<'a>(from: Step) -> Vec<Box<dyn StepRunner<Ctx<'a>> + 'a>> {
                 Step::Vote => Box::new(vote()),
                 Step::Place => Box::new(place()),
                 Step::Upgrade => Box::new(upgrade()),
+                Step::Dungeon => Box::new(dungeon()),
                 Step::End => Box::new(end()),
             }
         })
@@ -507,7 +535,7 @@ pub(crate) fn run_rounds(
             run,
             round: Mutex::new(round),
         };
-        let mut steps = round_steps(from);
+        let mut steps = round_steps_for(run.settings.run.mode, from);
         let res = super::steps::run_steps(&mut steps, &ctx, run, Duration::from_millis(200));
         let round = ctx.round().clone();
         drop(steps);
@@ -684,6 +712,12 @@ mod tests {
         // resume never walks again
         assert_eq!(names(Step::Vote), ["vote", "place", "upgrade", "end"]);
         assert_eq!(names(Step::Upgrade), ["upgrade", "end"]);
+        // a dungeon: the floor instead of walk / vote / place / upgrade
+        let d: Vec<&str> = round_steps_for(crate::config::Mode::Dungeon, Step::Lobby)
+            .iter()
+            .map(|s| s.step().name())
+            .collect();
+        assert_eq!(d, ["lobby", "stage_setup", "dungeon", "end"]);
     }
 
     #[test]

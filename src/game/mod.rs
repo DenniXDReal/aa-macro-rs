@@ -7,6 +7,7 @@ pub mod cards;
 pub mod challenge;
 pub mod drops;
 pub mod dump;
+pub mod dungeon;
 pub mod hotbar;
 pub mod loot;
 pub mod machine;

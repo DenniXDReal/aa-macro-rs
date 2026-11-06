@@ -678,7 +678,7 @@ impl RunCtx {
             return self.enter_pod(mode, route);
         }
         if mode == Mode::Dungeon {
-            return Err("Dungeon isn't supported yet - pick another mode".into());
+            return Err("Dungeon: getting into a dungeon from the lobby isn't set up yet (needs your screenshots of it) - the floor itself runs on the step machine once you're in".into());
         }
         // Join Matchmaking?
         match s.run.play {
@@ -3711,7 +3711,7 @@ impl RunCtx {
         let mut n: u32 = 0;
         while !finished.load(Ordering::Relaxed) && !self.control.is_stopped() {
             n += 1;
-            self.watch_once(n % OCR_EVERY_NTH == 0);
+            self.watch_once(n.is_multiple_of(OCR_EVERY_NTH));
             // the watchdog's own wait ignores pause (it has to see the
             // captcha go away while paused)
             let until = Instant::now() + Duration::from_secs_f64(self.secs(EVERY.as_secs_f64()));
@@ -3765,6 +3765,108 @@ impl RunCtx {
                 let _ = self.tx.send(Event::CaptchaGone);
             }
             _ => {}
+        }
+    }
+
+    /// Dungeon floor (skeleton): until the end screen, every few seconds -
+    /// shop open: buy from your list; shrine: switch it per your rules;
+    /// doors (your door_* pictures): take the one highest on your room
+    /// order. Ok(won).
+    pub(crate) fn dungeon_floor(&self) -> R<bool> {
+        use super::dungeon::{choose_buys, choose_door, shop_items, shrine_action, RoomKind};
+        let d = &self.settings.dungeon;
+        let end = Self::names(&["victory", "defeat"]);
+        let main = self.screen(self.main);
+        let mut told = false;
+        loop {
+            self.check()?;
+            if let Some(won) = self.end_screen(&end)? {
+                return Ok(won);
+            }
+            let f = main.frame();
+            let lines = f
+                .as_ref()
+                .and_then(|f| main.ocr_lines(f))
+                .unwrap_or_default();
+            let text: String = lines
+                .iter()
+                .flat_map(|l| l.iter().map(|(w, _)| w.to_lowercase()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // the shop
+            if d.shop_enabled && text.contains("shop") && !d.shop_priority.is_empty() {
+                let items = shop_items(&lines);
+                let money = main
+                    .frame()
+                    .and_then(|f| main.ocr_rect(&f, crate::geom::Rect::new(300, 470, 200, 30)))
+                    .and_then(|t| super::loot::parse_amount(&t))
+                    .unwrap_or(0);
+                for i in choose_buys(&items, &d.shop_priority, money, d.shop_keep) {
+                    self.log(format!(
+                        "dungeon shop: buying {} ({})",
+                        items[i].name, items[i].price
+                    ));
+                    self.click(self.main, items[i].at, "dungeon buy")?;
+                    self.sleep(600)?;
+                }
+            }
+            // a shrine: "<name> ... on/off"
+            if text.contains("shrine") {
+                for l in &lines {
+                    let t: String = l
+                        .iter()
+                        .map(|(w, _)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !t.to_lowercase().contains("shrine") {
+                        continue;
+                    }
+                    let on = t.to_lowercase().contains(" on");
+                    let name = t.split([':', '(']).next().unwrap_or(&t).trim().to_string();
+                    if let Some(want) = shrine_action(&name, on, &d.shrines) {
+                        self.log(format!(
+                            "dungeon shrine: {name} -> {}",
+                            if want { "on" } else { "off" }
+                        ));
+                        let r = l[0].1;
+                        self.click(
+                            self.main,
+                            Point::new(r.x + r.w / 2, r.y + r.h / 2),
+                            "shrine",
+                        )?;
+                        self.sleep(600)?;
+                    }
+                }
+            }
+            // doors
+            let doors: Vec<(RoomKind, Point)> = RoomKind::ALL
+                .into_iter()
+                .filter(|k| main.has(k.door_pattern()))
+                .filter_map(|k| {
+                    main.find_picture_wide(&Self::names(&[k.door_pattern()]))
+                        .map(|p| (k, p))
+                })
+                .collect();
+            if doors.is_empty() && !told {
+                told = true;
+                self.log("dungeon: no door pictures found (capture door_item / door_gold / door_shrine / door_shop / door_combat / door_boss with F6)");
+            }
+            if let Some(i) = choose_door(&doors, &d.room_priority) {
+                let (k, p) = doors[i];
+                self.log(format!(
+                    "dungeon: {} door (of {}) - your room order",
+                    k.label(),
+                    doors
+                        .iter()
+                        .map(|d| d.0.label())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                self.click(self.main, p, "dungeon door")?;
+                self.sleep(2500)?;
+                continue;
+            }
+            self.sleep(2000)?;
         }
     }
 

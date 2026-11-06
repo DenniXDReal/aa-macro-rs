@@ -69,6 +69,7 @@ enum SettingsTab {
     Discord,
     Weather,
     Recovery,
+    Dungeon,
     Updates,
 }
 
@@ -168,6 +169,9 @@ pub struct App {
     dock_rect: Option<egui::Rect>,
     /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
+    /// Settings > Dungeon editor texts: rooms, shop, shrines.
+    dungeon_text: Option<(String, String, String)>,
+    dungeon_note: String,
     /// Settings > Weather editor text (None = not loaded yet).
     weather_text: Option<String>,
     /// The game loop sends the Discord loot report (no plain win / loss).
@@ -335,6 +339,8 @@ impl App {
             other_instance: false,
             loot_reports: false,
             weather_text: None,
+            dungeon_text: None,
+            dungeon_note: String::new(),
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
@@ -1774,7 +1780,7 @@ impl App {
             }
             if r.mode == Mode::Dungeon {
                 ui.label(
-                    RichText::new("Dungeon isn't supported yet.")
+                    RichText::new("Dungeon (beta): set rooms / shop / shrines in Settings > Dungeon. Getting in from the lobby needs your screenshots first.")
                         .size(11.0)
                         .color(WARN),
                 );
@@ -3124,6 +3130,110 @@ impl App {
         }
     }
 
+    /// Settings > Dungeon: room order, shop list, shrine rules.
+    fn dungeon_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::game::dungeon::{rooms_from_text, shrines_from_text, shrines_to_text, RoomKind};
+        let mut changed = false;
+        let d = &mut self.settings.dungeon;
+        let texts = self.dungeon_text.get_or_insert_with(|| {
+            (
+                d.room_priority
+                    .iter()
+                    .map(|k| k.label())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                d.shop_priority.join("\n"),
+                shrines_to_text(&d.shrines),
+            )
+        });
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("DUNGEON (BETA - SKELETON)")
+                    .size(11.0)
+                    .color(WARN),
+            );
+            ui.label(
+                RichText::new("Getting into a dungeon isn't set up yet (needs your screenshots of the dungeon lobby, doors, shop and shrines). Set your choices now; the dungeon floor uses them on the step machine. Doors are found by your door_item / door_gold / door_shrine / door_shop / door_combat / door_boss pictures (F6).")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        });
+        ui.add_space(8.0);
+        ui.columns(3, |cols| {
+            card(&mut cols[0], |ui| {
+                ui.label(RichText::new("ROOM ORDER").size(11.0).color(MUTED));
+                ui.label(
+                    RichText::new(format!(
+                        "one per line, best first; a kind left off is never entered ({})",
+                        RoomKind::ALL
+                            .iter()
+                            .map(|k| k.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                if ui
+                    .add(egui::TextEdit::multiline(&mut texts.0).desired_rows(7))
+                    .changed()
+                {
+                    let (rooms, bad) = rooms_from_text(&texts.0);
+                    d.room_priority = rooms;
+                    changed = true;
+                    if !bad.is_empty() {
+                        self.dungeon_note = format!("not a room kind: {}", bad.join(", "));
+                    } else {
+                        self.dungeon_note.clear();
+                    }
+                }
+                if !self.dungeon_note.is_empty() {
+                    ui.label(RichText::new(&self.dungeon_note).size(11.0).color(WARN));
+                }
+            });
+            card(&mut cols[1], |ui| {
+                ui.label(RichText::new("SHOP").size(11.0).color(MUTED));
+                changed |= ui
+                    .checkbox(&mut d.shop_enabled, "buy in the dungeon shop")
+                    .changed();
+                ui.label(
+                    RichText::new("items to buy, best first (names as the shop shows them)")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                if ui
+                    .add(egui::TextEdit::multiline(&mut texts.1).desired_rows(7))
+                    .changed()
+                {
+                    d.shop_priority = crate::game::weather::from_text(&texts.1);
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("keep at least");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut d.shop_keep).speed(50.0))
+                        .changed();
+                });
+            });
+            card(&mut cols[2], |ui| {
+                ui.label(RichText::new("SHRINES").size(11.0).color(MUTED));
+                ui.label(
+                    RichText::new("one per line: Shrine name = on / off")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                if ui
+                    .add(egui::TextEdit::multiline(&mut texts.2).desired_rows(7))
+                    .changed()
+                {
+                    d.shrines = shrines_from_text(&texts.2);
+                    changed = true;
+                }
+            });
+        });
+        changed
+    }
+
     /// Settings > Recovery: disconnect / captcha handling.
     fn recovery_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
@@ -3320,6 +3430,7 @@ impl App {
                 (SettingsTab::Discord, "Discord"),
                 (SettingsTab::Weather, "Weather"),
                 (SettingsTab::Recovery, "Recovery"),
+                (SettingsTab::Dungeon, "Dungeon"),
                 (SettingsTab::Updates, "Updates"),
             ],
         );
@@ -3428,6 +3539,9 @@ impl App {
         }
         if tab == SettingsTab::Recovery {
             changed |= self.recovery_ui(ui);
+        }
+        if tab == SettingsTab::Dungeon {
+            changed |= self.dungeon_ui(ui);
         }
         if tab == SettingsTab::Game {
             self.card_priority_ui(ui);

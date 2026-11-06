@@ -28,6 +28,9 @@ pub enum Step {
     Vote,
     Place,
     Upgrade,
+    /// A whole dungeon floor (rooms, shop, shrines) instead of
+    /// Walk / Vote / Place / Upgrade.
+    Dungeon,
     End,
 }
 
@@ -40,6 +43,7 @@ impl Step {
             Step::Vote => "vote",
             Step::Place => "place",
             Step::Upgrade => "upgrade",
+            Step::Dungeon => "dungeon",
             Step::End => "end",
         }
     }
@@ -216,6 +220,7 @@ impl RetryPolicy {
             // whole match); per-unit limits are UNIT_PLACE / UNIT_UPGRADE
             Step::Place => Self::new(600, 600, 1, 5000),
             Step::Upgrade => Self::new(2400, 2400, 1, 5000),
+            Step::Dungeon => Self::new(3600, 3600, 0, 5000),
             Step::End => Self::new(5, 15, 2, 1000),
         }
     }

@@ -99,6 +99,8 @@ pub struct Settings {
     pub adaptations: Adaptations,
     /// Disconnect / captcha recovery (Settings > Recovery).
     pub recovery: RecoverySettings,
+    /// Dungeon rooms / shop / shrines (Settings > Dungeon).
+    pub dungeon: crate::game::dungeon::DungeonSettings,
     /// No recorded route for the map: walk by the minimap to its map
     /// file's points (maps/data/<Map>.json).
     pub minimap_nav: bool,
@@ -538,6 +540,7 @@ impl Default for Settings {
             adaptations: Adaptations::default(),
             recovery: RecoverySettings::default(),
             minimap_nav: true,
+            dungeon: Default::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
             step_machine: false,
