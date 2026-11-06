@@ -996,7 +996,28 @@ impl RunCtx {
             shown.join(" / ")
         ));
         let b = super::cards::CARD_BOXES[i];
-        self.vote_card(h, i, Point::new(b.x + b.w / 2, b.y + b.h / 2))
+        self.click(h, Point::new(b.x + b.w / 2, b.y + b.h / 2), "weather card")?;
+        // the pick counts once Vote (green, under the cards) is pressed:
+        // your weather_vote picture, else the button by its colour
+        let mut dl = self.control.deadline(self.secs(2.5));
+        loop {
+            self.sleep(300)?;
+            let at = scr
+                .has("weather_vote")
+                .then(|| scr.find_picture_wide(&Self::names(&["weather_vote"])))
+                .flatten()
+                .or_else(|| scr.frame().and_then(|f| super::weather_vote_button(&f)));
+            if let Some(p) = at {
+                self.click(h, p, "weather vote")?;
+                self.log("weather shift: Vote pressed");
+                break;
+            }
+            if dl.expired() {
+                self.log("weather shift: no Vote button showed - the card click is all it got");
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Mahoraga's "Choose an Adaptation": take the first choice in your
