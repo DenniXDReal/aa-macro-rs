@@ -327,7 +327,44 @@ fn save_upgrade_debug(ctx: &RunCtx, scr: &super::LiveScreen) {
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 /// Accounts still upgrading (0 = all done: idle clicks keep things awake).
+/// Re-clicks of a unit whose panel didn't open, before moving on.
+const PANEL_RETRIES: u32 = 3;
 static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Clients in the middle of a unit sequence (open unit .. Cancel, while
+/// placing or upgrading). Anti-AFK waits for these: its clicks + Cancel
+/// would close the unit panel halfway through a read.
+static SEQ: std::sync::Mutex<Vec<Hwnd>> = std::sync::Mutex::new(Vec::new());
+static SEQ_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Held for one unit sequence on a client; dropping it frees the client.
+pub(crate) struct SeqGuard(Hwnd);
+impl Drop for SeqGuard {
+    fn drop(&mut self) {
+        if let Ok(mut v) = SEQ.lock() {
+            v.retain(|h| *h != self.0);
+        }
+        SEQ_CV.notify_all();
+    }
+}
+/// Take client `h` for a unit sequence, waiting up to `max` for whoever has
+/// it (None = still busy after `max`).
+pub(crate) fn seq_lock(h: Hwnd, max: Duration) -> Option<SeqGuard> {
+    let until = Instant::now() + max;
+    let mut v = SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    while v.contains(&h) {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        v = SEQ_CV
+            .wait_timeout(v, left.min(Duration::from_millis(200)))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+    v.push(h);
+    Some(SeqGuard(h))
+}
 
 fn keys_ref(k: &Keys) -> &Keys {
     k
@@ -343,7 +380,8 @@ impl RunCtx {
         let _ = self.tx.send(Event::Log(s));
     }
 
-    /// Failure dump of every client (+ `crops` on client `h`), logged.
+    /// Failure dump of every client: frame + `crops` (and their rects) on each
+    /// one, marked `failing_client` for `h`. Logged.
     fn dump_failure(
         &self,
         step: &str,
@@ -358,11 +396,22 @@ impl RunCtx {
             .map(|(i, (ch, scr))| super::dump::ClientShot {
                 n: i + 1,
                 frame: scr.frame(),
-                crops: if Some(*ch) == h {
-                    crops.clone()
-                } else {
-                    vec![]
-                },
+                // the same rects on every client (same window size), so the
+                // other clients' crops show what they had there at the time
+                crops: crops
+                    .iter()
+                    .map(|c| {
+                        let mut c = c.clone();
+                        let failing = h.is_none() || Some(*ch) == h;
+                        if let Some(o) = c.info.as_object_mut() {
+                            o.insert("failing_client".into(), failing.into());
+                        } else {
+                            c.info =
+                                serde_json::json!({ "failing_client": failing, "info": c.info });
+                        }
+                        c
+                    })
+                    .collect(),
             })
             .collect();
         if let Some(d) = super::dump::dump(step, reason, shots) {
@@ -1628,6 +1677,8 @@ impl RunCtx {
                         if over.load(std::sync::atomic::Ordering::Relaxed) {
                             break; // VICTORY / DEFEAT: no more placing
                         }
+                        // anti-AFK waits until this unit is down
+                        let _seq = seq_lock(h, Duration::from_secs(10));
                         let free: Vec<Point> =
                             spots.into_iter().filter(|p| !used.contains(p)).collect();
                         // BUFF units: turn Auto ability on while the panel is open
@@ -2033,21 +2084,63 @@ impl RunCtx {
                 let (h, slot, at) = order[k];
                 let scr = self.screen(*h);
                 let want = unit(h, *slot).upgrade;
-                // open the unit
-                self.arb
-                    .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
-                    .map_err(|e| format!("upgrade: {e}"))?;
-                // let the panel start drawing; the stable read below polls
-                self.sleep(s.upgrade_read_ms / 2)?;
+                // this unit's sequence: anti-AFK waits until it's done
+                let seq = seq_lock(*h, Duration::from_secs(10));
+                // open the unit, and make sure the panel IS open before
+                // reading anything (a closed panel = nothing at the level box)
+                let mut open = false;
+                for attempt in 0..=PANEL_RETRIES {
+                    self.check()?;
+                    if attempt > 0 {
+                        self.log(format!(
+                            "slot {slot} at {},{}: panel didn't open, clicking unit again ({attempt}/{PANEL_RETRIES})",
+                            at.x, at.y
+                        ));
+                    }
+                    self.arb
+                        .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
+                        .map_err(|e| format!("upgrade: {e}"))?;
+                    // let the panel start drawing, then look for it
+                    self.sleep(s.upgrade_read_ms / 2)?;
+                    if self.panel_open(scr, s.upgrade_read_ms + 700)? {
+                        open = true;
+                        break;
+                    }
+                }
+                if !open {
+                    self.log(format!(
+                        "slot {slot} at {},{}: panel didn't open after {PANEL_RETRIES} retries - unit not selectable? next unit, back in a minute",
+                        at.x, at.y
+                    ));
+                    let la = scr.level_area();
+                    self.dump_failure(
+                        "upgrade",
+                        "panel not open",
+                        Some(*h),
+                        vec![super::dump::Crop {
+                            what: "upg_num".into(),
+                            rect: la,
+                            info: serde_json::json!({ "slot": slot, "unit_at": [at.x, at.y] }),
+                        }],
+                    );
+                    rest[k] = Some(Instant::now());
+                    self.arb
+                        .run(super::placing::cancel_batch(*h, keys))
+                        .map_err(|e| format!("upgrade: {e}"))?;
+                    drop(seq);
+                    i += 1;
+                    self.sleep(300)?;
+                    continue;
+                }
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
                 let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
                 if before.is_none() {
-                    // OCR below the bar: what did it look at?
+                    // panel open but the level didn't read: what did it look at?
                     let la = scr.level_area();
                     self.dump_failure(
                         "upgrade",
-                        "level not readable",
+                        "level not readable (panel open)",
                         Some(*h),
                         vec![super::dump::Crop {
                             what: "upg_num".into(),
@@ -2097,44 +2190,62 @@ impl RunCtx {
                         save_upgrade_debug(self, scr);
                     }
                     self.sleep(s.upgrade_read_ms.max(500))?;
-                    // poll until the level settles on a new value (or time's up)
-                    let after = self.read_level_stable(scr, s.upgrade_read_ms + 1500, before)?;
-                    match (before, after) {
-                        (_, Some(u32::MAX)) => {
-                            maxed[k] = true;
-                            self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
-                        }
-                        (Some(b), Some(a)) if a > b => {
-                            stuck[k] = 0;
-                            done[k] = a;
-                            self.log(format!("slot {slot} at {},{} upgraded to {a}", at.x, at.y));
-                        }
-                        // same level = not enough money yet (or MAX not read)
-                        (Some(_), Some(_)) => {
-                            stuck[k] += 1;
-                            if stuck[k] >= 3 {
+                    // panel closed under us (a click, a pop-up): this visit
+                    // tells nothing - no MAX / no-money verdict, try it again
+                    let still_open = self.panel_open(scr, s.upgrade_read_ms + 700)?;
+                    let after = if still_open {
+                        // poll until the level settles on a new value (or time's up)
+                        self.read_level_stable(scr, s.upgrade_read_ms + 1500, before)?
+                    } else {
+                        None
+                    };
+                    if !still_open {
+                        pressed[k] = pressed[k].saturating_sub(presses);
+                        self.log(format!(
+                            "slot {slot} at {},{}: panel closed during the upgrade - not counted, trying again",
+                            at.x, at.y
+                        ));
+                    } else {
+                        match (before, after) {
+                            (_, Some(u32::MAX)) => {
+                                maxed[k] = true;
+                                self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
+                            }
+                            (Some(b), Some(a)) if a > b => {
                                 stuck[k] = 0;
-                                rest[k] = Some(Instant::now());
+                                done[k] = a;
                                 self.log(format!(
+                                    "slot {slot} at {},{} upgraded to {a}",
+                                    at.x, at.y
+                                ));
+                            }
+                            // same level = not enough money yet (or MAX not read)
+                            (Some(_), Some(_)) => {
+                                stuck[k] += 1;
+                                if stuck[k] >= 3 {
+                                    stuck[k] = 0;
+                                    rest[k] = Some(Instant::now());
+                                    self.log(format!(
                                     "slot {slot} at {},{}: no change after 3 tries (MAX or no money) - next unit, back in a minute",
                                     at.x, at.y
                                 ));
-                                save_upgrade_debug(self, scr);
+                                    save_upgrade_debug(self, scr);
+                                }
                             }
-                        }
-                        (None, Some(a)) => done[k] = a,
-                        // level text not readable: count the presses
-                        _ => {
-                            done[k] += presses;
-                            stuck[k] += 1;
-                            if stuck[k] >= 3 {
-                                stuck[k] = 0;
-                                rest[k] = Some(Instant::now());
-                                self.log(format!(
+                            (None, Some(a)) => done[k] = a,
+                            // level text not readable: count the presses
+                            _ => {
+                                done[k] += presses;
+                                stuck[k] += 1;
+                                if stuck[k] >= 3 {
+                                    stuck[k] = 0;
+                                    rest[k] = Some(Instant::now());
+                                    self.log(format!(
                                     "slot {slot} at {},{}: level not readable 3x - next unit, back in a minute",
                                     at.x, at.y
                                 ));
-                                save_upgrade_debug(self, scr);
+                                    save_upgrade_debug(self, scr);
+                                }
                             }
                         }
                     }
@@ -2142,6 +2253,7 @@ impl RunCtx {
                 self.arb
                     .run(super::placing::cancel_batch(*h, keys))
                     .map_err(|e| format!("upgrade: {e}"))?;
+                drop(seq);
                 if !(s.run.priority_upgrade && !finished(k, &done, &maxed) && !resting(k, &rest)) {
                     i += 1; // priority upgrade keeps on this one until it's done
                 }
@@ -2178,6 +2290,40 @@ impl RunCtx {
                 .map_err(|e| format!("idle click: {e}"))?;
         }
         Ok(())
+    }
+
+    /// Is the unit panel open on this client? Polls up to `ms`: your
+    /// unit_close / unit_placed / upgrade_max pictures, else OCR of the
+    /// panel's own words (UPG / Sell / targeting, as `upg_line`).
+    fn panel_open(&self, scr: &super::LiveScreen, ms: u64) -> R<bool> {
+        let pics: Vec<String> = ["unit_close", "unit_placed", "upgrade_max"]
+            .iter()
+            .filter(|n| scr.has(n))
+            .map(|n| n.to_string())
+            .collect();
+        let ocr = scr.has_ocr();
+        if pics.is_empty() && !ocr {
+            return Ok(true); // nothing to tell by: assume it opened
+        }
+        let mut dl = self
+            .control
+            .deadline(self.secs(ms as f64 / 1000.0).max(0.05));
+        loop {
+            self.check()?;
+            if !pics.is_empty() && scr.find(&pics, None).is_some() {
+                return Ok(true);
+            }
+            if ocr
+                && crate::platform::urgent_ocr(|| scr.frame().and_then(|f| scr.find_upg(&f)))
+                    .is_some()
+            {
+                return Ok(true);
+            }
+            if dl.expired() {
+                return Ok(false);
+            }
+            self.sleep(200)?;
+        }
     }
 
     /// The unit panel's level ("UPG [n]"): Windows OCR first (nothing to
@@ -2475,6 +2621,15 @@ impl RunCtx {
                 .filter(|h| *h != self.main)
                 .collect();
             for h in alts {
+                // never in the middle of placing / upgrading a unit: wait
+                // for that sequence to finish (it's input anyway, no AFK)
+                let Some(_seq) = seq_lock(h, Duration::from_secs(30)) else {
+                    self.log("anti-AFK: alt busy placing/upgrading - skipped this time");
+                    continue;
+                };
+                if self.control.is_stopped() || finished.load(Ordering::Relaxed) {
+                    return;
+                }
                 let mut b = Batch::new(h, "anti-AFK");
                 for _ in 0..5 {
                     b = b.click(x, y).wait(150);
@@ -2965,5 +3120,27 @@ mod tests {
     fn route_map_strips_variant() {
         assert_eq!(route_map("Ruined City (Midnight)"), "Ruined City");
         assert_eq!(route_map("Space Center"), "Space Center");
+    }
+}
+
+#[cfg(test)]
+mod seq_tests {
+    use super::*;
+
+    #[test]
+    fn seq_lock_waits_for_the_holder() {
+        let h = Hwnd(0xBEEF01);
+        let g = seq_lock(h, Duration::from_millis(10)).expect("free");
+        // busy: a second taker gives up after its wait
+        assert!(seq_lock(h, Duration::from_millis(50)).is_none());
+        // another client is unaffected
+        assert!(seq_lock(Hwnd(0xBEEF02), Duration::from_millis(10)).is_some());
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(g);
+        });
+        // freed while waiting = taken
+        assert!(seq_lock(h, Duration::from_secs(2)).is_some());
+        t.join().unwrap();
     }
 }
