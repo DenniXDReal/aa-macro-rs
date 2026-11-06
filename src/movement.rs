@@ -580,6 +580,26 @@ mod tests {
     }
 
     #[test]
+    fn sky_island_route_is_built_in() {
+        let dir = std::env::temp_dir().join("aa-no-user-routes");
+        let routes = Routes::load(&dir);
+        let r = routes.find_map("sky island").expect("Sky Island route baked in");
+        let a = r.to_actions(&FakeEnv(vec![]), &Vars::default()).unwrap();
+        let (w, ak) = (Key::parse("w").unwrap(), Key::parse("a").unwrap());
+        assert_eq!(
+            a,
+            vec![
+                Action::KeyDown(w),
+                Action::Wait(8000),
+                Action::KeyUp(w),
+                Action::KeyDown(ak),
+                Action::Wait(5000),
+                Action::KeyUp(ak),
+            ]
+        );
+    }
+
+    #[test]
     fn hold_and_branches() {
         let r = Route::parse(
             r#"{"map":"t","steps":[{"type":"hold","keys":["w","shift"],"ms":100},
