@@ -821,15 +821,22 @@ impl RunCtx {
         }
         // read the three card titles and take the first one in your order
         let names = Self::read_cards(scr, &f);
+        // weather shift cards (Grounded, Mud, ...) on this screen: your
+        // weather list decides (Settings > Weather)
         let shift = LAST_SHIFT
             .lock()
             .unwrap()
             .is_some_and(|t| t.elapsed() < Duration::from_secs(90));
-        let prio = if shift {
-            // right after a weather shift: your weather list (Settings > Weather)
-            self.log("weather shift card - your weather list");
-            super::weather::load()
-        } else if self.settings.run.card_priority.is_empty() {
+        if names.iter().all(|n| n.is_none())
+            && (shift
+                || Self::read_weather_cards(scr, &f)
+                    .iter()
+                    .any(|n| n.is_some()))
+        {
+            self.weather_cards(h)?;
+            return Ok(true);
+        }
+        let prio = if self.settings.run.card_priority.is_empty() {
             super::cards::default_priority()
         } else {
             self.settings.run.card_priority.clone()
@@ -942,12 +949,35 @@ impl RunCtx {
         names
     }
 
+    /// The three weather shift card names (Grounded, Mud, ...): each title
+    /// strip, else the names found anywhere on the cards.
+    fn read_weather_cards(
+        scr: &super::LiveScreen,
+        f: &crate::capture::Frame,
+    ) -> [Option<String>; 3] {
+        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
+            scr.ocr_rect(f, super::cards::title_box(i))
+                .and_then(|t| super::weather::card_name(&t))
+        });
+        if names.iter().any(|n| n.is_none()) {
+            if let Some(lines) = scr.ocr_lines(f) {
+                let more = super::weather::names_from_lines(&lines);
+                for i in 0..3 {
+                    if names[i].is_none() {
+                        names[i] = more[i].clone();
+                    }
+                }
+            }
+        }
+        names
+    }
+
     /// "The weather shifts..." cards: the one highest on your weather list
     /// (Settings > Weather); none of them on it = the leftmost.
     fn weather_cards(&self, h: Hwnd) -> R<()> {
         let scr = self.screen(h);
         let Some(f) = scr.frame() else { return Ok(()) };
-        let names = Self::read_cards(scr, &f);
+        let names = Self::read_weather_cards(scr, &f);
         let prio = super::weather::load();
         let (i, rank) = super::weather::pick(&names, &prio);
         let shown: Vec<String> = names
@@ -960,11 +990,7 @@ impl RunCtx {
             shown[i],
             match rank {
                 Some(r) => format!("#{} on your weather list", r + 1),
-                None if names.iter().any(|n| n.is_some())
-                    && super::cards::choose(&names, &prio).is_some() =>
-                {
-                    "same card, other tier on your list".to_string()
-                }
+                None if names.iter().all(|n| n.is_none()) => "none read - leftmost".to_string(),
                 None => "none on your list - leftmost".to_string(),
             },
             shown.join(" / ")
