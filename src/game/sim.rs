@@ -47,6 +47,9 @@ pub struct Sim {
     /// (window, x, y) of every left click.
     pub raw_clicks: Mutex<Vec<(Hwnd, i32, i32)>>,
     pub visited: Mutex<Vec<usize>>,
+    /// Text the fake OCR reads where its box overlaps the area asked for
+    /// (empty = no OCR, like a PC without it).
+    pub ocr_texts: Mutex<Vec<(Rect, String)>>,
 }
 
 fn glyph(name: &str, x: i32, y: i32) -> bool {
@@ -69,6 +72,7 @@ impl Sim {
             fg: Mutex::new(Hwnd(1)),
             raw_clicks: Mutex::new(vec![]),
             visited: Mutex::new(vec![0]),
+            ocr_texts: Mutex::new(vec![]),
         }
     }
 
@@ -116,6 +120,20 @@ impl Sim {
 }
 
 impl Platform for Sim {
+    fn has_ocr(&self) -> bool {
+        !self.ocr_texts.lock().unwrap().is_empty()
+    }
+    fn ocr(&self, _frame: &Frame, area: Rect) -> Option<String> {
+        let t: Vec<String> = self
+            .ocr_texts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| r.intersect(&area).is_some())
+            .map(|(_, t)| t.clone())
+            .collect();
+        (!t.is_empty()).then(|| t.join("\n"))
+    }
     fn list_windows(&self, _: &str) -> Vec<WinInfo> {
         (1..=self.windows as isize)
             .map(|i| WinInfo {
@@ -205,7 +223,7 @@ impl Platform for Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Mode, Settings};
+    use crate::config::{Mode, Settings, Upgrade};
     use crate::control::Control;
     use crate::game::run::{Event, RunCtx};
     use crate::game::LiveScreen;
@@ -824,6 +842,85 @@ mod tests {
             gone |= matches!(e, Event::CaptchaGone);
         }
         assert!(gone);
+    }
+
+    /// Priority upgrade, no money: the top unit's level doesn't move -
+    /// the macro stays on it (waits for cash, tries again) and never goes
+    /// to the next unit or rests it.
+    #[test]
+    fn priority_upgrade_waits_for_cash() {
+        // its panel open; two screens taking turns so the picture changes
+        // (a picture that never changes after input reads as a frozen window)
+        let sim = Arc::new(Sim::new(vec![
+            Screen {
+                els: vec![
+                    el("unit_close", 600, 120, None),
+                    el("tick_a", 700, 40, None),
+                ],
+                auto: Some((1, 1)),
+                wheel_down: None,
+            },
+            Screen {
+                els: vec![
+                    el("unit_close", 600, 120, None),
+                    el("tick_b", 700, 60, None),
+                ],
+                auto: Some((1, 0)),
+                wheel_down: None,
+            },
+        ]));
+        // the level box always says 3 (no money for 4)
+        sim.ocr_texts
+            .lock()
+            .unwrap()
+            .push((Rect::new(170, 228, 142, 24), "UPG [3]".into()));
+        let mut s = Settings::default();
+        s.step_delay_ms = 0;
+        s.run.priority_upgrade = true;
+        s.units[0].enabled = true;
+        s.units[0].upgrade = Upgrade::Level(5);
+        s.units[0].priority = 1;
+        s.units[1].enabled = true;
+        s.units[1].upgrade = Upgrade::Max;
+        s.units[1].priority = 2;
+        let (c, rx, _arb) = ctx(sim.clone(), s);
+        let ctl = c.control.clone();
+        let placed = vec![
+            (Hwnd(1), 1, Point::new(400, 300)),
+            (Hwnd(1), 2, Point::new(500, 380)),
+        ];
+        let t = std::thread::spawn(move || {
+            let _ = c.upgrade_until_end(&placed);
+        });
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        ctl.stop();
+        t.join().unwrap();
+        let logs: Vec<String> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Event::Log(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter().any(|l| l.contains("Upgrade: slot 1 at 400,300 (Level 3) - waiting for cash to reach Target Level 5...")),
+            "{logs:#?}"
+        );
+        assert!(
+            !logs.iter().any(|l| l.contains("back in a minute")),
+            "never rested: {logs:#?}"
+        );
+        // it went back to slot 1 visit after visit instead of moving on
+        // (later clicks may differ: other tests share the fake window's
+        // last-picture memory, so a read can come back empty here)
+        let clicks = sim.raw_clicks.lock().unwrap().clone();
+        assert!(clicks.len() >= 3, "{clicks:?}");
+        assert!(
+            clicks[..3]
+                .iter()
+                .all(|(_, x, y)| (*x - 400).abs() <= 20 && (*y - 300).abs() <= 30),
+            "{clicks:?}"
+        );
     }
 
     /// Step machine: a step that keeps failing (no Play Here button) ends

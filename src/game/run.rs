@@ -384,6 +384,13 @@ pub(crate) fn unit_click_point(at: Point, n: u32) -> Point {
     Point::new((at.x + dx).clamp(1, 798), (at.y + dy).clamp(1, 597))
 }
 
+/// Priority upgrade, no money for the next level: wait this long (panel
+/// closed) before trying the same unit again.
+const CASH_WAIT_MS: u64 = 4000;
+/// ... but at most this long on one level: then it's counted as done (a
+/// MAX the macro can't see would otherwise stall the upgrades for good).
+const CASH_WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
+
 /// Re-clicks of a unit whose panel didn't open, before moving on.
 const PANEL_RETRIES: u32 = 3;
 static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2284,6 +2291,14 @@ impl RunCtx {
         // per unit: the spot that opened its panel last time (the ground
         // point it was placed at, or a bit above it - the unit's body)
         let mut aim: Vec<Option<Point>> = vec![None; order.len()];
+        // per unit: since when its level hasn't moved (no money yet) while
+        // Priority upgrade keeps on it, and when that was last logged
+        let mut cash_since: Vec<Option<Instant>> = vec![None; order.len()];
+        let mut cash_said: Vec<Option<Instant>> = vec![None; order.len()];
+        let target = |want: Upgrade| match want {
+            Upgrade::Level(n) => n.to_string(),
+            _ => "MAX".to_string(),
+        };
         let resting = |k: usize, rest: &[Option<Instant>]| {
             rest[k].is_some_and(|t| t.elapsed() < Duration::from_secs(60))
         };
@@ -2391,6 +2406,7 @@ impl RunCtx {
                     self.sleep(PANEL_CLOSE_MS)?;
                     continue;
                 }
+                let mut waiting_cash = false;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
                 let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
@@ -2403,9 +2419,10 @@ impl RunCtx {
                     self.log(format!("slot {slot} at {},{} is MAX", at.x, at.y));
                 } else if reached {
                     done[k] = before.unwrap_or(0);
+                    cash_since[k] = None;
                     self.log(format!(
-                        "slot {slot} at {},{} reached its level",
-                        at.x, at.y
+                        "Upgrade: slot {slot} reached Target Level {} - moving to next priority.",
+                        target(want)
                     ));
                 } else {
                     // MAX: 3 presses a visit; a set level: only what's left (max 3)
@@ -2457,11 +2474,46 @@ impl RunCtx {
                             }
                             (Some(b), Some(a)) if a > b => {
                                 stuck[k] = 0;
+                                cash_since[k] = None;
                                 done[k] = a;
                                 self.log(format!(
                                     "slot {slot} at {},{} upgraded to {a}",
                                     at.x, at.y
                                 ));
+                                if let Upgrade::Level(n) = want {
+                                    if a >= n as u32 {
+                                        self.log(format!(
+                                            "Upgrade: slot {slot} reached Target Level {n} - moving to next priority."
+                                        ));
+                                    }
+                                }
+                            }
+                            // same level, panel open: not enough money yet.
+                            // Priority upgrade: stay on this unit, wait for
+                            // cash, try it again (no swapping to the next)
+                            (Some(b), Some(_)) if s.run.priority_upgrade => {
+                                let since = *cash_since[k].get_or_insert_with(Instant::now);
+                                if since.elapsed() > CASH_WAIT_LIMIT {
+                                    // 10 min without a level: most likely MAX
+                                    // that isn't shown / read - don't stall on it
+                                    cash_since[k] = None;
+                                    maxed[k] = true;
+                                    self.log(format!(
+                                        "Upgrade: slot {slot} at {},{} (Level {b}) - no change in {} min, counting it as done (MAX not seen?) - next priority",
+                                        at.x, at.y, CASH_WAIT_LIMIT.as_secs() / 60
+                                    ));
+                                } else {
+                                    if cash_said[k]
+                                        .is_none_or(|t| t.elapsed() > Duration::from_secs(30))
+                                    {
+                                        cash_said[k] = Some(Instant::now());
+                                        self.log(format!(
+                                            "Upgrade: slot {slot} at {},{} (Level {b}) - waiting for cash to reach Target Level {}...",
+                                            at.x, at.y, target(want)
+                                        ));
+                                    }
+                                    waiting_cash = true;
+                                }
                             }
                             // same level = not enough money yet (or MAX not read)
                             (Some(_), Some(_)) => {
@@ -2501,6 +2553,10 @@ impl RunCtx {
                 }
                 // the panel's closing: a unit clicked during it doesn't open
                 self.sleep(PANEL_CLOSE_MS)?;
+                if waiting_cash {
+                    // let the match pay out before trying the same unit again
+                    self.sleep(CASH_WAIT_MS)?;
+                }
             }
         })();
         if busy {
