@@ -65,6 +65,8 @@ pub enum StateTag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbortSource {
     UserStop,
+    /// Roblox's disconnect box (the watchdog saw it).
+    Disconnect,
     FocusLost,
     Panic,
     Shutdown,

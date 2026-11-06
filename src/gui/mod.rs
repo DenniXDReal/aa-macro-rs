@@ -67,6 +67,7 @@ enum SettingsTab {
     Game,
     Discord,
     Weather,
+    Recovery,
     Updates,
 }
 
@@ -489,6 +490,7 @@ impl App {
             loot_hook: loot_hook.clone(),
             session: Default::default(),
             step_deadline: Default::default(),
+            watch: Default::default(),
         };
         self.loot_reports = loot_hook.is_some();
         crate::status::reset();
@@ -578,6 +580,25 @@ impl App {
                             p.display()
                         ));
                     }
+                }
+                Event::Captcha(s) => {
+                    self.paused = true;
+                    self.say(format!("WARN {s}"));
+                    self.hook_with(
+                        crate::webhook::Kind::Problem,
+                        "Captcha detected - manual input needed",
+                        &s,
+                        true,
+                        self.settings.recovery.captcha_here,
+                    );
+                }
+                Event::CaptchaGone => {
+                    self.paused = false;
+                    self.say("captcha gone - carrying on");
+                }
+                Event::Reconnect(s) => {
+                    self.say(s.clone());
+                    self.hook(crate::webhook::Kind::Problem, "Reconnect", &s, false);
                 }
                 Event::Fatal(s) => {
                     self.paused = true;
@@ -739,6 +760,18 @@ impl App {
 
     /// Queue a Discord message if the webhook is set up.
     fn hook(&self, kind: crate::webhook::Kind, title: &str, body: &str, ping: bool) {
+        self.hook_with(kind, title, body, ping, false)
+    }
+
+    /// `hook`, optionally pinging @here too.
+    fn hook_with(
+        &self,
+        kind: crate::webhook::Kind,
+        title: &str,
+        body: &str,
+        ping: bool,
+        here: bool,
+    ) {
         let w = &self.settings.webhook;
         if !w.enabled || (kind == crate::webhook::Kind::Info && !w.on_start_stop) {
             return;
@@ -762,6 +795,7 @@ impl App {
                 screenshot: shot,
                 ping,
                 fields: vec![],
+                here,
             },
         );
     }
@@ -3070,6 +3104,56 @@ impl App {
         }
     }
 
+    /// Settings > Recovery: disconnect / captcha handling.
+    fn recovery_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        card(ui, |ui| {
+            ui.label(RichText::new("DISCONNECT").size(11.0).color(MUTED));
+            ui.label(
+                RichText::new("A watchdog looks at every client every 5 s. Roblox's disconnect box (your disconnect_box picture, else its words): the step stops, the macro clicks Reconnect, waits for the lobby (90 s), parties up again and starts the next round. The lost stage counts as an aborted run - no Discord report for it.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            let r = &mut self.settings.recovery;
+            changed |= ui
+                .checkbox(&mut r.reconnect, "Reconnect after a disconnect")
+                .changed();
+            ui.horizontal(|ui| {
+                ui.label("At most");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut r.max_reconnects_per_hour).range(1..=30))
+                    .changed();
+                ui.label("reconnects an hour");
+            });
+            changed |= ui
+                .checkbox(
+                    &mut self.settings.auto_relaunch,
+                    "If reconnecting fails: close Roblox and relaunch every account (Roblox Account Manager)",
+                )
+                .changed();
+        });
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.label(RichText::new("CAPTCHA").size(11.0).color(MUTED));
+            ui.label(
+                RichText::new("A captcha anywhere (your captcha picture, else its words): the macro pauses, pings Discord and shows CAPTCHA on the client's card. Type it in Roblox - once it's gone the macro carries on by itself. It never solves captchas.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            let r = &mut self.settings.recovery;
+            changed |= ui
+                .checkbox(&mut r.captcha_pause, "Pause while a captcha is up")
+                .changed();
+            changed |= ui
+                .checkbox(
+                    &mut r.captcha_here,
+                    "Ping @here on Discord (off = only your user ping)",
+                )
+                .changed();
+        });
+        changed
+    }
+
     /// Weather shift card list: one card per line, highest first; saved to
     /// weather_priorities.json next to the exe.
     fn weather_ui(&mut self, ui: &mut egui::Ui) {
@@ -3215,6 +3299,7 @@ impl App {
                 (SettingsTab::Game, "Cards & picks"),
                 (SettingsTab::Discord, "Discord"),
                 (SettingsTab::Weather, "Weather"),
+                (SettingsTab::Recovery, "Recovery"),
                 (SettingsTab::Updates, "Updates"),
             ],
         );
@@ -3320,6 +3405,9 @@ impl App {
         ui.add_space(8.0);
         if tab == SettingsTab::Weather {
             self.weather_ui(ui);
+        }
+        if tab == SettingsTab::Recovery {
+            changed |= self.recovery_ui(ui);
         }
         if tab == SettingsTab::Game {
             self.card_priority_ui(ui);
@@ -3705,6 +3793,7 @@ impl App {
                         screenshot: shot,
                         ping: true,
                         fields: vec![],
+                        here: false,
                     };
                     let _ = tx.send(match webhook::send(&url, &ping, &m) {
                         Ok(()) => "webhook test sent - check Discord".into(),

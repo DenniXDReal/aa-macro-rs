@@ -18,6 +18,7 @@ pub mod sim;
 pub mod steps;
 pub mod textbuttons;
 pub mod trace;
+pub mod watchdog;
 pub mod weather;
 
 #[cfg(test)]

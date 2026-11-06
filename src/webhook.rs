@@ -66,6 +66,8 @@ pub struct Message {
     pub ping: bool,
     /// Embed fields: (name, value, inline).
     pub fields: Vec<(String, String, bool)>,
+    /// Ping @here (everyone online in the channel) as well.
+    pub here: bool,
 }
 
 /// `https://discord.com/api/webhooks/<id>/<token>` (also ptb./canary., discordapp.com).
@@ -118,11 +120,19 @@ pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Val
             .map(|(n, v, inline)| serde_json::json!({"name": n, "value": v, "inline": inline}))
             .collect();
     }
+    let content = if m.here {
+        format!("@here {mention}").trim().to_string()
+    } else {
+        mention.clone()
+    };
     let mut p = serde_json::json!({
         "username": "Anime Adventure Macro",
-        "content": mention,
+        "content": content,
         "embeds": [embed],
-        "allowed_mentions": {"users": if mention.is_empty() { vec![] } else { vec![ping_user.trim().to_string()] }},
+        "allowed_mentions": {
+            "users": if mention.is_empty() { vec![] } else { vec![ping_user.trim().to_string()] },
+            "parse": if m.here { vec!["everyone"] } else { vec![] },
+        },
     });
     if has_image {
         // tell Discord which uploaded file the embed's attachment:// means
@@ -308,6 +318,7 @@ mod tests {
             screenshot: None,
             ping: true,
             fields: vec![("Pearls".into(), "15".into(), true)],
+            here: false,
         };
         let p = payload(&m, "123456789", true);
         assert_eq!(p["content"], "<@123456789>");

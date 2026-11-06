@@ -27,6 +27,7 @@ pub const LABELS: &[(&str, &[&str])] = &[
     ("open_button", &["open"]),
     ("open_portal", &["open portal"]),
     ("card_confirm", &["confirm"]),
+    ("reconnect_button", &["reconnect"]),
     (
         "tp_spawn",
         &[

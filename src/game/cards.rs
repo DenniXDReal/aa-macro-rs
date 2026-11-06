@@ -307,6 +307,61 @@ pub fn is_green(name: &str) -> bool {
     CARD_BASES.iter().any(|(b, g)| *g && name.starts_with(b))
 }
 
+/// The log line after a card choice: which card, where it is on the list
+/// (or why it wasn't picked from the list), what was offered.
+/// `list` = "priority list" / "weather list"; `chosen` = what choose() /
+/// weather::pick() said (None = fallback `fallback_i`, `fallback_why`).
+pub fn picker_line(
+    list: &str,
+    names: &[Option<String>; 3],
+    priority: &[String],
+    chosen: Option<usize>,
+    fallback_i: usize,
+    fallback_why: &str,
+) -> String {
+    let shown: Vec<String> = names
+        .iter()
+        .map(|n| n.clone().unwrap_or_else(|| "?".into()))
+        .collect();
+    let offered = shown.join(" / ");
+    let base = |n: &str| {
+        n.trim_end_matches(" III")
+            .trim_end_matches(" II")
+            .trim_end_matches(" I")
+            .to_string()
+    };
+    match chosen {
+        Some(i) => {
+            let n = &shown[i];
+            match priority.iter().position(|p| p.eq_ignore_ascii_case(n)) {
+                Some(r) => format!(
+                    "Card Picker: Chose {n} because it was #{} on the {list} (offered: {offered})",
+                    r + 1
+                ),
+                None => match priority.iter().position(|p| base(p) == base(n)) {
+                    Some(r) => format!(
+                        "Card Picker: Chose {n} because it was #{} on the {list} as {} - other tier (offered: {offered})",
+                        r + 1,
+                        priority[r]
+                    ),
+                    None => format!("Card Picker: Chose {n} (offered: {offered})"),
+                },
+            }
+        }
+        None => {
+            let why = if names.iter().all(|n| n.is_none()) {
+                "none of the cards could be read".to_string()
+            } else {
+                format!("none of them is on the {list}")
+            };
+            format!(
+                "Card Picker: {why} - took card {} ({fallback_why}) (offered: {offered})",
+                fallback_i + 1
+            )
+        }
+    }
+}
+
 /// Which card to take: the first in `priority` that's on offer.
 pub fn choose(names: &[Option<String>; 3], priority: &[String]) -> Option<usize> {
     // the card's place in your list: its exact name (with tier), else -
@@ -370,6 +425,50 @@ mod name_tests {
         assert_eq!(tier_from_pearls("+30% SummerPearls"), Some("I"));
         assert_eq!(tier_from_pearls("+25% Attack"), None);
         assert_eq!(with_tier("Plated Enemies I", "II"), "Plated Enemies II");
+    }
+
+    #[test]
+    fn picker_says_why() {
+        let prio: Vec<String> = ["Enemy Health III", "Attack I", "Cooldown I"]
+            .map(String::from)
+            .to_vec();
+        let names: [Option<String>; 3] = [
+            Some("Cooldown I".into()),
+            Some("Range I".into()),
+            Some("Attack I".into()),
+        ];
+        let c = choose(&names, &prio);
+        assert_eq!(c, Some(2), "Attack I is #2, Cooldown I #3");
+        assert_eq!(
+            picker_line("priority list", &names, &prio, c, 1, "middle one"),
+            "Card Picker: Chose Attack I because it was #2 on the priority list (offered: Cooldown I / Range I / Attack I)"
+        );
+        // same card at another tier
+        let names2: [Option<String>; 3] =
+            [Some("Enemy Health II".into()), None, Some("Range I".into())];
+        let c2 = choose(&names2, &prio);
+        assert_eq!(c2, Some(0));
+        assert_eq!(
+            picker_line("priority list", &names2, &prio, c2, 1, "middle one"),
+            "Card Picker: Chose Enemy Health II because it was #1 on the priority list as Enemy Health III - other tier (offered: Enemy Health II / ? / Range I)"
+        );
+        // nothing on the list / nothing read: says so, and what it took
+        let none: [Option<String>; 3] = [Some("Yen I".into()), Some("Range I".into()), None];
+        assert_eq!(choose(&none, &prio), None);
+        assert!(
+            picker_line("priority list", &none, &prio, None, 1, "middle one").starts_with(
+                "Card Picker: none of them is on the priority list - took card 2 (middle one)"
+            )
+        );
+        assert!(picker_line(
+            "weather list",
+            &[None, None, None],
+            &prio,
+            None,
+            0,
+            "leftmost"
+        )
+        .starts_with("Card Picker: none of the cards could be read - took card 1 (leftmost)"));
     }
 
     #[test]
