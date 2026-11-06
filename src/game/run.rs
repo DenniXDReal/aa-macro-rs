@@ -273,7 +273,13 @@ pub struct RunCtx {
     pub loot_hook: Option<(String, String)>,
     /// Run count + totals since Start.
     pub session: std::sync::Arc<std::sync::Mutex<super::loot::Session>>,
+    /// Step machine: the running step's hard deadline. `check()` / `sleep()`
+    /// fail with "step timed out" past it (the old loop never sets it).
+    pub step_deadline: std::sync::Arc<std::sync::Mutex<Option<crate::control::Deadline>>>,
 }
+
+/// What `check()` / `sleep()` return past the step deadline.
+pub const STEP_TIMED_OUT: &str = "step timed out";
 
 type R<T> = Result<T, String>;
 
@@ -416,10 +422,23 @@ impl RunCtx {
     fn screen(&self, h: Hwnd) -> &LiveScreen {
         &self.clients.iter().find(|c| c.0 == h).expect("client").1
     }
-    fn check(&self) -> R<()> {
-        self.control.checkpoint().map_err(|_| "stopped".to_string())
+    pub(crate) fn check(&self) -> R<()> {
+        self.control
+            .checkpoint()
+            .map_err(|_| "stopped".to_string())?;
+        self.past_deadline()
     }
-    fn sleep(&self, ms: u64) -> R<()> {
+    /// Err once the step machine's deadline for this step has passed.
+    fn past_deadline(&self) -> R<()> {
+        let mut d = self.step_deadline.lock().unwrap_or_else(|e| e.into_inner());
+        if d.as_mut().is_some_and(|dl| dl.expired()) {
+            Err(STEP_TIMED_OUT.into())
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn sleep(&self, ms: u64) -> R<()> {
+        self.past_deadline()?;
         self.control
             .sleep((ms as f32 * self.speed) as u64)
             .map_err(|_| "stopped".to_string())
@@ -1185,7 +1204,17 @@ impl RunCtx {
     /// From the lobby leaving (or Replay) until Vote Start is pressed:
     /// work out the map while it loads, top-down camera, Teleport to Spawn,
     /// walk the map's route, then Vote Start. Returns the map ("" = unknown).
+    /// Stage set-up: map, camera, Teleport to Spawn, the map's walk, vote.
     pub fn stage_setup(&self, prev_map: &str) -> R<String> {
+        let map = self.stage_prepare(prev_map)?;
+        self.stage_walk(&map)?;
+        self.stage_vote()?;
+        Ok(map)
+    }
+
+    /// Stage set-up up to the walk: wait for the stage, spot the map, camera,
+    /// map picture, Teleport to Spawn (new map only).
+    pub fn stage_prepare(&self, prev_map: &str) -> R<String> {
         let s = &self.settings;
         let main = self.screen(self.main);
         let gone = Self::names(&[
@@ -1395,8 +1424,15 @@ impl RunCtx {
                 self.tp_spawn(h)?;
             }
         }
+        Ok(map)
+    }
+
+    /// The map's route on every mover (alts first). A failed walk is logged,
+    /// placing goes on from wherever they stand.
+    pub fn stage_walk(&self, map: &str) -> R<()> {
+        let s = &self.settings;
         if let Some(r) = (!map.is_empty())
-            .then(|| self.routes.get().find_map(&map).cloned())
+            .then(|| self.routes.get().find_map(map).cloned())
             .flatten()
         {
             for h in self.main_last(self.movers()) {
@@ -1409,7 +1445,11 @@ impl RunCtx {
                 }
             }
         }
-        // every client votes (alts first), then back on the main
+        Ok(())
+    }
+
+    /// Every client votes Start (alts first), then back on the main.
+    pub fn stage_vote(&self) -> R<()> {
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
         let names = Self::names(&["vote_start"]);
         for h in self.main_last(all) {
@@ -1445,7 +1485,7 @@ impl RunCtx {
             }
         }
         self.to_main()?;
-        Ok(map)
+        Ok(())
     }
 
     /// Settings > Teleport to Spawn > close (skipped until tp_spawn is captured).
@@ -2553,11 +2593,61 @@ impl RunCtx {
         Ok(lobby)
     }
 
+    /// The pearls this run ("+7291" next to the pearl icon on the VICTORY /
+    /// DEFEAT panel). Your `pearl_icon` picture, else the icon by its pink,
+    /// else the fixed spot; OCR of just that box. A few looks while the
+    /// panel animates in. None = not read.
+    fn read_pearls(&self) -> R<Option<u64>> {
+        use super::loot;
+        let main = self.screen(self.main);
+        if !main.has_ocr() {
+            return Ok(None);
+        }
+        for _ in 0..4 {
+            if let Some(f) = main.frame() {
+                let icon = main
+                    .has("pearl_icon")
+                    .then(|| {
+                        main.find(
+                            &Self::names(&["pearl_icon"]),
+                            Some(crate::geom::Rect::new(250, 320, 310, 70)),
+                        )
+                    })
+                    .flatten()
+                    .map(|p| crate::geom::Rect::new(p.x - 12, p.y - 12, 24, 24))
+                    .or_else(|| loot::pearl_icon(&f));
+                let area = loot::pearl_amount_rect(icon);
+                let text = crate::platform::urgent_ocr(|| main.ocr_rect(&f, area));
+                if let Some(n) = text.as_deref().and_then(loot::parse_amount) {
+                    self.log(format!(
+                        "pearls this run: {n} (read '{}' {})",
+                        text.unwrap_or_default().trim(),
+                        if icon.is_some() {
+                            "next to the icon"
+                        } else {
+                            "at the fixed spot"
+                        }
+                    ));
+                    return Ok(Some(n));
+                }
+            }
+            self.sleep(400)?;
+        }
+        self.log("WARN pearls not read on the end panel");
+        Ok(None)
+    }
+
     /// End step, reward screen (after Next): read Pearls / event currency,
     /// look for a charm / portal (picture of it), record the run (history +
     /// session totals), send the Discord loot report and wait for it, then
     /// click the item again (the game wants a second click to go on).
-    fn end_rewards(&self, won: bool, map: &str, end_drops: &[(String, u64)]) -> R<()> {
+    fn end_rewards(
+        &self,
+        won: bool,
+        map: &str,
+        end_drops: &[(String, u64)],
+        pearls: Option<u64>,
+    ) -> R<()> {
         use super::loot;
         let main = self.screen(self.main);
         self.sleep(500)?; // let the reward screen finish drawing
@@ -2598,8 +2688,12 @@ impl RunCtx {
             won,
             mode: self.settings.run.mode.label().to_string(),
             map: map.to_string(),
-            event_currency: loot::amount(&drops, loot::EVENT_CURRENCY),
-            pearls: loot::amount(&drops, loot::PEARLS),
+            // pearls = the Summer Event currency: the end panel's "+7291"
+            // first, else whatever the reward lines said
+            event_currency: pearls.unwrap_or_else(|| {
+                loot::amount(&drops, loot::PEARLS).max(loot::amount(&drops, loot::EVENT_CURRENCY))
+            }),
+            pearls: pearls.unwrap_or_else(|| loot::amount(&drops, loot::PEARLS)),
             charm: charm.as_ref().map(|c| c.0.clone()),
             drops,
             image: None,
@@ -2878,14 +2972,16 @@ impl RunCtx {
             }
             drops
         };
+        // the pearls (Summer Event currency) on the VICTORY / DEFEAT panel
+        let pearls = self.read_pearls()?;
         let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
         let stop = !won && self.settings.run.stop_after_defeat;
         // Next > reward screen: loot scan, Discord report, item click;
         // then (last run of a schedule step: back to the lobby for the next one)
-        let mut on_rewards = |c: &Self| c.end_rewards(won, &map.clone(), &end_drops);
+        let mut on_rewards = |c: &Self| c.end_rewards(won, &map.clone(), &end_drops, pearls);
         if stop {
             // still record the run, but don't leave the end screen
-            let _ = self.end_rewards(won, map, &end_drops);
+            let _ = self.end_rewards(won, map, &end_drops, pearls);
             return Err("stopped after a defeat".into());
         }
         *in_lobby =

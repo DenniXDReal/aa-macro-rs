@@ -9,12 +9,19 @@ use crate::geom::{Point, Rect};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Name the Summer Event currency has in `drops` (the end-screen parser).
+/// Older name of Summer Event currency rows in `drops` (the end-screen
+/// parser). The event currency is the pearls (the pink flower).
 pub const EVENT_CURRENCY: &str = "Summer Coin";
 /// Name pearls have in `drops`.
 pub const PEARLS: &str = "Pearls";
 /// Runs kept in the history file (oldest dropped).
 pub const HISTORY_KEEP: usize = 5000;
+/// End panel (VICTORY / DEFEAT, 800x599): where "+7291" (the pearls this
+/// run) sits, right of "+55 XP". Used when the pearl icon isn't found.
+pub const PEARL_RECT: Rect = Rect::new(330, 336, 84, 36);
+/// Where the pearl icon is looked for on the end panel.
+const PEARL_SEARCH: Rect = Rect::new(250, 320, 310, 70);
+
 /// Longest the End step waits for the Discord upload before going on.
 pub const WEBHOOK_WAIT_SECS: u64 = 15;
 
@@ -151,13 +158,13 @@ pub fn message(
     ping: bool,
 ) -> crate::webhook::Message {
     use crate::webhook::{Kind, Message};
+    // pearls are the Summer Event currency: one field, not two
     let mut fields = vec![
         (
-            "Event Currency".to_string(),
+            "Event Currency (Pearls)".to_string(),
             thousands(r.event_currency),
             true,
         ),
-        ("Pearls".to_string(), thousands(r.pearls), true),
         (
             "Charm Dropped".to_string(),
             match &r.charm {
@@ -169,11 +176,6 @@ pub fn message(
         (
             "Session Total Event Currency".to_string(),
             thousands(s.event_currency),
-            true,
-        ),
-        (
-            "Session Total Pearls".to_string(),
-            thousands(s.pearls),
             true,
         ),
         (
@@ -204,6 +206,79 @@ pub fn message(
         ping,
         fields,
     }
+}
+
+/// The pink pearl icon right of the amount on the end panel: the rightmost
+/// blob of pink pixels there (the "+7291" digits are pink too, the icon is
+/// the separate blob after them).
+pub fn pearl_icon(f: &Frame) -> Option<Rect> {
+    let pinkish = |x: i32, y: i32| {
+        f.rgb(x, y)
+            .is_some_and(|(r, g, b)| r > 180 && b > 170 && r as i32 - g as i32 > 25)
+    };
+    let a = PEARL_SEARCH;
+    let col: Vec<u32> = (a.x..a.right())
+        .map(|x| (a.y..a.bottom()).filter(|y| pinkish(x, *y)).count() as u32)
+        .collect();
+    // runs of columns with pink in them, split by gaps of 3+ columns
+    let mut runs: Vec<(i32, i32)> = vec![];
+    let mut cur: Option<(i32, i32)> = None;
+    let mut gap = 0;
+    for (i, n) in col.iter().enumerate() {
+        let x = a.x + i as i32;
+        if *n > 0 {
+            cur = Some(cur.map_or((x, x), |(s, _)| (s, x)));
+            gap = 0;
+        } else if let Some(c) = cur {
+            gap += 1;
+            if gap >= 3 {
+                runs.push(c);
+                cur = None;
+                gap = 0;
+            }
+        }
+    }
+    runs.extend(cur);
+    // the icon: the last blob, icon-sized, with digits (another blob) before it
+    let (x0, x1) = *runs.last()?;
+    let w = x1 - x0 + 1;
+    if runs.len() < 2 || !(14..=45).contains(&w) {
+        return None;
+    }
+    let ys: Vec<i32> = (a.y..a.bottom())
+        .filter(|y| (x0..=x1).any(|x| pinkish(x, *y)))
+        .collect();
+    let (y0, y1) = (*ys.first()?, *ys.last()?);
+    Some(Rect::new(x0, y0, w, y1 - y0 + 1))
+}
+
+/// Where to read the amount: right before the icon (else [`PEARL_RECT`]).
+pub fn pearl_amount_rect(icon: Option<Rect>) -> Rect {
+    match icon {
+        Some(i) => {
+            let cy = i.y + i.h / 2;
+            Rect::new((i.x - 90).max(0), cy - 18, 88, 36)
+        }
+        None => PEARL_RECT,
+    }
+}
+
+/// "+7291", "+ 7,291", "+7291 &" (the icon read as a letter) -> 7291.
+/// The longest digit group wins; a stray O read for 0 is fixed.
+pub fn parse_amount(text: &str) -> Option<u64> {
+    let t: String = text
+        .chars()
+        .map(|c| match c {
+            'O' | 'o' => '0',
+            'l' | 'I' => '1',
+            _ => c,
+        })
+        .filter(|c| !c.is_whitespace() && *c != ',' && *c != '.' && *c != '+')
+        .collect();
+    t.split(|c: char| !c.is_ascii_digit())
+        .filter(|d| !d.is_empty() && d.len() <= 9)
+        .max_by_key(|d| d.len())
+        .and_then(|d| d.parse().ok())
 }
 
 pub fn history_path() -> PathBuf {
@@ -255,6 +330,37 @@ mod tests {
             .iter()
             .map(|(w, x)| (w.to_string(), Rect::new(*x, 300, 40, 14)))
             .collect()
+    }
+
+    #[test]
+    fn pearl_icon_and_amount_box_on_the_end_panel() {
+        let f = Frame::load_png(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/end_defeat_pearls.png"
+        )))
+        .unwrap();
+        let icon = pearl_icon(&f).expect("pearl icon on the DEFEAT panel");
+        assert!((405..=418).contains(&icon.x), "{icon:?}");
+        assert!((15..=35).contains(&icon.w), "{icon:?}");
+        let r = pearl_amount_rect(Some(icon));
+        // "+7291" is at x 345..404, y ~340..366: the box holds all of it
+        assert!(r.x <= 345 && r.right() >= 404, "{r:?}");
+        assert!(r.y <= 342 && r.bottom() >= 364, "{r:?}");
+        // nothing pink there: no icon, the fixed box instead
+        assert!(pearl_icon(&Frame::solid(800, 599, 10, 10, 10)).is_none());
+        assert_eq!(pearl_amount_rect(None), PEARL_RECT);
+        let fixed = PEARL_RECT;
+        assert!(fixed.x <= 345 && fixed.right() >= 404);
+    }
+
+    #[test]
+    fn amounts_read_cleanly() {
+        assert_eq!(parse_amount("+7291"), Some(7291));
+        assert_eq!(parse_amount("+ 7,291"), Some(7291));
+        assert_eq!(parse_amount("+7291 &"), Some(7291));
+        assert_eq!(parse_amount("+72O1"), Some(7201));
+        assert_eq!(parse_amount("+"), None);
+        assert_eq!(parse_amount(""), None);
     }
 
     #[test]
@@ -330,8 +436,7 @@ mod tests {
         let m = message(&r, &s, None, false);
         assert_eq!(m.title, "Run #12 Complete - Victory");
         let f = |n: &str| m.fields.iter().find(|x| x.0 == n).map(|x| x.1.clone());
-        assert_eq!(f("Event Currency").as_deref(), Some("1,250"));
-        assert_eq!(f("Pearls").as_deref(), Some("15"));
+        assert_eq!(f("Event Currency (Pearls)").as_deref(), Some("1,250"));
         assert_eq!(f("Charm Dropped").as_deref(), Some("Yes - Lucky Charm"));
         assert_eq!(f("Session Total Event Currency").as_deref(), Some("14,500"));
         assert_eq!(f("Other drops").as_deref(), Some("50 Gems"));
