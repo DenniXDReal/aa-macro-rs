@@ -151,6 +151,37 @@ pub enum Priority {
     High = 2,
 }
 
+/// Input generation per client window: bumped whenever a batch of input is
+/// sent to it. A screen read remembers the generation it started at; if it
+/// changed by the time the read is done, input landed mid-read and the result
+/// may show the old state - throw it away and read again. Per client, so one
+/// account's clicks don't invalidate another account's reads.
+static GENERATION: std::sync::Mutex<Vec<(Hwnd, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn bump_generation(h: Hwnd) {
+    let mut g = GENERATION.lock().unwrap_or_else(|e| e.into_inner());
+    match g.iter_mut().find(|(w, _)| *w == h) {
+        Some(e) => e.1 += 1,
+        None => g.push((h, 1)),
+    }
+}
+
+/// Current input generation of client `h` (0 = no input yet).
+pub fn generation(h: Hwnd) -> u64 {
+    GENERATION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(w, _)| *w == h)
+        .map(|(_, g)| *g)
+        .unwrap_or(0)
+}
+
+/// Every client's generation (for dumps / the overlay).
+pub fn generation_all() -> Vec<(Hwnd, u64)> {
+    GENERATION.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub window: Hwnd,
@@ -405,8 +436,12 @@ fn arbiter_loop(
             buttons: vec![],
         };
         let t = Instant::now();
+        // input is about to change this client's screen: reads that started
+        // before now are stale (see `generation`)
+        bump_generation(q.batch.window);
         let res = runner.run(&q.batch);
         runner.release_all();
+        bump_generation(q.batch.window);
         let held = t.elapsed();
         if held > Duration::from_millis(opts.max_lease_ms) && !q.batch.long {
             log::warn!(

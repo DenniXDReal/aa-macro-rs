@@ -903,14 +903,15 @@ pub fn cursor() -> Option<Point> {
 
 /// F1..F4 and F6 as global hotkeys (work while Roblox has focus). Each press sends
 /// its number (1-4) down `tx`. The thread lives for the whole app.
-pub fn spawn_hotkeys(tx: std::sync::mpsc::Sender<u8>) {
+pub fn spawn_hotkeys(tx: std::sync::mpsc::Sender<u8>, overlay_fkey: u32) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT, VK_F1};
     use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
     std::thread::Builder::new()
         .name("hotkeys".into())
         .spawn(move || unsafe {
             // F1-F4 run controls, F6 hover capture
-            for i in [0u32, 1, 2, 3, 5] {
+            // + the debug overlay key (F9 by default; sends its F number)
+            for i in [0u32, 1, 2, 3, 5, overlay_fkey - 1] {
                 if RegisterHotKey(None, (i + 1) as i32, MOD_NOREPEAT, VK_F1.0 as u32 + i).is_err() {
                     log::warn!("F{} is used by another app - hotkey not available", i + 1);
                 }

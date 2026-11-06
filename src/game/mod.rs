@@ -6,13 +6,16 @@ pub mod buttonmem;
 pub mod cardlog;
 pub mod cards;
 pub mod drops;
+pub mod dump;
 pub mod hotbar;
 pub mod minimap;
 pub mod placing;
+pub mod resume;
 pub mod run;
 #[cfg(test)]
 pub mod sim;
 pub mod textbuttons;
+pub mod trace;
 
 #[cfg(test)]
 mod level_tests {
@@ -84,7 +87,6 @@ use crate::input::Probe;
 use crate::movement::RouteEnv;
 use crate::platform::Platform;
 use crate::vision::{key, Library, Pattern};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// OCR text of a screen -> Some(weather) if it's the card pick screen.
@@ -278,30 +280,41 @@ pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
 pub struct LiveScreen {
     platform: Arc<dyn Platform>,
     hwnd: Hwnd,
-    pats: Arc<HashMap<String, Pattern>>,
+    /// Swapped by hot-reload when the patterns folder changes.
+    pats: crate::hotreload::LivePatterns,
 }
 
 impl LiveScreen {
     pub fn new(platform: Arc<dyn Platform>, hwnd: Hwnd, lib: &Library) -> Self {
-        let pats = lib.patterns().map(|p| (key(&p.name), p.clone())).collect();
         Self {
             platform,
             hwnd,
-            pats: Arc::new(pats),
+            pats: crate::hotreload::live_patterns(crate::hotreload::pattern_map(lib)),
         }
     }
 
     /// Centre of the first of `names` found now (inside `region` if given).
     pub fn find(&self, names: &[String], region: Option<Rect>) -> Option<Point> {
+        let pats = self.pats.load_full();
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let hit = names.iter().find_map(|n| {
-            self.pats
-                .get(&key(n))
-                .and_then(|p| p.find_in(&frame, region))
-                .map(|h| {
+            let p = pats.get(&key(n))?;
+            match p.find_in(&frame, region) {
+                Some(h) => {
+                    crate::debugbus::hit(
+                        self.hwnd,
+                        Rect::new(h.at.x, h.at.y, h.w, h.h),
+                        n,
+                        h.score,
+                    );
                     buttonmem::remember(&key(n), h.center());
-                    h.center()
-                })
+                    Some(h.center())
+                }
+                None => {
+                    crate::debugbus::miss(self.hwnd, region.unwrap_or(p.search), n);
+                    None
+                }
+            }
         });
         self.seen(names, hit.is_some());
         hit.or_else(|| self.find_text(&frame, names, region).into_iter().next())
@@ -319,6 +332,15 @@ impl LiveScreen {
     /// The vote box's Yes button right now (by colour).
     pub fn find_vote_yes(&self) -> Option<Point> {
         self.frame().and_then(|f| vote_yes(&f))
+    }
+
+    pub fn hwnd(&self) -> Hwnd {
+        self.hwnd
+    }
+
+    /// A captured pattern by name.
+    pub fn pattern(&self, name: &str) -> Option<Pattern> {
+        self.pats.load().get(&key(name)).cloned()
     }
 
     /// Read button labels right now (no waiting for the picture first).
@@ -367,6 +389,7 @@ impl LiveScreen {
         names: &[String],
         within: Option<Rect>,
     ) -> Vec<Point> {
+        let pats = self.pats.load_full();
         use std::sync::Mutex;
         use std::time::{Duration, Instant};
         type Lines = Vec<Vec<(String, Rect)>>;
@@ -380,7 +403,7 @@ impl LiveScreen {
         }
         // captured and only just gone: don't OCR yet (it's slow, and a
         // "wait until it's gone" loop would crawl)
-        let captured = names.iter().any(|n| self.pats.contains_key(&key(n)));
+        let captured = names.iter().any(|n| pats.contains_key(&key(n)));
         if captured && self.missing_for(names) < Duration::from_millis(2500) {
             return vec![];
         }
@@ -413,7 +436,8 @@ impl LiveScreen {
     /// Where the unit panel's level text sits: around your `unit_placed`
     /// capture, else the AHK macro's spot.
     pub fn level_area(&self) -> Rect {
-        match self.pats.get(&key("unit_placed")) {
+        let pats = self.pats.load_full();
+        match pats.get(&key("unit_placed")) {
             Some(p) => {
                 let c = p.captured_at;
                 Rect::new(c.x - 30, c.y - 6, c.w + 60, c.h + 12)
@@ -425,6 +449,8 @@ impl LiveScreen {
     /// OCR of the unit panel's level: Some(Ok(n)) = "UPG [n]",
     /// Some(Err(())) = MAX, None = couldn't read it.
     pub fn ocr_level(&self, frame: &crate::capture::Frame) -> Option<Result<u32, ()>> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         if let Some(l) = self
             .platform
             .ocr(frame, self.level_area())
@@ -457,6 +483,8 @@ impl LiveScreen {
     /// Where the unit panel's "UPG [n]" (or MAX) text is, read with OCR over
     /// the whole screen: the unit panel is open = a unit was just placed.
     pub fn find_upg(&self, frame: &crate::capture::Frame) -> Option<Point> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         // where it was last time on this client (read sharper, 4x), then the
         // usual unit panel spot, then the whole screen (2x)
         static LAST: std::sync::Mutex<Vec<(Hwnd, Rect)>> = std::sync::Mutex::new(Vec::new());
@@ -486,6 +514,8 @@ impl LiveScreen {
     /// Card pick screen by OCR: Some(weather) when "Choose a card" is on
     /// screen (weather "" when it isn't readable).
     pub fn ocr_card_screen(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let text = self.platform.ocr(frame, all)?;
         card_screen_text(&text)
@@ -493,22 +523,51 @@ impl LiveScreen {
 
     /// The stage title bar at the top middle (map + mode name).
     pub fn ocr_title(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         self.platform.ocr(frame, Rect::new(150, 0, 500, 48))
     }
 
     /// OCR of one area of a picture.
     pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
-        self.platform.ocr(frame, area)
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
+        let t = self.platform.ocr(frame, area);
+        if let Some(t) = &t {
+            crate::debugbus::ocr(self.hwnd, area, t);
+        }
+        t
     }
 
     /// OCR of the whole screen with word boxes (None without OCR).
     pub fn ocr_lines(&self, frame: &crate::capture::Frame) -> Option<Vec<Vec<(String, Rect)>>> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
-        self.platform.ocr_lines(frame, all)
+        let lines = self.platform.ocr_lines(frame, all);
+        if crate::debugbus::enabled() {
+            for l in lines.iter().flatten() {
+                if let Some(r) = l.iter().map(|(_, r)| *r).reduce(|a, b| {
+                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                    Rect::new(
+                        x,
+                        y,
+                        (a.x + a.w).max(b.x + b.w) - x,
+                        (a.y + a.h).max(b.y + b.h) - y,
+                    )
+                }) {
+                    let t: Vec<&str> = l.iter().map(|(w, _)| w.as_str()).collect();
+                    crate::debugbus::ocr(self.hwnd, r, &t.join(" "));
+                }
+            }
+        }
+        lines
     }
 
     /// The whole screen's text, quick (2x read), one line per line.
     pub fn ocr_text_fast(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let Some(lines) = self.ocr_lines(frame) else {
             return self.ocr_all(frame);
         };
@@ -528,6 +587,8 @@ impl LiveScreen {
 
     /// The screen's text, one string per line.
     pub fn ocr_text_lines(&self, frame: &crate::capture::Frame) -> Vec<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         if let Some(l) = self.ocr_lines(frame) {
             return l
                 .iter()
@@ -546,6 +607,8 @@ impl LiveScreen {
 
     /// The hotbar counter of the selected unit ("1/3"), read with OCR.
     pub fn ocr_counter(&self, frame: &crate::capture::Frame) -> Option<(u32, u32)> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let area = hotbar::counter_area(frame.width as i32, frame.height as i32);
         let t = self.platform.ocr(frame, area)?;
         hotbar::parse_count(&t)
@@ -553,12 +616,16 @@ impl LiveScreen {
 
     /// Everything readable on the screen (Windows OCR).
     pub fn ocr_all(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         self.platform.ocr(frame, all)
     }
 
     /// VICTORY (true) / DEFEAT (false) read with OCR from the upper middle.
     pub fn ocr_end(&self, frame: &crate::capture::Frame) -> Option<bool> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         // the upper 60% of the screen (the title sits in different places on
         // the VICTORY and DEFEAT screens)
         let area = Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5);
@@ -568,6 +635,8 @@ impl LiveScreen {
 
     /// One OCR read of the whole screen: (card screen weather, weather shift).
     pub fn ocr_events(&self, frame: &crate::capture::Frame) -> (Option<String>, Option<String>) {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         match self.platform.ocr(frame, all) {
             Some(t) => (card_screen_text(&t), weather_shift_text(&t)),
@@ -578,6 +647,7 @@ impl LiveScreen {
     /// Is `name` in an already captured picture (no new capture)?
     pub fn find_in_frame(&self, frame: &crate::capture::Frame, name: &str) -> bool {
         self.pats
+            .load()
             .get(&key(name))
             .and_then(|p| p.find_in(frame, None))
             .is_some()
@@ -585,13 +655,64 @@ impl LiveScreen {
 
     /// The client's picture right now.
     pub fn frame(&self) -> Option<crate::capture::Frame> {
-        self.platform.capture_client(self.hwnd).ok()
+        let f = self.platform.capture_client(self.hwnd).ok()?;
+        crate::debugbus::captured(self.hwnd);
+        // frozen / minimized window: input landed since the last picture but
+        // the picture didn't change at all (the game world always moves) -
+        // look once more, and if it's still identical don't trust it
+        let gen = crate::input::generation(self.hwnd);
+        let hash = f.quick_hash();
+        let same_after_input = {
+            let mut m = LAST_SHOT.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = m
+                .iter()
+                .find(|(h, ..)| *h == self.hwnd)
+                .map(|(_, ph, pg)| (*ph, *pg));
+            m.retain(|(h, ..)| *h != self.hwnd);
+            m.push((self.hwnd, hash, gen));
+            prev.is_some_and(|(ph, pg)| ph == hash && pg < gen)
+        };
+        if same_after_input {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let g = self.platform.capture_client(self.hwnd).ok()?;
+            if g.quick_hash() == hash {
+                trace::log(&format!(
+                    "stale picture: client window {:?} didn't change after input (frozen / minimized?)",
+                    self.hwnd
+                ));
+                return None;
+            }
+            return Some(g);
+        }
+        Some(f)
+    }
+
+    /// `f`, or a fresh picture when `f` is too old for this read (urgent
+    /// reads: 250 ms, background: 1 s).
+    pub fn fresh<'a>(
+        &self,
+        f: &'a crate::capture::Frame,
+    ) -> std::borrow::Cow<'a, crate::capture::Frame> {
+        let urgent = crate::platform::OCR_IS_URGENT.with(|c| c.get());
+        let max = if urgent {
+            MAX_AGE_URGENT
+        } else {
+            MAX_AGE_BACKGROUND
+        };
+        if f.age() <= max {
+            return std::borrow::Cow::Borrowed(f);
+        }
+        match self.platform.capture_client(self.hwnd).ok() {
+            Some(n) if n.width == f.width && n.height == f.height => std::borrow::Cow::Owned(n),
+            _ => std::borrow::Cow::Borrowed(f),
+        }
     }
 
     /// Captured pattern names (normalised) starting with `prefix`.
     pub fn with_prefix(&self, prefix: &str) -> Vec<String> {
         let mut v: Vec<String> = self
             .pats
+            .load()
             .keys()
             .filter(|k| k.starts_with(prefix))
             .cloned()
@@ -601,23 +722,37 @@ impl LiveScreen {
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.pats.contains_key(&key(name))
+        let pats = self.pats.load_full();
+        pats.contains_key(&key(name))
     }
 
     /// Like `find`, but over the whole picture (the button may sit somewhere
     /// else than where you captured it, e.g. Next on a DEFEAT vs VICTORY screen).
     pub fn find_wide(&self, names: &[String]) -> Option<Point> {
+        let pats = self.pats.load_full();
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let hit = names.iter().find_map(|n| {
-            self.pats.get(&key(n)).and_then(|p| {
-                p.find_in(&frame, None)
-                    .or_else(|| p.find_in(&frame, Some(all)))
-                    .map(|h| {
-                        buttonmem::remember(&key(n), h.center());
-                        h.center()
-                    })
-            })
+            let p = pats.get(&key(n))?;
+            match p
+                .find_in(&frame, None)
+                .or_else(|| p.find_in(&frame, Some(all)))
+            {
+                Some(h) => {
+                    crate::debugbus::hit(
+                        self.hwnd,
+                        Rect::new(h.at.x, h.at.y, h.w, h.h),
+                        n,
+                        h.score,
+                    );
+                    buttonmem::remember(&key(n), h.center());
+                    Some(h.center())
+                }
+                None => {
+                    crate::debugbus::miss(self.hwnd, all, n);
+                    None
+                }
+            }
         });
         self.seen(names, hit.is_some());
         hit.or_else(|| self.find_text(&frame, names, None).into_iter().next())
@@ -626,10 +761,11 @@ impl LiveScreen {
     /// Every place `name` shows on the whole picture (e.g. one Invite button
     /// per alt in the party list), top to bottom.
     pub fn find_all_wide(&self, name: &str) -> Vec<Point> {
+        let pats = self.pats.load_full();
         let Some(frame) = self.platform.capture_client(self.hwnd).ok() else {
             return vec![];
         };
-        let Some(p) = self.pats.get(&key(name)) else {
+        let Some(p) = pats.get(&key(name)) else {
             return self.find_text(&frame, &[name.to_string()], None);
         };
         let mut out = vec![];
@@ -657,9 +793,10 @@ impl LiveScreen {
 
     /// Names in `names` that you haven't captured yet.
     pub fn missing(&self, names: &[String]) -> Vec<String> {
+        let pats = self.pats.load_full();
         names
             .iter()
-            .filter(|n| !self.pats.contains_key(&key(n)))
+            .filter(|n| !pats.contains_key(&key(n)))
             .cloned()
             .collect()
     }
@@ -675,6 +812,14 @@ impl RouteEnv for LiveScreen {
         buttonmem::get(&key(pattern))
     }
 }
+
+/// Oldest picture an urgent read (placement check, upgrade level) may use.
+pub const MAX_AGE_URGENT: std::time::Duration = std::time::Duration::from_millis(250);
+/// Oldest picture a background read (cards, end screen, events) may use.
+pub const MAX_AGE_BACKGROUND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Last picture per client: (window, quick hash, input generation then).
+static LAST_SHOT: std::sync::Mutex<Vec<(Hwnd, u64, u64)>> = std::sync::Mutex::new(Vec::new());
 
 /// (client, names, missing since) for the OCR backup's patience.
 static MISSING: std::sync::Mutex<Vec<(Hwnd, String, std::time::Instant)>> =

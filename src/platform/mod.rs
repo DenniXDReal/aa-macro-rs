@@ -17,6 +17,8 @@ pub mod file;
 pub mod mock;
 pub mod null;
 #[cfg(windows)]
+pub mod overlay;
+#[cfg(windows)]
 pub mod win32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

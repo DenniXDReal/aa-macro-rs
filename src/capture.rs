@@ -9,6 +9,8 @@ pub struct Frame {
     pub height: u32,
     /// BGRA, `width * height * 4` bytes, row 0 = top.
     pub bgra: Vec<u8>,
+    /// When the picture was taken (crops keep their source's time).
+    pub captured_at: std::time::Instant,
 }
 
 impl std::fmt::Debug for Frame {
@@ -24,7 +26,26 @@ impl Frame {
             width,
             height,
             bgra,
+            captured_at: std::time::Instant::now(),
         }
+    }
+
+    /// How old the picture is.
+    pub fn age(&self) -> std::time::Duration {
+        self.captured_at.elapsed()
+    }
+
+    /// Quick non-crypto fingerprint (FNV-1a over every 7th pixel): a frozen
+    /// or minimized window gives the same value frame after frame.
+    pub fn quick_hash(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in self.bgra.chunks_exact(4).step_by(7) {
+            for b in &p[..3] {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        h
     }
 
     pub fn solid(width: u32, height: u32, b: u8, g: u8, r: u8) -> Self {
@@ -62,7 +83,9 @@ impl Frame {
             let s = ((row * self.width + x) * 4) as usize;
             out.extend_from_slice(&self.bgra[s..s + (w * 4) as usize]);
         }
-        Frame::new(w, h, out)
+        let mut f = Frame::new(w, h, out);
+        f.captured_at = self.captured_at;
+        f
     }
 
     pub fn from_png_bytes(bytes: &[u8]) -> Result<Frame> {
@@ -122,5 +145,25 @@ mod tests {
         let c = f.crop(2, 1, 5, 5);
         assert_eq!((c.width, c.height), (2, 2));
         assert_eq!(c.rgb(0, 0), Some((30, 20, 10)));
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    #[test]
+    fn hash_and_age() {
+        let a = Frame::solid(40, 30, 1, 2, 3);
+        let mut b = a.clone();
+        assert_eq!(a.quick_hash(), b.quick_hash(), "same picture, same hash");
+        b.bgra[0] = 200;
+        assert_ne!(a.quick_hash(), b.quick_hash(), "a pixel changed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let c = a.crop(0, 0, 10, 10);
+        assert!(
+            c.age() >= std::time::Duration::from_millis(20),
+            "crop keeps its source's time"
+        );
     }
 }

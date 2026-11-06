@@ -437,6 +437,19 @@ impl Routes {
     }
 
     pub fn load(user_dir: &Path) -> Self {
+        match Self::load_inner(user_dir, false) {
+            Ok(r) => r,
+            Err(_) => unreachable!("non-strict load never fails"),
+        }
+    }
+
+    /// Like `load`, but a route file of yours that doesn't parse is an
+    /// error (hot-reload keeps the old routes then).
+    pub fn try_load(user_dir: &Path) -> Result<Self> {
+        Self::load_inner(user_dir, true)
+    }
+
+    fn load_inner(user_dir: &Path, strict: bool) -> Result<Self> {
         let mut maps = BTreeMap::new();
         for (stem, json) in gen::ROUTES {
             match Route::parse(json) {
@@ -472,16 +485,21 @@ impl Routes {
                         }
                         user_maps.push(stem);
                     }
-                    Err(e) => log::error!("route {}: {e}", p.display()),
+                    Err(e) => {
+                        if strict {
+                            return Err(e.context(format!("route {}", p.display())));
+                        }
+                        log::error!("route {}: {e}", p.display())
+                    }
                 }
             }
         }
-        Routes {
+        Ok(Routes {
             maps,
             lobby,
             user_dir: user_dir.to_path_buf(),
             user_maps,
-        }
+        })
     }
 
     pub fn save_user(&mut self, name: &str, r: &Route) -> Result<PathBuf> {

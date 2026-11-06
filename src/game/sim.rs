@@ -243,7 +243,8 @@ mod tests {
             main: Hwnd(1),
             clients: vec![(Hwnd(1), screen)],
             settings: s,
-            routes: Routes::load(std::path::Path::new("/nonexistent")),
+            routes: Routes::load(std::path::Path::new("/nonexistent")).into(),
+            resume: None,
             placements: Placements::default(),
             tx,
             speed: 0.02,
@@ -430,7 +431,10 @@ mod tests {
         s.run.act = "Legend Stage 3".into();
         s.run.return_to_lobby = true;
         let (mut c, _rx, _arb) = ctx(sim.clone(), s);
-        c.routes.maps.clear(); // no map walk in the fake game
+        // no map walk in the fake game
+        let mut r = (*c.routes.get()).clone();
+        r.maps.clear();
+        c.routes = r.into();
         c.enter_stage().unwrap();
         assert_eq!(sim.screen_now(), 10);
         assert_eq!(
@@ -728,7 +732,8 @@ mod tests {
             main: Hwnd(1),
             clients,
             settings: s,
-            routes: Routes::load(std::path::Path::new("/nonexistent")),
+            routes: Routes::load(std::path::Path::new("/nonexistent")).into(),
+            resume: None,
             placements: Placements::default(),
             tx,
             speed: 0.02,

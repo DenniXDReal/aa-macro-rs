@@ -239,6 +239,9 @@ pub struct Pattern {
     /// Text kind: '0'/'1' rows.
     #[serde(default)]
     pub bits: String,
+    /// Save a failure dump when this pattern is waited for and never shows.
+    #[serde(default)]
+    pub dump_on_miss: bool,
     #[serde(skip)]
     compiled: Option<BitImage>,
     #[serde(skip)]
@@ -289,6 +292,7 @@ impl Pattern {
             max_bad: d_bad(),
             bits: bits.to_text(),
             compiled: Some(bits),
+            dump_on_miss: false,
             template: None,
         })
     }
@@ -309,6 +313,7 @@ impl Pattern {
             max_bad: d_bad(),
             bits: String::new(),
             compiled: None,
+            dump_on_miss: false,
             template: Some(frame.crop(r.x as u32, r.y as u32, r.w as u32, r.h as u32)),
         })
     }

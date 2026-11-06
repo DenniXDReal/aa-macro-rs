@@ -255,13 +255,16 @@ pub struct RunCtx {
     /// Every client: (hwnd, screen). Index = client number - 1.
     pub clients: Vec<(Hwnd, LiveScreen)>,
     pub settings: Settings,
-    pub routes: Routes,
+    /// Swapped by hot-reload when your route files change.
+    pub routes: crate::hotreload::LiveRoutes,
     pub placements: Placements,
     pub tx: Sender<Event>,
     /// 1.0 = real timing; tests use a small value.
     pub speed: f32,
     /// Spots that failed before (shared with the app, saved to disk).
     pub memory: std::sync::Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
+    /// Pick up at this saved step (a restart mid-stage), see `resume`.
+    pub resume: Option<super::resume::Saved>,
 }
 
 type R<T> = Result<T, String>;
@@ -288,6 +291,20 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
             true
         }
     }
+}
+
+/// Placed units as JSON (client number, slot, x, y) for the step state.
+fn placed_json(
+    clients: &[(Hwnd, super::LiveScreen)],
+    placed: &[(Hwnd, usize, Point)],
+) -> serde_json::Value {
+    placed
+        .iter()
+        .map(|(h, slot, p)| {
+            let n = clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
+            serde_json::json!([n, slot, p.x, p.y])
+        })
+        .collect()
 }
 
 /// One picture of an upgrade panel the macro couldn't make sense of
@@ -321,7 +338,38 @@ static LAST_PICK: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new
 
 impl RunCtx {
     fn log(&self, s: impl Into<String>) {
-        let _ = self.tx.send(Event::Log(s.into()));
+        let s = s.into();
+        super::trace::log(&s);
+        let _ = self.tx.send(Event::Log(s));
+    }
+
+    /// Failure dump of every client (+ `crops` on client `h`), logged.
+    fn dump_failure(
+        &self,
+        step: &str,
+        reason: &str,
+        h: Option<Hwnd>,
+        crops: Vec<super::dump::Crop>,
+    ) {
+        let shots = self
+            .clients
+            .iter()
+            .enumerate()
+            .map(|(i, (ch, scr))| super::dump::ClientShot {
+                n: i + 1,
+                frame: scr.frame(),
+                crops: if Some(*ch) == h {
+                    crops.clone()
+                } else {
+                    vec![]
+                },
+            })
+            .collect();
+        if let Some(d) = super::dump::dump(step, reason, shots) {
+            let _ = self
+                .tx
+                .send(Event::Log(format!("failure dump: {}", d.display())));
+        }
     }
     fn screen(&self, h: Hwnd) -> &LiveScreen {
         &self.clients.iter().find(|c| c.0 == h).expect("client").1
@@ -354,6 +402,27 @@ impl RunCtx {
                 }
             }
             if dl.expired() {
+                // a waited-for pattern never showed: dump it when asked to
+                if ms >= 1000 {
+                    let crops: Vec<super::dump::Crop> = names
+                        .iter()
+                        .filter_map(|n| s.pattern(n))
+                        .filter(|p| p.dump_on_miss || self.settings.dump_on_miss)
+                        .map(|p| super::dump::Crop {
+                            what: p.name.clone(),
+                            rect: p.search,
+                            info: serde_json::json!({"pattern": p.name, "waited_ms": ms, "found": false}),
+                        })
+                        .collect();
+                    if !crops.is_empty() {
+                        self.dump_failure(
+                            &super::trace::current_name(),
+                            &format!("{} never showed", names.join(" / ")),
+                            Some(h),
+                            crops,
+                        );
+                    }
+                }
                 return Ok(None);
             }
             self.sleep(150)?;
@@ -379,6 +448,7 @@ impl RunCtx {
         }
     }
     fn click(&self, h: Hwnd, p: Point, why: &str) -> R<()> {
+        crate::debugbus::click(h, p, why);
         self.arb
             .run(Batch::new(h, why).click(p.x, p.y))
             .map_err(|e| format!("{why}: {e}"))?;
@@ -419,8 +489,8 @@ impl RunCtx {
         let s = &self.settings;
         let mode = s.run.mode;
         let key = lobby_route(mode);
-        let route = self
-            .routes
+        let routes = self.routes.get();
+        let route = routes
             .lobby
             .get(key)
             .ok_or(format!("no lobby route '{key}'"))?;
@@ -1097,7 +1167,7 @@ impl RunCtx {
         let vote = Self::names(&["vote_start"]);
         let mut map: Option<String> = None;
         // map names the OCR can recognise: every map with a route + your loading_ captures
-        let mut known: Vec<String> = self.routes.maps.keys().cloned().collect();
+        let mut known: Vec<String> = self.routes.get().maps.keys().cloned().collect();
         known.extend(detect.iter().map(|p| map_from_pattern(p)));
         known.extend(
             crate::movement::Stages::builtin()
@@ -1284,7 +1354,7 @@ impl RunCtx {
             }
         }
         if let Some(r) = (!map.is_empty())
-            .then(|| self.routes.find_map(&map))
+            .then(|| self.routes.get().find_map(&map).cloned())
             .flatten()
         {
             for h in self.main_last(self.movers()) {
@@ -1342,7 +1412,8 @@ impl RunCtx {
         if !scr.has("tp_spawn") {
             return Ok(());
         }
-        let Some(r) = self.routes.lobby.get("tp_spawn") else {
+        let routes = self.routes.get();
+        let Some(r) = routes.lobby.get("tp_spawn") else {
             return Ok(());
         };
         let b = r
@@ -1971,6 +2042,20 @@ impl RunCtx {
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
                 let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
+                if before.is_none() {
+                    // OCR below the bar: what did it look at?
+                    let la = scr.level_area();
+                    self.dump_failure(
+                        "upgrade",
+                        "level not readable",
+                        Some(*h),
+                        vec![super::dump::Crop {
+                            what: "upg_num".into(),
+                            rect: la,
+                            info: serde_json::json!({ "slot": slot, "unit_at": [at.x, at.y] }),
+                        }],
+                    );
+                }
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -2114,7 +2199,14 @@ impl RunCtx {
         let mut dl = self.control.deadline(self.secs(ms as f64 / 1000.0));
         let mut last: Option<u32> = None;
         let mut agreed: Option<u32> = None;
+        let mut gen = crate::input::generation(scr.hwnd());
         loop {
+            // input since the last read: earlier reads don't count any more
+            let now = crate::input::generation(scr.hwnd());
+            if now != gen {
+                gen = now;
+                last = None;
+            }
             let v = Self::read_level(scr);
             if v == Some(u32::MAX) {
                 return Ok(v);
@@ -2137,8 +2229,17 @@ impl RunCtx {
     }
 
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
-        // upgrade reads of different accounts may run at the same time
-        crate::platform::urgent_ocr(|| Self::read_level_now(scr))
+        // upgrade reads of different accounts may run at the same time.
+        // Input sent to this client while reading = the read may show the old
+        // panel: throw it away and read again (up to 3x)
+        for _ in 0..3 {
+            let started = crate::input::generation(scr.hwnd());
+            let v = crate::platform::urgent_ocr(|| Self::read_level_now(scr));
+            if crate::input::generation(scr.hwnd()) == started {
+                return v;
+            }
+        }
+        None
     }
 
     fn read_level_now(scr: &super::LiveScreen) -> Option<u32> {
@@ -2391,21 +2492,107 @@ impl RunCtx {
     }
 
     /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
-    fn one_round(&self, in_lobby: &mut bool, map: &mut String, last: &dyn Fn() -> bool) -> R<()> {
+    fn one_round(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+        resume: &mut Option<super::resume::Saved>,
+    ) -> R<()> {
+        let mode = self.settings.run.mode.label();
+        // a saved step to pick up at (restart / hiccup mid-stage)
+        if let Some(r) = resume.take() {
+            if self.where_am_i() == "stage" {
+                let m = r.step_params["map"].as_str().unwrap_or("").to_string();
+                match r.step.as_str() {
+                    "upgrade" => {
+                        let placed: Vec<(Hwnd, usize, Point)> = super::resume::placed(&r)
+                            .into_iter()
+                            .filter_map(|(n, slot, x, y)| {
+                                self.clients
+                                    .get(n.checked_sub(1)?)
+                                    .map(|c| (c.0, slot, Point::new(x, y)))
+                            })
+                            .collect();
+                        if !placed.is_empty() {
+                            self.log(format!(
+                                "resuming: upgrading the {} unit(s) placed before ({} s ago)",
+                                placed.len(),
+                                r.age_secs()
+                            ));
+                            *map = m;
+                            return self.round_from_upgrade(in_lobby, map, last, placed);
+                        }
+                    }
+                    "place" => {
+                        self.log(format!("resuming: placing on {m} ({} s ago)", r.age_secs()));
+                        *map = m;
+                        return self.round_from_place(in_lobby, map, last);
+                    }
+                    _ => {}
+                }
+            } else {
+                self.log("saved step not resumed: not in a stage any more");
+            }
+        }
         if *in_lobby {
+            super::trace::step("lobby", serde_json::json!({ "mode": mode }));
             self.enter_stage()?;
             map.clear();
         }
+        super::trace::step(
+            "stage_setup",
+            serde_json::json!({ "mode": mode, "map": map.clone() }),
+        );
         *map = self.stage_setup(map)?;
+        self.round_from_place(in_lobby, map, last)
+    }
+
+    /// The rest of a round from placing on.
+    fn round_from_place(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+    ) -> R<()> {
+        let mode = self.settings.run.mode.label();
         self.cards_all()?;
         let started = Instant::now();
+        super::trace::step(
+            "place",
+            serde_json::json!({ "mode": mode, "map": map.clone() }),
+        );
         let placed = self.place_all(map)?;
         self.log(format!(
             "placed {} unit(s) in {:.0}s",
             placed.len(),
             started.elapsed().as_secs_f32()
         ));
+        self.round_from_upgrade(in_lobby, map, last, placed)
+    }
+
+    /// The rest of a round from upgrading on.
+    fn round_from_upgrade(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+        placed: Vec<(Hwnd, usize, Point)>,
+    ) -> R<()> {
+        let mode = self.settings.run.mode.label();
+        super::trace::step(
+            "upgrade",
+            serde_json::json!({
+                "mode": mode,
+                "map": map.clone(),
+                "placed": placed_json(&self.clients, &placed),
+            }),
+        );
         let won = self.upgrade_until_end(&placed)?;
+        super::trace::step(
+            "end",
+            serde_json::json!({ "mode": mode, "map": map.clone(), "won": won }),
+        );
         // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
         {
             let main = self.screen(self.main);
@@ -2437,6 +2624,8 @@ impl RunCtx {
 
     /// The whole loop until Stop / an error.
     pub fn run(&self) {
+        crate::debugbus::set_clients(&self.clients.iter().map(|c| c.0).collect::<Vec<_>>());
+        super::resume::install();
         let finished = std::sync::atomic::AtomicBool::new(false);
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
@@ -2460,10 +2649,13 @@ impl RunCtx {
                 }
                 // schedule: one step after another, each with its own settings
                 let mut in_lobby = true;
+                let mut resume_once = self.resume.clone();
                 loop {
                     for (i, st) in &steps {
                         let mut ctx = self.clone();
                         ctx.settings = st.apply(&self.settings);
+                        // a saved step only applies to the first step run
+                        ctx.resume = resume_once.take();
                         self.log(format!(
                             "schedule: step {} of {} - {}",
                             i + 1,
@@ -2512,9 +2704,33 @@ impl RunCtx {
                 let mut fails = 0;
                 let mut blocked_told = false;
                 let mut blocked_n = 0u32;
+                let mut resume = self.resume.clone();
+                if resume.is_some() {
+                    in_lobby = false;
+                }
+                // a hiccup mid-stage: pick up at the step it was in
+                let again = || {
+                    super::trace::current().and_then(|s| {
+                        let r = super::resume::Saved {
+                            step: s.name,
+                            step_params: s.params,
+                            client_states: vec![],
+                            updated_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        };
+                        r.resumable().then_some(r)
+                    })
+                };
                 loop {
                     let done_after = rounds + 1;
-                    match self.one_round(&mut in_lobby, &mut map, &|| reached(done_after)) {
+                    match self.one_round(
+                        &mut in_lobby,
+                        &mut map,
+                        &|| reached(done_after),
+                        &mut resume,
+                    ) {
                         Ok(()) => {
                             fails = 0;
                             blocked_told = false;
@@ -2552,10 +2768,16 @@ impl RunCtx {
                             match at {
                                 "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
                                 "lobby" => in_lobby = true,
-                                _ => in_lobby = false,
+                                _ => {
+                                    in_lobby = false;
+                                    resume = again();
+                                }
                             }
                         }
                         Err(e) => {
+                            if e != "stopped" {
+                                self.dump_failure(&super::trace::current_name(), &e, None, vec![]);
+                            }
                             // a client dropped out (Roblox "Disconnected" / error
                             // code box): no point retrying - relaunch everything
                             if let Some(who) = self.disconnected() {
@@ -2576,6 +2798,7 @@ impl RunCtx {
                                 "lobby" => in_lobby = true,
                                 _ => {
                                     in_lobby = false;
+                                    resume = again();
                                     self.sleep(3000)?;
                                 }
                             }
