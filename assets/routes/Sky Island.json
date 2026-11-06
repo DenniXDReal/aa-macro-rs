@@ -1,0 +1,16 @@
+{
+ "map": "Sky Island",
+ "source": "DenniXD: hold W 8 s, then A 5 s",
+ "steps": [
+  {
+   "type": "hold",
+   "keys": ["w"],
+   "ms": 8000
+  },
+  {
+   "type": "hold",
+   "keys": ["a"],
+   "ms": 5000
+  }
+ ]
+}
