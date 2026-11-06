@@ -315,6 +315,8 @@ pub fn upgrade<'a>() -> Simple<'a> {
         Step::Upgrade,
         |c| {
             let placed = c.round().placed.clone();
+            // placement mode closed, UI settled, what's on screen logged
+            c.run.place_to_upgrade(&placed)?;
             let won = c.run.upgrade_until_end(&placed)?;
             c.round().won = Some(won);
             Ok(())

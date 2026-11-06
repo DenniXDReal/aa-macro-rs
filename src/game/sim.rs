@@ -701,11 +701,13 @@ mod tests {
         let stop = c.control.clone();
         let t = std::thread::spawn(move || c.run());
         let mut ends = 0;
+        let mut handovers = 0;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while ends < 3 && std::time::Instant::now() < deadline {
             match rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(Event::Loss) | Ok(Event::Win) => ends += 1,
                 Ok(Event::Fatal(f)) => eprintln!("FATAL {f}"),
+                Ok(Event::Log(l)) if l.starts_with("place > upgrade:") => handovers += 1,
                 Ok(Event::Done(why)) => panic!("loop ended: {why}"),
                 _ => {}
             }
@@ -713,6 +715,10 @@ mod tests {
         stop.stop();
         t.join().unwrap();
         assert_eq!(ends, 3, "3 stages in a row (step machine)");
+        assert!(
+            handovers >= 3,
+            "Place > Upgrade hand-over every round ({handovers})"
+        );
         let replays = sim
             .clicks
             .lock()
