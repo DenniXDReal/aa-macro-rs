@@ -109,6 +109,9 @@ pub struct App {
     main: usize,
     page: Page,
     settings_tab: SettingsTab,
+    /// Saved step waiting for 'resume or start fresh?'.
+    resume_prompt: Option<crate::game::resume::Saved>,
+    resume_answer: Option<bool>,
     home_tab: HomeTab,
 
     // live picture of the selected client
@@ -278,6 +281,8 @@ impl App {
             main: 0,
             page: Page::Home,
             settings_tab: SettingsTab::General,
+            resume_prompt: None,
+            resume_answer: None,
             home_tab: HomeTab::Control,
             frame: None,
             tex: None,
@@ -390,6 +395,24 @@ impl App {
     // ---------------- run controls ----------------
 
     fn start(&mut self) {
+        // a stage still running from before a restart (last 5 min)?
+        let resume = match (self.resume_answer.take(), self.settings.resume_mode) {
+            (Some(true), _) => crate::game::resume::recent(),
+            (Some(false), _) | (None, crate::config::ResumeMode::Off) => None,
+            (None, crate::config::ResumeMode::Auto) => crate::game::resume::recent(),
+            (None, crate::config::ResumeMode::Ask) => {
+                if let Some(r) = crate::game::resume::recent() {
+                    if self.run_rx.is_none() {
+                        self.resume_prompt = Some(r);
+                        return;
+                    }
+                }
+                None
+            }
+        };
+        if resume.is_none() {
+            crate::game::resume::clear();
+        }
         if self.run_rx.is_some() {
             self.say("the game loop is still running (or still stopping) - press Stop and give it a second");
             return;
@@ -440,6 +463,7 @@ impl App {
             tx,
             speed: 1.0,
             memory: self.memory.clone(),
+            resume,
         };
         std::thread::Builder::new()
             .name("game-loop".into())
@@ -3366,6 +3390,19 @@ impl App {
                         }
                     });
                     ui.end_row();
+                    ui.label("Resume after a restart").on_hover_text(
+                        "the macro saves its step; started again within 5 min mid-stage, it can carry on (e.g. upgrading) instead of starting from the vote",
+                    );
+                    changed |= segmented(
+                        ui,
+                        &mut s.resume_mode,
+                        &[
+                            (crate::config::ResumeMode::Ask, "Ask"),
+                            (crate::config::ResumeMode::Auto, "Auto"),
+                            (crate::config::ResumeMode::Off, "Off"),
+                        ],
+                    );
+                    ui.end_row();
                     ui.label("Debug overlay").on_hover_text(
                         "boxes over the game: pattern hits (green), OCR text (cyan), clicks (crosshair), step + picture age. Click-through.",
                     );
@@ -3687,6 +3724,41 @@ impl App {
         }
         while let Ok(k) = self.hotkeys.try_recv() {
             self.hotkey(k);
+        }
+        if let Some(r) = self.resume_prompt.clone() {
+            let mut answer = None;
+            egui::Window::new("Pick up where it stopped?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    let map = r.step_params["map"].as_str().unwrap_or("?").to_string();
+                    let n = crate::game::resume::placed(&r).len();
+                    ui.label(format!(
+                        "The macro was at '{}' on {map} {} s ago{}.",
+                        r.step,
+                        r.age_secs(),
+                        if n > 0 { format!(" with {n} unit(s) placed") } else { String::new() }
+                    ));
+                    ui.label(
+                        RichText::new("Resume carries on from there (e.g. upgrading). Start fresh begins from the lobby / vote.")
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Resume").clicked() {
+                            answer = Some(true);
+                        }
+                        if ui.button("Start fresh").clicked() {
+                            answer = Some(false);
+                        }
+                    });
+                });
+            if let Some(a) = answer {
+                self.resume_prompt = None;
+                self.resume_answer = Some(a);
+                self.start();
+            }
         }
         self.run_events();
         self.relaunch_tick();

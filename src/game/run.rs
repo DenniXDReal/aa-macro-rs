@@ -263,6 +263,8 @@ pub struct RunCtx {
     pub speed: f32,
     /// Spots that failed before (shared with the app, saved to disk).
     pub memory: std::sync::Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
+    /// Pick up at this saved step (a restart mid-stage), see `resume`.
+    pub resume: Option<super::resume::Saved>,
 }
 
 type R<T> = Result<T, String>;
@@ -2488,8 +2490,49 @@ impl RunCtx {
     }
 
     /// One stage: (lobby ->) setup -> place -> upgrade -> end -> Replay / lobby.
-    fn one_round(&self, in_lobby: &mut bool, map: &mut String, last: &dyn Fn() -> bool) -> R<()> {
+    fn one_round(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+        resume: &mut Option<super::resume::Saved>,
+    ) -> R<()> {
         let mode = self.settings.run.mode.label();
+        // a saved step to pick up at (restart / hiccup mid-stage)
+        if let Some(r) = resume.take() {
+            if self.where_am_i() == "stage" {
+                let m = r.step_params["map"].as_str().unwrap_or("").to_string();
+                match r.step.as_str() {
+                    "upgrade" => {
+                        let placed: Vec<(Hwnd, usize, Point)> = super::resume::placed(&r)
+                            .into_iter()
+                            .filter_map(|(n, slot, x, y)| {
+                                self.clients
+                                    .get(n.checked_sub(1)?)
+                                    .map(|c| (c.0, slot, Point::new(x, y)))
+                            })
+                            .collect();
+                        if !placed.is_empty() {
+                            self.log(format!(
+                                "resuming: upgrading the {} unit(s) placed before ({} s ago)",
+                                placed.len(),
+                                r.age_secs()
+                            ));
+                            *map = m;
+                            return self.round_from_upgrade(in_lobby, map, last, placed);
+                        }
+                    }
+                    "place" => {
+                        self.log(format!("resuming: placing on {m} ({} s ago)", r.age_secs()));
+                        *map = m;
+                        return self.round_from_place(in_lobby, map, last);
+                    }
+                    _ => {}
+                }
+            } else {
+                self.log("saved step not resumed: not in a stage any more");
+            }
+        }
         if *in_lobby {
             super::trace::step("lobby", serde_json::json!({ "mode": mode }));
             self.enter_stage()?;
@@ -2500,6 +2543,17 @@ impl RunCtx {
             serde_json::json!({ "mode": mode, "map": map.clone() }),
         );
         *map = self.stage_setup(map)?;
+        self.round_from_place(in_lobby, map, last)
+    }
+
+    /// The rest of a round from placing on.
+    fn round_from_place(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+    ) -> R<()> {
+        let mode = self.settings.run.mode.label();
         self.cards_all()?;
         let started = Instant::now();
         super::trace::step(
@@ -2512,6 +2566,18 @@ impl RunCtx {
             placed.len(),
             started.elapsed().as_secs_f32()
         ));
+        self.round_from_upgrade(in_lobby, map, last, placed)
+    }
+
+    /// The rest of a round from upgrading on.
+    fn round_from_upgrade(
+        &self,
+        in_lobby: &mut bool,
+        map: &mut String,
+        last: &dyn Fn() -> bool,
+        placed: Vec<(Hwnd, usize, Point)>,
+    ) -> R<()> {
+        let mode = self.settings.run.mode.label();
         super::trace::step(
             "upgrade",
             serde_json::json!({
@@ -2557,6 +2623,7 @@ impl RunCtx {
     /// The whole loop until Stop / an error.
     pub fn run(&self) {
         crate::debugbus::set_clients(&self.clients.iter().map(|c| c.0).collect::<Vec<_>>());
+        super::resume::install();
         let finished = std::sync::atomic::AtomicBool::new(false);
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
@@ -2580,10 +2647,13 @@ impl RunCtx {
                 }
                 // schedule: one step after another, each with its own settings
                 let mut in_lobby = true;
+                let mut resume_once = self.resume.clone();
                 loop {
                     for (i, st) in &steps {
                         let mut ctx = self.clone();
                         ctx.settings = st.apply(&self.settings);
+                        // a saved step only applies to the first step run
+                        ctx.resume = resume_once.take();
                         self.log(format!(
                             "schedule: step {} of {} - {}",
                             i + 1,
@@ -2632,9 +2702,33 @@ impl RunCtx {
                 let mut fails = 0;
                 let mut blocked_told = false;
                 let mut blocked_n = 0u32;
+                let mut resume = self.resume.clone();
+                if resume.is_some() {
+                    in_lobby = false;
+                }
+                // a hiccup mid-stage: pick up at the step it was in
+                let again = || {
+                    super::trace::current().and_then(|s| {
+                        let r = super::resume::Saved {
+                            step: s.name,
+                            step_params: s.params,
+                            client_states: vec![],
+                            updated_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        };
+                        r.resumable().then_some(r)
+                    })
+                };
                 loop {
                     let done_after = rounds + 1;
-                    match self.one_round(&mut in_lobby, &mut map, &|| reached(done_after)) {
+                    match self.one_round(
+                        &mut in_lobby,
+                        &mut map,
+                        &|| reached(done_after),
+                        &mut resume,
+                    ) {
                         Ok(()) => {
                             fails = 0;
                             blocked_told = false;
@@ -2672,7 +2766,10 @@ impl RunCtx {
                             match at {
                                 "end" => in_lobby = self.after_end().unwrap_or(in_lobby),
                                 "lobby" => in_lobby = true,
-                                _ => in_lobby = false,
+                                _ => {
+                                    in_lobby = false;
+                                    resume = again();
+                                }
                             }
                         }
                         Err(e) => {
@@ -2699,6 +2796,7 @@ impl RunCtx {
                                 "lobby" => in_lobby = true,
                                 _ => {
                                     in_lobby = false;
+                                    resume = again();
                                     self.sleep(3000)?;
                                 }
                             }

@@ -69,6 +69,9 @@ pub struct Settings {
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
+    /// After a restart mid-stage (within 5 min): pick up at the saved step
+    /// (Auto), ask first (Ask) or always start from the lobby (Off).
+    pub resume_mode: ResumeMode,
     /// Debug overlay: also draw patterns looked for and not found (red).
     pub overlay_misses: bool,
     /// Save a failure dump (debug/ folder) whenever a waited-for pattern
@@ -499,6 +502,7 @@ impl Default for Settings {
             schedule: Schedule::default(),
             dump_on_miss: false,
             overlay_misses: false,
+            resume_mode: ResumeMode::Ask,
             step_delay_ms: 800,
             place_delay_ms: 2000,
             place_settle_ms: 2000,
@@ -851,4 +855,12 @@ mod schedule_tests {
         assert_eq!(st.label(), "Raid Ruined City Act 2 (5 runs or 30 min)");
         assert_eq!(base.run.mode, Mode::SummerHunt, "base untouched");
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ResumeMode {
+    Off,
+    #[default]
+    Ask,
+    Auto,
 }

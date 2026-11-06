@@ -10,6 +10,7 @@ pub mod dump;
 pub mod hotbar;
 pub mod minimap;
 pub mod placing;
+pub mod resume;
 pub mod run;
 #[cfg(test)]
 pub mod sim;
