@@ -297,13 +297,23 @@ impl LiveScreen {
     pub fn find(&self, names: &[String], region: Option<Rect>) -> Option<Point> {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let hit = names.iter().find_map(|n| {
-            self.pats
-                .get(&key(n))
-                .and_then(|p| p.find_in(&frame, region))
-                .map(|h| {
+            let p = self.pats.get(&key(n))?;
+            match p.find_in(&frame, region) {
+                Some(h) => {
+                    crate::debugbus::hit(
+                        self.hwnd,
+                        Rect::new(h.at.x, h.at.y, h.w, h.h),
+                        n,
+                        h.score,
+                    );
                     buttonmem::remember(&key(n), h.center());
-                    h.center()
-                })
+                    Some(h.center())
+                }
+                None => {
+                    crate::debugbus::miss(self.hwnd, region.unwrap_or(p.search), n);
+                    None
+                }
+            }
         });
         self.seen(names, hit.is_some());
         hit.or_else(|| self.find_text(&frame, names, region).into_iter().next())
@@ -519,7 +529,11 @@ impl LiveScreen {
     pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
         let fresh = self.fresh(frame);
         let frame: &crate::capture::Frame = &fresh;
-        self.platform.ocr(frame, area)
+        let t = self.platform.ocr(frame, area);
+        if let Some(t) = &t {
+            crate::debugbus::ocr(self.hwnd, area, t);
+        }
+        t
     }
 
     /// OCR of the whole screen with word boxes (None without OCR).
@@ -527,7 +541,24 @@ impl LiveScreen {
         let fresh = self.fresh(frame);
         let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
-        self.platform.ocr_lines(frame, all)
+        let lines = self.platform.ocr_lines(frame, all);
+        if crate::debugbus::enabled() {
+            for l in lines.iter().flatten() {
+                if let Some(r) = l.iter().map(|(_, r)| *r).reduce(|a, b| {
+                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                    Rect::new(
+                        x,
+                        y,
+                        (a.x + a.w).max(b.x + b.w) - x,
+                        (a.y + a.h).max(b.y + b.h) - y,
+                    )
+                }) {
+                    let t: Vec<&str> = l.iter().map(|(w, _)| w.as_str()).collect();
+                    crate::debugbus::ocr(self.hwnd, r, &t.join(" "));
+                }
+            }
+        }
+        lines
     }
 
     /// The whole screen's text, quick (2x read), one line per line.
@@ -621,6 +652,7 @@ impl LiveScreen {
     /// The client's picture right now.
     pub fn frame(&self) -> Option<crate::capture::Frame> {
         let f = self.platform.capture_client(self.hwnd).ok()?;
+        crate::debugbus::captured(self.hwnd);
         // frozen / minimized window: input landed since the last picture but
         // the picture didn't change at all (the game world always moves) -
         // look once more, and if it's still identical don't trust it
@@ -694,14 +726,26 @@ impl LiveScreen {
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let hit = names.iter().find_map(|n| {
-            self.pats.get(&key(n)).and_then(|p| {
-                p.find_in(&frame, None)
-                    .or_else(|| p.find_in(&frame, Some(all)))
-                    .map(|h| {
-                        buttonmem::remember(&key(n), h.center());
-                        h.center()
-                    })
-            })
+            let p = self.pats.get(&key(n))?;
+            match p
+                .find_in(&frame, None)
+                .or_else(|| p.find_in(&frame, Some(all)))
+            {
+                Some(h) => {
+                    crate::debugbus::hit(
+                        self.hwnd,
+                        Rect::new(h.at.x, h.at.y, h.w, h.h),
+                        n,
+                        h.score,
+                    );
+                    buttonmem::remember(&key(n), h.center());
+                    Some(h.center())
+                }
+                None => {
+                    crate::debugbus::miss(self.hwnd, all, n);
+                    None
+                }
+            }
         });
         self.seen(names, hit.is_some());
         hit.or_else(|| self.find_text(&frame, names, None).into_iter().next())

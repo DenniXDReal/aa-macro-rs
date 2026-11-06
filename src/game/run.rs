@@ -445,6 +445,7 @@ impl RunCtx {
         }
     }
     fn click(&self, h: Hwnd, p: Point, why: &str) -> R<()> {
+        crate::debugbus::click(h, p, why);
         self.arb
             .run(Batch::new(h, why).click(p.x, p.y))
             .map_err(|e| format!("{why}: {e}"))?;
@@ -2553,6 +2554,7 @@ impl RunCtx {
 
     /// The whole loop until Stop / an error.
     pub fn run(&self) {
+        crate::debugbus::set_clients(&self.clients.iter().map(|c| c.0).collect::<Vec<_>>());
         let finished = std::sync::atomic::AtomicBool::new(false);
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes

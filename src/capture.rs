@@ -161,6 +161,9 @@ mod stale_tests {
         assert_ne!(a.quick_hash(), b.quick_hash(), "a pixel changed");
         std::thread::sleep(std::time::Duration::from_millis(20));
         let c = a.crop(0, 0, 10, 10);
-        assert!(c.age() >= std::time::Duration::from_millis(20), "crop keeps its source's time");
+        assert!(
+            c.age() >= std::time::Duration::from_millis(20),
+            "crop keeps its source's time"
+        );
     }
 }

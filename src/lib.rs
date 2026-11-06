@@ -14,6 +14,7 @@ pub mod accounts;
 pub mod capture;
 pub mod config;
 pub mod control;
+pub mod debugbus;
 pub mod flows;
 pub mod game;
 pub mod geom;

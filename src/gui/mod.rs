@@ -258,7 +258,7 @@ impl App {
         let (ram_tx, ram_rx) = mpsc::channel();
         let (hk_tx, hotkeys) = mpsc::channel();
         #[cfg(windows)]
-        crate::platform::win32::spawn_hotkeys(hk_tx);
+        crate::platform::win32::spawn_hotkeys(hk_tx, settings.keybinds.overlay_fkey());
         #[cfg(not(windows))]
         drop(hk_tx);
         let mut app = Self {
@@ -641,8 +641,24 @@ impl App {
             3 => self.stop(),
             4 => self.toggle_pause(),
             6 => self.hover_capture(),
+            k if k as u32 == self.settings.keybinds.overlay_fkey() => self.toggle_overlay(),
             _ => {}
         }
+    }
+
+    /// Debug overlay on / off (F9): boxes and text over the game showing
+    /// what the macro sees.
+    fn toggle_overlay(&mut self) {
+        let on = !crate::debugbus::enabled();
+        crate::debugbus::set_show_misses(self.settings.overlay_misses);
+        crate::debugbus::set_enabled(on);
+        #[cfg(windows)]
+        crate::platform::overlay::spawn();
+        self.say(if on {
+            "debug overlay on"
+        } else {
+            "debug overlay off"
+        });
     }
 
     /// Queue a Discord message if the webhook is set up.
@@ -3345,6 +3361,26 @@ impl App {
                             let d = crate::game::dump::root();
                             let _ = std::fs::create_dir_all(&d);
                             let _ = self.platform.open_uri(&d.display().to_string());
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Debug overlay").on_hover_text(
+                        "boxes over the game: pattern hits (green), OCR text (cyan), clicks (crosshair), step + picture age. Click-through.",
+                    );
+                    ui.horizontal(|ui| {
+                        let mut on = crate::debugbus::enabled();
+                        if ui
+                            .checkbox(&mut on, format!("show ({})", s.keybinds.overlay))
+                            .changed()
+                        {
+                            crate::debugbus::set_show_misses(s.overlay_misses);
+                            crate::debugbus::set_enabled(on);
+                            #[cfg(windows)]
+                            crate::platform::overlay::spawn();
+                        }
+                        if ui.checkbox(&mut s.overlay_misses, "misses too (red)").changed() {
+                            crate::debugbus::set_show_misses(s.overlay_misses);
+                            changed = true;
                         }
                     });
                     ui.end_row();

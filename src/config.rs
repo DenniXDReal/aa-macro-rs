@@ -69,6 +69,8 @@ pub struct Settings {
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
+    /// Debug overlay: also draw patterns looked for and not found (red).
+    pub overlay_misses: bool,
     /// Save a failure dump (debug/ folder) whenever a waited-for pattern
     /// never shows (every pattern; or tick dump_on_miss on single ones).
     pub dump_on_miss: bool,
@@ -227,6 +229,24 @@ pub struct Keybinds {
     pub upgrade: String,
     /// Close the open unit panel / cancel placement.
     pub cancel: String,
+    /// Debug overlay on / off (F5, F7-F12; read at app start).
+    #[serde(default = "d_overlay_key")]
+    pub overlay: String,
+}
+
+fn d_overlay_key() -> String {
+    "F9".into()
+}
+
+impl Keybinds {
+    /// The overlay key as an F-key number (5, 7-12), F9 if not valid.
+    pub fn overlay_fkey(&self) -> u32 {
+        let k = self.overlay.trim().to_uppercase();
+        k.strip_prefix('F')
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|n| matches!(n, 5 | 7..=12))
+            .unwrap_or(9)
+    }
 }
 
 impl Default for Keybinds {
@@ -235,6 +255,7 @@ impl Default for Keybinds {
             units: (1..=6).map(|i| i.to_string()).collect(),
             upgrade: "r".into(),
             cancel: "q".into(),
+            overlay: d_overlay_key(),
         }
     }
 }
@@ -477,6 +498,7 @@ impl Default for Settings {
             adaptations: Adaptations::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
+            overlay_misses: false,
             step_delay_ms: 800,
             place_delay_ms: 2000,
             place_settle_ms: 2000,
