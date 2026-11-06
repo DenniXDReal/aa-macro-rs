@@ -69,6 +69,11 @@ pub trait Platform: Send + Sync {
     fn set_owner(&self, _hwnd: Hwnd, _owner: Option<Hwnd>) -> Result<()> {
         Ok(())
     }
+    /// Strip the window frame (`WS_POPUP`, for docking) or put the original
+    /// style back. Not reparenting: it stays a top-level window.
+    fn set_borderless(&self, _hwnd: Hwnd, _on: bool) -> Result<()> {
+        Ok(())
+    }
     /// Close every process with this exe name (force).
     fn kill_process(&self, _exe: &str) -> Result<u32> {
         Ok(0)
