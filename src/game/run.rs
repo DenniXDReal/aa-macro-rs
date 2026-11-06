@@ -750,7 +750,7 @@ impl RunCtx {
             };
         if let Some(w) = shift {
             self.weather_shift(h, &w)?;
-            // the shift comes with 3 cards to vote on: buff over debuff,
+            // the shift comes with 3 cards to vote on: your weather list,
             // once per account
             let voted = LAST_PICK
                 .lock()
@@ -801,8 +801,7 @@ impl RunCtx {
             l.retain(|(c, _)| *c != h);
             l.push((h, Instant::now()));
         }
-        // close the unit panel first if one is open (its X is on screen);
-        // no panel = straight to the screenshot
+        // close the unit panel first if one is open (its X is on screen)
         if let Some(p) = scr
             .has("unit_close")
             .then(|| scr.find_wide(&Self::names(&["unit_close"])))
@@ -814,7 +813,6 @@ impl RunCtx {
         let Some(f) = scr.frame() else {
             return Ok(false);
         };
-        // keep a picture of every different card screen (cards/ folder)
         if weather.is_empty() {
             weather = scr.ocr_card_screen(&f).unwrap_or_default();
         }
@@ -822,60 +820,20 @@ impl RunCtx {
             self.log(format!("card screen - weather: {weather}"));
         }
         // read the three card titles and take the first one in your order
-        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
-            scr.ocr_rect(&f, super::cards::title_box(i))
-                .and_then(|t| super::cards::card_name(&t))
-        });
-        // a title box missed: look for the names anywhere on the cards
-        if names.iter().any(|n| n.is_none()) {
-            if let Some(lines) = scr.ocr_lines(&f) {
-                let more = super::cards::names_from_lines(&lines);
-                for i in 0..3 {
-                    if names[i].is_none() {
-                        names[i] = more[i].clone();
-                    }
-                }
-            }
-        }
-        // red cards: the tier from the pearls line beats the title's I/II/III
-        for i in 0..3 {
-            if let Some(n) = names[i].clone() {
-                if let Some(t) = scr
-                    .ocr_rect(&f, super::cards::body_box(i))
-                    .and_then(|b| super::cards::tier_from_pearls(&b))
-                {
-                    names[i] = Some(super::cards::with_tier(&n, t));
-                }
-            }
-        }
+        let names = Self::read_cards(scr, &f);
         let shift = LAST_SHIFT
             .lock()
             .unwrap()
             .is_some_and(|t| t.elapsed() < Duration::from_secs(90));
         let prio = if shift {
-            // weather shift: buffs (green) first, then debuffs, each in your order
-            self.log("weather shift card - buffs first");
-            super::cards::weather_priority(&self.settings.run.card_priority)
+            // right after a weather shift: your weather list (Settings > Weather)
+            self.log("weather shift card - your weather list");
+            super::weather::load()
         } else if self.settings.run.card_priority.is_empty() {
             super::cards::default_priority()
         } else {
             self.settings.run.card_priority.clone()
         };
-        // screenshot only when a card shows up that wasn't seen before
-        let read: Vec<String> = names.iter().flatten().cloned().collect();
-        if read.is_empty() {
-            // titles unreadable: fall back to "new looking screen"
-            if let Some(path) = super::cardlog::save_if_new(&f, &super::cardlog::dir(), &weather) {
-                self.log(format!("card screen saved: {}", path.display()));
-            }
-        } else if let Some(path) =
-            super::cardlog::save_if_new_cards(&f, &super::cardlog::dir(), &read, &weather)
-        {
-            self.log(format!(
-                "new card(s) seen - screenshot saved: {}",
-                path.display()
-            ));
-        }
         let pick = super::cards::choose(&names, &prio);
         let shown: Vec<String> = names
             .iter()
@@ -951,20 +909,65 @@ impl RunCtx {
         Ok(())
     }
 
-    /// "The weather shifts..." cards: a buff over a debuff, always.
+    /// The three card names on a card screen (OCR): each title box, else
+    /// the names found anywhere on the cards; red cards take their tier
+    /// from the pearls line. None = that card not readable.
+    fn read_cards(scr: &super::LiveScreen, f: &crate::capture::Frame) -> [Option<String>; 3] {
+        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
+            scr.ocr_rect(f, super::cards::title_box(i))
+                .and_then(|t| super::cards::card_name(&t))
+        });
+        // a title box missed: look for the names anywhere on the cards
+        if names.iter().any(|n| n.is_none()) {
+            if let Some(lines) = scr.ocr_lines(f) {
+                let more = super::cards::names_from_lines(&lines);
+                for i in 0..3 {
+                    if names[i].is_none() {
+                        names[i] = more[i].clone();
+                    }
+                }
+            }
+        }
+        // red cards: the tier from the pearls line beats the title's I/II/III
+        for i in 0..3 {
+            if let Some(n) = names[i].clone() {
+                if let Some(t) = scr
+                    .ocr_rect(f, super::cards::body_box(i))
+                    .and_then(|b| super::cards::tier_from_pearls(&b))
+                {
+                    names[i] = Some(super::cards::with_tier(&n, t));
+                }
+            }
+        }
+        names
+    }
+
+    /// "The weather shifts..." cards: the one highest on your weather list
+    /// (Settings > Weather); none of them on it = the leftmost.
     fn weather_cards(&self, h: Hwnd) -> R<()> {
         let scr = self.screen(h);
         let Some(f) = scr.frame() else { return Ok(()) };
-        let i = super::cards::weather_pick(&f);
-        let title = scr
-            .ocr_rect(&f, super::cards::title_box(i))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let names = Self::read_cards(scr, &f);
+        let prio = super::weather::load();
+        let (i, rank) = super::weather::pick(&names, &prio);
+        let shown: Vec<String> = names
+            .iter()
+            .map(|n| n.clone().unwrap_or_else(|| "?".into()))
+            .collect();
         self.log(format!(
-            "weather shift: card {} ({}) - buff over debuff",
+            "weather shift: card {} ({}) - {} (offered: {})",
             i + 1,
-            if title.is_empty() { "?" } else { &title }
+            shown[i],
+            match rank {
+                Some(r) => format!("#{} on your weather list", r + 1),
+                None if names.iter().any(|n| n.is_some())
+                    && super::cards::choose(&names, &prio).is_some() =>
+                {
+                    "same card, other tier on your list".to_string()
+                }
+                None => "none on your list - leftmost".to_string(),
+            },
+            shown.join(" / ")
         ));
         let b = super::cards::CARD_BOXES[i];
         self.vote_card(h, i, Point::new(b.x + b.w / 2, b.y + b.h / 2))
@@ -996,8 +999,8 @@ impl RunCtx {
         Ok(())
     }
 
-    /// Weather shift banner: close the unit panel (if open) and keep a
-    /// screenshot (cards/ folder). Once per 30 s.
+    /// Weather shift banner: close the unit panel (if open), log it. Once
+    /// per 30 s.
     fn weather_shift(&self, h: Hwnd, weather: &str) -> R<()> {
         {
             static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
@@ -1021,23 +1024,6 @@ impl RunCtx {
             "weather shift: {}",
             if weather.is_empty() { "?" } else { weather }
         ));
-        if let Some(f) = scr.frame() {
-            let dir = super::cardlog::dir();
-            let _ = std::fs::create_dir_all(&dir);
-            let w: String = weather.chars().filter(|c| c.is_alphanumeric()).collect();
-            let path = dir.join(format!(
-                "weather-{}{}.png",
-                chrono::Local::now().format("%Y%m%d-%H%M%S"),
-                if w.is_empty() {
-                    String::new()
-                } else {
-                    format!("-{w}")
-                }
-            ));
-            if f.save_png(&path).is_ok() {
-                self.log(format!("weather shift saved: {}", path.display()));
-            }
-        }
         Ok(())
     }
 

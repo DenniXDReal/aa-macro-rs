@@ -198,29 +198,6 @@ pub fn with_tier(name: &str, tier: &str) -> String {
     format!("{base} {tier}")
 }
 
-/// Weather shift: the card with the least red text (a debuff) and, among
-/// those, the most green text (a buff) - buffs over debuffs.
-pub fn weather_pick(f: &Frame) -> usize {
-    let score = |i: usize| {
-        let r = body_box(i);
-        let (mut red, mut green) = (0i32, 0i32);
-        for y in r.y..r.y + r.h {
-            for x in r.x..r.x + r.w {
-                if let Some((cr, cg, cb)) = f.rgb(x, y) {
-                    let (cr, cg, cb) = (cr as i32, cg as i32, cb as i32);
-                    if cr > 180 && cg < 90 && cb < 90 {
-                        red += 1;
-                    } else if cg > 170 && cr < 130 && cb < 130 {
-                        green += 1;
-                    }
-                }
-            }
-        }
-        (red, -green)
-    };
-    (0..3).min_by_key(|i| score(*i)).unwrap_or(1)
-}
-
 /// Every Summer Event card seen so far (from your cards/ screenshots).
 /// Green = helps you, red = buffs enemies but pays Summer Pearls.
 pub const CARD_BASES: &[(&str, bool)] = &[
@@ -330,18 +307,6 @@ pub fn is_green(name: &str) -> bool {
     CARD_BASES.iter().any(|(b, g)| *g && name.starts_with(b))
 }
 
-/// Weather shift order: every buff (green) card first, then the debuffs,
-/// each keeping its place from `mine` (or the default order).
-pub fn weather_priority(mine: &[String]) -> Vec<String> {
-    let base = if mine.is_empty() {
-        default_priority()
-    } else {
-        mine.to_vec()
-    };
-    let (g, r): (Vec<String>, Vec<String>) = base.into_iter().partition(|n| is_green(n));
-    g.into_iter().chain(r).collect()
-}
-
 /// Which card to take: the first in `priority` that's on offer.
 pub fn choose(names: &[Option<String>; 3], priority: &[String]) -> Option<usize> {
     // the card's place in your list: its exact name (with tier), else -
@@ -405,24 +370,6 @@ mod name_tests {
         assert_eq!(tier_from_pearls("+30% SummerPearls"), Some("I"));
         assert_eq!(tier_from_pearls("+25% Attack"), None);
         assert_eq!(with_tier("Plated Enemies I", "II"), "Plated Enemies II");
-    }
-
-    #[test]
-    fn weather_prefers_the_buff() {
-        let mut f = Frame::solid(800, 599, 30, 20, 20);
-        let mut paint = |i: usize, rgb: [u8; 3]| {
-            let r = body_box(i);
-            for y in r.y + 10..r.y + 20 {
-                for x in r.x + 10..r.x + 60 {
-                    let k = ((y * 800 + x) * 4) as usize;
-                    f.bgra[k..k + 3].copy_from_slice(&[rgb[2], rgb[1], rgb[0]]);
-                }
-            }
-        };
-        paint(0, [230, 40, 40]); // red text: debuff
-        paint(1, [230, 40, 40]);
-        paint(2, [60, 220, 60]); // green only: buff
-        assert_eq!(weather_pick(&f), 2);
     }
 
     #[test]
