@@ -321,7 +321,11 @@ impl App {
                                         "Gen: {}  |  Attempt: {}",
                                         view.gen,
                                         view.attempt
-                                            .map(|(n, of)| format!("{n}/{of}"))
+                                            .map(|(n, of)| if of > 0 {
+                                                format!("{n}/{of}")
+                                            } else {
+                                                format!("{n}")
+                                            })
                                             .unwrap_or_else(|| "-".into())
                                     ),
                                     TEXT,

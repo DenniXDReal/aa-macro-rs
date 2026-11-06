@@ -83,6 +83,23 @@ fn on_step(s: &StepNow) {
     }
 }
 
+/// The step the loop is in right now as a place to pick up again (after a
+/// hiccup / a Fatal), if it's one that can be resumed.
+pub fn from_trace() -> Option<Saved> {
+    super::trace::current().and_then(|s| {
+        let r = Saved {
+            step: s.name,
+            step_params: s.params,
+            client_states: vec![],
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        r.resumable().then_some(r)
+    })
+}
+
 /// Start saving step changes (once per app).
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();

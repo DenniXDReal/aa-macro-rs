@@ -112,6 +112,10 @@ pub enum FailureReason {
     ExternalAbort {
         source: AbortSource,
     },
+    /// A wrapped procedure (the old loop's code) failed with this message.
+    Procedure {
+        err: String,
+    },
 }
 
 impl FailureReason {
@@ -125,6 +129,7 @@ impl FailureReason {
                 | ClickHadNoEffect { .. }
                 | StepTimeout { .. }
                 | NavStuck { .. }
+                | Procedure { .. }
         )
     }
     pub fn is_fatal_immediately(&self) -> bool {
@@ -170,6 +175,7 @@ impl FailureReason {
             NavStuck { waypoint_index } => format!("stuck at waypoint {waypoint_index}"),
             NavFailed { reason } => format!("navigation failed: {reason}"),
             ExternalAbort { source } => format!("aborted ({source:?})"),
+            Procedure { err } => err.chars().take(120).collect(),
         }
     }
 }
@@ -305,7 +311,8 @@ pub fn run_step<C>(
     tick: Duration,
 ) -> Outcome {
     let step = runner.step();
-    let policy = runner.policy();
+    // a step may only know its policy once it has entered (Walk: the route)
+    let policy = std::cell::Cell::new(runner.policy());
     let started = Instant::now();
     let mut attempt = 0u32;
     let mut last: Option<FailureReason> = None;
@@ -327,6 +334,7 @@ pub fn run_step<C>(
             }
             attempt += 1;
             hooks.status(step, attempt, Some(&r));
+            let policy = policy.get();
             if attempt > policy.max_retries {
                 return Some(r);
             }
@@ -341,7 +349,9 @@ pub fn run_step<C>(
         if let Some(src) = hooks.should_abort() {
             return Outcome::Fatal(FailureReason::ExternalAbort { source: src });
         }
-        if let Err(r) = runner.enter(ctx) {
+        let entered = runner.enter(ctx);
+        policy.set(runner.policy());
+        if let Err(r) = entered {
             last = Some(r.clone());
             if let Some(f) = on_failure(r, runner.sub()) {
                 return Outcome::Fatal(f);
@@ -352,7 +362,7 @@ pub fn run_step<C>(
                 return Outcome::Fatal(FailureReason::ExternalAbort { source: src });
             }
             let elapsed = started.elapsed();
-            if elapsed > policy.hard_timeout {
+            if elapsed > policy.get().hard_timeout {
                 return Outcome::Fatal(FailureReason::StepTimeout { step, elapsed });
             }
             let r = match runner.update(ctx) {
@@ -407,8 +417,8 @@ pub fn run_step<C>(
 
 /// Run steps in order; stops at the first Fatal. Each Advance saves the
 /// next step as the place to resume from.
-pub fn run_steps<C>(
-    steps: &mut [Box<dyn StepRunner<C>>],
+pub fn run_steps<'s, C>(
+    steps: &mut [Box<dyn StepRunner<C> + 's>],
     ctx: &C,
     hooks: &dyn Hooks,
     tick: Duration,
@@ -885,6 +895,40 @@ mod tests {
             Duration::from_secs(45)
         );
         assert_eq!(RetryPolicy::UNIT_PLACE.max_retries, 3);
+    }
+
+    /// A step that learns its limits on enter (Walk: the route) is held to
+    /// those, not to what it said before.
+    #[test]
+    fn policy_is_read_again_after_enter() {
+        struct Late(bool);
+        impl StepRunner<()> for Late {
+            fn step(&self) -> Step {
+                Step::Walk
+            }
+            fn policy(&self) -> RetryPolicy {
+                if self.0 {
+                    RetryPolicy::walk(Some(0), 0)
+                } else {
+                    RetryPolicy::walk(Some(60_000), 0)
+                }
+            }
+            fn enter(&mut self, _: &()) -> Result<(), FailureReason> {
+                self.0 = true;
+                Ok(())
+            }
+            fn update(&mut self, _: &()) -> Result<StepResult, FailureReason> {
+                std::thread::sleep(Duration::from_millis(5));
+                Ok(StepResult::Continue)
+            }
+            fn exit(&mut self, _: &()) {}
+        }
+        let rec = Rec::default();
+        let out = run_step(&mut Late(false), &(), &rec, Duration::ZERO);
+        assert!(
+            matches!(out, Outcome::Fatal(FailureReason::StepTimeout { .. })),
+            "{out:?}"
+        );
     }
 
     #[test]

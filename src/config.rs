@@ -77,6 +77,10 @@ pub struct Settings {
     /// Save a failure dump (debug/ folder) whenever a waited-for pattern
     /// never shows (every pattern; or tick dump_on_miss on single ones).
     pub dump_on_miss: bool,
+    /// Beta: run rounds with the step machine (Lobby > StageSetup > Walk >
+    /// Vote > Place > Upgrade > End, retries + Fatal pause) instead of the
+    /// old loop.
+    pub step_machine: bool,
     /// Farm one thing after another (each step: mode + map + team, for a
     /// number of runs or minutes).
     pub schedule: Schedule,
@@ -501,6 +505,7 @@ impl Default for Settings {
             adaptations: Adaptations::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
+            step_machine: false,
             overlay_misses: false,
             resume_mode: ResumeMode::Ask,
             step_delay_ms: 800,
