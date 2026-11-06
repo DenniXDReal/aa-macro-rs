@@ -247,6 +247,8 @@ pub enum Event {
     Run(super::loot::RunStats, bool),
     /// Something needs the user (captcha) - ping them.
     Attention(String),
+    /// Step machine: a step went Fatal - the loop paused itself (F4 resumes).
+    Fatal(String),
     Done(String),
 }
 
@@ -276,6 +278,16 @@ pub struct RunCtx {
     /// Step machine: the running step's hard deadline. `check()` / `sleep()`
     /// fail with "step timed out" past it (the old loop never sets it).
     pub step_deadline: std::sync::Arc<std::sync::Mutex<Option<crate::control::Deadline>>>,
+}
+
+/// The End step's once-only parts, kept across its retries: Win / Loss and
+/// the end-screen read happen once, the loot report once.
+#[derive(Default)]
+pub(crate) struct EndOnce {
+    pub reported: std::sync::atomic::AtomicBool,
+    pub rewarded: std::sync::atomic::AtomicBool,
+    /// End-screen drops + pearls, as first read.
+    pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
 }
 
 /// What `check()` / `sleep()` return past the step deadline.
@@ -308,7 +320,7 @@ fn ocr_due_for(h: Hwnd, what: u8) -> bool {
 }
 
 /// Placed units as JSON (client number, slot, x, y) for the step state.
-fn placed_json(
+pub(crate) fn placed_json(
     clients: &[(Hwnd, super::LiveScreen)],
     placed: &[(Hwnd, usize, Point)],
 ) -> serde_json::Value {
@@ -373,7 +385,7 @@ fn keys_ref(k: &Keys) -> &Keys {
 static LAST_PICK: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new(Vec::new());
 
 impl RunCtx {
-    fn log(&self, s: impl Into<String>) {
+    pub(crate) fn log(&self, s: impl Into<String>) {
         let s = s.into();
         super::trace::log(&s);
         let _ = self.tx.send(Event::Log(s));
@@ -381,7 +393,7 @@ impl RunCtx {
 
     /// Failure dump of every client: frame + `crops` (and their rects) on each
     /// one, marked `failing_client` for `h`. Logged.
-    fn dump_failure(
+    pub(crate) fn dump_failure(
         &self,
         step: &str,
         reason: &str,
@@ -419,7 +431,7 @@ impl RunCtx {
                 .send(Event::Log(format!("failure dump: {}", d.display())));
         }
     }
-    fn screen(&self, h: Hwnd) -> &LiveScreen {
+    pub(crate) fn screen(&self, h: Hwnd) -> &LiveScreen {
         &self.clients.iter().find(|c| c.0 == h).expect("client").1
     }
     pub(crate) fn check(&self) -> R<()> {
@@ -1024,7 +1036,7 @@ impl RunCtx {
     }
 
     /// Card screen on any client (alts first); back to the main after an alt.
-    fn cards_all(&self) -> R<()> {
+    pub(crate) fn cards_all(&self) -> R<()> {
         let all: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
         let mut alt_done = false;
         // every account picks its own card (all of them vote)
@@ -1173,7 +1185,7 @@ impl RunCtx {
     }
 
     /// Bring the main client back to the front (after working on alts).
-    fn to_main(&self) -> R<()> {
+    pub(crate) fn to_main(&self) -> R<()> {
         self.arb
             .run(Batch::new(self.main, "back to main"))
             .map_err(|e| format!("back to main: {e}"))?;
@@ -1189,7 +1201,7 @@ impl RunCtx {
     }
 
     /// Clients that move / place: the main, then every placing client.
-    fn movers(&self) -> Vec<Hwnd> {
+    pub(crate) fn movers(&self) -> Vec<Hwnd> {
         let mut v = vec![self.main];
         for n in &self.settings.placers {
             if let Some((h, _)) = self.clients.get(n.saturating_sub(1)) {
@@ -2597,7 +2609,7 @@ impl RunCtx {
     /// DEFEAT panel). Your `pearl_icon` picture, else the icon by its pink,
     /// else the fixed spot; OCR of just that box. A few looks while the
     /// panel animates in. None = not read.
-    fn read_pearls(&self) -> R<Option<u64>> {
+    pub(crate) fn read_pearls(&self) -> R<Option<u64>> {
         use super::loot;
         let main = self.screen(self.main);
         if !main.has_ocr() {
@@ -2641,7 +2653,7 @@ impl RunCtx {
     /// look for a charm / portal (picture of it), record the run (history +
     /// session totals), send the Discord loot report and wait for it, then
     /// click the item again (the game wants a second click to go on).
-    fn end_rewards(
+    pub(crate) fn end_rewards(
         &self,
         won: bool,
         map: &str,
@@ -2758,7 +2770,7 @@ impl RunCtx {
 
     /// What's on the main's screen right now, to get back on track after a
     /// hiccup: "end", "lobby", "stage" or "".
-    fn where_am_i(&self) -> &'static str {
+    pub(crate) fn where_am_i(&self) -> &'static str {
         let main = self.screen(self.main);
         if main
             .find(
@@ -2951,42 +2963,63 @@ impl RunCtx {
             "end",
             serde_json::json!({ "mode": mode, "map": map.clone(), "won": won }),
         );
-        // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
-        let end_drops = {
-            let main = self.screen(self.main);
-            let mut drops = vec![];
-            // quick: one look (two if nothing read) - Next comes first
-            for _ in 0..2 {
-                self.sleep(600)?;
-                if let Some(f) = main.frame() {
-                    drops = super::drops::parse(&main.ocr_text_lines(&f));
+        *in_lobby = self.end_round(won, map, last(), &EndOnce::default())?;
+        Ok(())
+    }
+
+    /// End step: end-screen drops + pearls, Win / Loss, then Next > reward
+    /// screen (loot report, item click) > Replay / Return. `rewarded` makes
+    /// the loot part happen once even when this is run again (a retry).
+    /// Ok(true) = back in the lobby.
+    pub(crate) fn end_round(&self, won: bool, map: &str, last: bool, once: &EndOnce) -> R<bool> {
+        use std::sync::atomic::Ordering;
+        let first = !once.reported.load(Ordering::Relaxed);
+        let (end_drops, pearls) = if first {
+            // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
+            let end_drops = {
+                let main = self.screen(self.main);
+                let mut drops = vec![];
+                // quick: one look (two if nothing read) - Next comes first
+                for _ in 0..2 {
+                    self.sleep(600)?;
+                    if let Some(f) = main.frame() {
+                        drops = super::drops::parse(&main.ocr_text_lines(&f));
+                    }
+                    if !drops.is_empty() {
+                        break;
+                    }
                 }
                 if !drops.is_empty() {
-                    break;
+                    let list: Vec<String> = drops.iter().map(|(n, a)| format!("{a} {n}")).collect();
+                    self.log(format!("drops: {}", list.join(", ")));
+                    let _ = self.tx.send(Event::Drops(drops.clone()));
                 }
-            }
-            if !drops.is_empty() {
-                let list: Vec<String> = drops.iter().map(|(n, a)| format!("{a} {n}")).collect();
-                self.log(format!("drops: {}", list.join(", ")));
-                let _ = self.tx.send(Event::Drops(drops.clone()));
-            }
-            drops
+                drops
+            };
+            // the pearls (Summer Event currency) on the VICTORY / DEFEAT panel
+            let pearls = self.read_pearls()?;
+            let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
+            once.reported.store(true, Ordering::Relaxed);
+            *once.read.lock().unwrap_or_else(|e| e.into_inner()) = (end_drops.clone(), pearls);
+            (end_drops, pearls)
+        } else {
+            once.read.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
-        // the pearls (Summer Event currency) on the VICTORY / DEFEAT panel
-        let pearls = self.read_pearls()?;
-        let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
         let stop = !won && self.settings.run.stop_after_defeat;
         // Next > reward screen: loot scan, Discord report, item click;
         // then (last run of a schedule step: back to the lobby for the next one)
-        let mut on_rewards = |c: &Self| c.end_rewards(won, &map.clone(), &end_drops, pearls);
+        let mut on_rewards = |c: &Self| {
+            if once.rewarded.swap(true, Ordering::Relaxed) {
+                return Ok(());
+            }
+            c.end_rewards(won, map, &end_drops, pearls)
+        };
         if stop {
             // still record the run, but don't leave the end screen
-            let _ = self.end_rewards(won, map, &end_drops, pearls);
+            let _ = on_rewards(self);
             return Err("stopped after a defeat".into());
         }
-        *in_lobby =
-            self.after_end_with(self.settings.run.return_to_lobby || last(), &mut on_rewards)?;
-        Ok(())
+        self.after_end_with(self.settings.run.return_to_lobby || last, &mut on_rewards)
     }
 
     /// The whole loop until Stop / an error.
@@ -3057,6 +3090,9 @@ impl RunCtx {
     /// Rounds until Stop / an error, or until `limit` is reached (then
     /// back in the lobby, Ok).
     fn run_loop(&self, limit: Option<StepLimit>, start_in_lobby: bool) -> R<()> {
+        if self.settings.step_machine {
+            return super::machine::run_rounds(self, limit, start_in_lobby);
+        }
         {
             {
                 let mut in_lobby = start_in_lobby;
@@ -3076,20 +3112,7 @@ impl RunCtx {
                     in_lobby = false;
                 }
                 // a hiccup mid-stage: pick up at the step it was in
-                let again = || {
-                    super::trace::current().and_then(|s| {
-                        let r = super::resume::Saved {
-                            step: s.name,
-                            step_params: s.params,
-                            client_states: vec![],
-                            updated_at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0),
-                        };
-                        r.resumable().then_some(r)
-                    })
-                };
+                let again = super::resume::from_trace;
                 loop {
                     let done_after = rounds + 1;
                     match self.one_round(
@@ -3178,7 +3201,7 @@ impl RunCtx {
     }
 
     /// A client showing Roblox's "Disconnected" / "Error Code" box.
-    fn disconnected(&self) -> Option<String> {
+    pub(crate) fn disconnected(&self) -> Option<String> {
         for (i, (_, scr)) in self.clients.iter().enumerate() {
             let Some(f) = scr.frame() else { continue };
             let Some(t) = scr.ocr_all(&f) else { continue };
@@ -3190,7 +3213,7 @@ impl RunCtx {
     }
 
     /// Leave the stage for the lobby (end screen or mid-stage).
-    fn return_to_lobby_now(&self) -> R<()> {
+    pub(crate) fn return_to_lobby_now(&self) -> R<()> {
         if self.where_am_i() == "end" {
             self.after_end_to(true)?;
         }
@@ -3210,9 +3233,9 @@ pub fn disconnect_text(t: &str) -> bool {
 
 /// When a schedule step is done.
 #[derive(Clone, Copy)]
-struct StepLimit {
-    runs: u32,
-    until: Option<Instant>,
+pub(crate) struct StepLimit {
+    pub(crate) runs: u32,
+    pub(crate) until: Option<Instant>,
 }
 
 #[cfg(test)]

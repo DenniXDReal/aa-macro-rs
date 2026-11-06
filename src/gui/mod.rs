@@ -575,6 +575,16 @@ impl App {
                         ));
                     }
                 }
+                Event::Fatal(s) => {
+                    self.paused = true;
+                    self.say(format!("FATAL {s} - paused, press F4 / Resume to carry on"));
+                    self.hook(
+                        crate::webhook::Kind::Problem,
+                        "Paused (step failed)",
+                        &s,
+                        true,
+                    );
+                }
                 Event::Attention(s) => {
                     self.say(format!("needs you: {s}"));
                     self.hook(crate::webhook::Kind::Problem, "Needs you", &s, true);
@@ -3436,6 +3446,13 @@ impl App {
                             let _ = self.platform.open_uri(&d.display().to_string());
                         }
                     });
+                    ui.end_row();
+                    ui.label("Step machine (beta)").on_hover_text(
+                        "rounds run as steps (Lobby > Stage setup > Walk > Vote > Place > Upgrade > End): each retried by its own limits; a step that keeps failing pauses the macro with a failure dump (F4 resumes). Off = the old loop.",
+                    );
+                    changed |= ui
+                        .checkbox(&mut s.step_machine, "use the step machine instead of the old loop")
+                        .changed();
                     ui.end_row();
                     ui.label("Resume after a restart").on_hover_text(
                         "the macro saves its step; started again within 5 min mid-stage, it can carry on (e.g. upgrading) instead of starting from the vote",

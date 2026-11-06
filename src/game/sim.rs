@@ -648,6 +648,117 @@ mod tests {
         assert!(replays >= 2, "replayed {replays}x");
     }
 
+    #[test]
+    fn step_machine_keeps_replaying() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0 lobby*/ scr(vec![el("play_button", 70, 300, Some(1))]),
+            /*1 walking*/
+            Screen {
+                els: vec![],
+                auto: Some((2, 2)),
+                wheel_down: None,
+            },
+            /*2 dialog*/
+            scr(vec![
+                el("join_matchmaking", 360, 180, None),
+                el("play_here", 300, 300, Some(3)),
+            ]),
+            /*3 portal?*/
+            scr(vec![
+                el("open_portal", 360, 180, None),
+                el("open_button", 300, 330, Some(4)),
+            ]),
+            /*4 portal lobby*/ scr(vec![el("start_button", 470, 400, Some(5))]),
+            /*5 loading*/
+            Screen {
+                els: vec![],
+                auto: Some((2, 6)),
+                wheel_down: None,
+            },
+            /*6 vote*/ scr(vec![el("vote_start", 380, 100, Some(7))]),
+            /*7 stage*/
+            Screen {
+                els: vec![],
+                auto: Some((4, 8)),
+                wheel_down: None,
+            },
+            /*8 end*/
+            scr(vec![
+                el("defeat", 360, 150, None),
+                el("next_button", 380, 460, Some(9)),
+            ]),
+            /*9 after*/
+            scr(vec![
+                el("return_to_lobby", 250, 500, Some(0)),
+                el("replay", 450, 500, Some(5)),
+            ]),
+        ]));
+        let mut s = Settings::default();
+        s.run.mode = Mode::SummerHunt;
+        s.step_delay_ms = 0;
+        s.step_machine = true;
+        let (c, rx, _arb) = ctx(sim.clone(), s);
+        let stop = c.control.clone();
+        let t = std::thread::spawn(move || c.run());
+        let mut ends = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while ends < 3 && std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Event::Loss) | Ok(Event::Win) => ends += 1,
+                Ok(Event::Fatal(f)) => eprintln!("FATAL {f}"),
+                Ok(Event::Done(why)) => panic!("loop ended: {why}"),
+                _ => {}
+            }
+        }
+        stop.stop();
+        t.join().unwrap();
+        assert_eq!(ends, 3, "3 stages in a row (step machine)");
+        let replays = sim
+            .clicks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "replay")
+            .count();
+        assert!(replays >= 2, "replayed {replays}x");
+    }
+
+    /// Step machine: a step that keeps failing (no Play Here button) ends
+    /// in Fatal - the loop pauses itself and tells the app.
+    #[test]
+    fn step_machine_pauses_on_fatal() {
+        let sim = Arc::new(Sim::new(vec![
+            scr(vec![el("play_button", 70, 300, Some(1))]),
+            Screen {
+                els: vec![],
+                auto: Some((1, 2)),
+                wheel_down: None,
+            },
+            scr(vec![el("join_matchmaking", 360, 180, None)]), // no play_here on screen
+            scr(vec![el("play_here", 1, 1, None)]),            // so the pattern exists
+        ]));
+        let mut s = Settings::default();
+        s.step_machine = true;
+        s.step_delay_ms = 0;
+        let (c, rx, _arb) = ctx(sim, s);
+        let ctl = c.control.clone();
+        let t = std::thread::spawn(move || c.run());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut fatal = None;
+        while fatal.is_none() && std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Event::Fatal(why)) => fatal = Some(why),
+                Ok(Event::Done(why)) => panic!("loop ended instead of pausing: {why}"),
+                _ => {}
+            }
+        }
+        let why = fatal.expect("a Fatal within 2 min");
+        assert!(why.starts_with("lobby:"), "{why}");
+        assert!(ctl.is_paused(), "paused itself");
+        ctl.stop();
+        t.join().unwrap();
+    }
+
     /// DEFEAT shows but the Next button isn't recognised: it clicks under
     /// the title until Replay comes up.
     #[test]
