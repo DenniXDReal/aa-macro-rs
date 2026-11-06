@@ -3,7 +3,6 @@
 
 pub mod adaptation;
 pub mod buttonmem;
-pub mod cardlog;
 pub mod cards;
 pub mod drops;
 pub mod dump;
@@ -19,6 +18,7 @@ pub mod sim;
 pub mod steps;
 pub mod textbuttons;
 pub mod trace;
+pub mod weather;
 
 #[cfg(test)]
 mod level_tests {

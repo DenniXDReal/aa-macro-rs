@@ -66,6 +66,7 @@ enum SettingsTab {
     Input,
     Game,
     Discord,
+    Weather,
     Updates,
 }
 
@@ -163,6 +164,8 @@ pub struct App {
     dock_rect: Option<egui::Rect>,
     /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
+    /// Settings > Weather editor text (None = not loaded yet).
+    weather_text: Option<String>,
     /// The game loop sends the Discord loot report (no plain win / loss).
     loot_reports: bool,
     /// Another copy of the macro was already running at launch.
@@ -326,6 +329,7 @@ impl App {
             dash: command::Dash::default(),
             other_instance: false,
             loot_reports: false,
+            weather_text: None,
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
@@ -3066,6 +3070,75 @@ impl App {
         }
     }
 
+    /// Weather shift card list: one card per line, highest first; saved to
+    /// weather_priorities.json next to the exe.
+    fn weather_ui(&mut self, ui: &mut egui::Ui) {
+        if self.weather_text.is_none() {
+            self.weather_text = Some(crate::game::weather::to_text(&crate::game::weather::load()));
+        }
+        card(ui, |ui| {
+            ui.label(RichText::new("WEATHER SHIFT CARDS").size(11.0).color(MUTED));
+            ui.label(
+                RichText::new("When the weather shifts and 3 cards are offered, the macro reads their names and votes for the one highest in this list (one card per line, top = best). None of them in the list = the leftmost card. Names as the game shows them, with the tier: \"Attack I\", \"Enemy Speed II\".")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            let text = self.weather_text.get_or_insert_with(String::new);
+            egui::ScrollArea::vertical()
+                .id_salt("weatherlist")
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_rows(14)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            let list = crate::game::weather::from_text(text);
+            let bad = crate::game::weather::unknown(&list);
+            if !bad.is_empty() {
+                ui.label(
+                    RichText::new(format!(
+                        "Not a card name the macro can read (check spelling / tier): {}",
+                        bad.join(", ")
+                    ))
+                    .size(11.0)
+                    .color(WARN),
+                );
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!list.is_empty(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    match crate::game::weather::save(&list) {
+                        Ok(p) => self.say(format!(
+                            "weather list saved ({} cards): {}",
+                            list.len(),
+                            p.display()
+                        )),
+                        Err(e) => self.say(format!("weather list not saved: {e}")),
+                    }
+                }
+                if ui.button("Reset to default").clicked() {
+                    self.weather_text = Some(crate::game::weather::to_text(
+                        &crate::game::weather::default_list(),
+                    ));
+                }
+                if ui.button("Reload from file").clicked() {
+                    self.weather_text =
+                        Some(crate::game::weather::to_text(&crate::game::weather::load()));
+                }
+                ui.label(
+                    RichText::new(format!("{} cards", list.len()))
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+        });
+    }
+
     /// Mahoraga's adaptation order per badge (ATK / DEF / BOSS).
     fn adaptations_ui(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
@@ -3141,6 +3214,7 @@ impl App {
                 (SettingsTab::Input, "Input & timing"),
                 (SettingsTab::Game, "Cards & picks"),
                 (SettingsTab::Discord, "Discord"),
+                (SettingsTab::Weather, "Weather"),
                 (SettingsTab::Updates, "Updates"),
             ],
         );
@@ -3244,6 +3318,9 @@ impl App {
             });
         }
         ui.add_space(8.0);
+        if tab == SettingsTab::Weather {
+            self.weather_ui(ui);
+        }
         if tab == SettingsTab::Game {
             self.card_priority_ui(ui);
             ui.add_space(8.0);
