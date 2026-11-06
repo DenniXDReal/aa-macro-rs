@@ -344,6 +344,22 @@ pub(crate) fn placed_json(
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 /// Accounts still upgrading (0 = all done: idle clicks keep things awake).
+/// After closing a unit panel: its closing animation eats clicks, so the
+/// next unit's click waits this long (your log: the first click on a unit
+/// right after the last one's Cancel never opened its panel).
+const PANEL_CLOSE_MS: u64 = 700;
+
+/// A card / weather vote screen was seen: upgrade clicks on that client
+/// wait until this time (the vote screen stays ~10 s).
+static CARDS_UP: std::sync::Mutex<Vec<(Hwnd, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// Mark client `h`'s card / weather vote screen as up for the next 12 s.
+fn cards_up(h: Hwnd) {
+    let mut v = CARDS_UP.lock().unwrap_or_else(|e| e.into_inner());
+    v.retain(|(c, _)| *c != h);
+    v.push((h, Instant::now() + Duration::from_secs(12)));
+}
+
 /// Re-clicks of a unit whose panel didn't open, before moving on.
 const PANEL_RETRIES: u32 = 3;
 static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -748,6 +764,9 @@ impl RunCtx {
             } else {
                 false
             };
+        if shift.is_some() || seen {
+            cards_up(h);
+        }
         if let Some(w) = shift {
             self.weather_shift(h, &w)?;
             // the shift comes with 3 cards to vote on: your weather list,
@@ -2007,6 +2026,30 @@ impl RunCtx {
     }
 
     /// Upgrade by priority until VICTORY / DEFEAT shows. Returns true on a win.
+    /// Hold upgrade clicks on `h` while its card / weather vote screen is up
+    /// (seen in the last 12 s and still on screen).
+    fn wait_cards_gone(&self, h: Hwnd) -> R<()> {
+        let mut said = false;
+        loop {
+            let until = CARDS_UP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|(c, _)| *c == h)
+                .map(|(_, t)| *t);
+            match until {
+                Some(t) if Instant::now() < t => {
+                    if !said {
+                        said = true;
+                        self.log("card vote on screen - upgrades wait for it");
+                    }
+                    self.sleep(500)?;
+                }
+                _ => return Ok(()),
+            }
+        }
+    }
+
     /// Place > Upgrade hand-over: placement mode closed on every client that
     /// placed (Cancel twice: an open ghost / unit panel), a moment for the
     /// game's UI to settle, then a log line per client with what's on screen
@@ -2251,6 +2294,9 @@ impl RunCtx {
                 let (h, slot, at) = order[k];
                 let scr = self.screen(*h);
                 let want = unit(h, *slot).upgrade;
+                // a card / weather vote is up: unit clicks would land on the
+                // cards (and vote!) - wait until it's gone
+                self.wait_cards_gone(*h)?;
                 // this unit's sequence: anti-AFK waits until it's done
                 let seq = seq_lock(*h, Duration::from_secs(10));
                 // open the unit, and make sure the panel IS open before
@@ -2287,7 +2333,7 @@ impl RunCtx {
                         .map_err(|e| format!("upgrade: {e}"))?;
                     drop(seq);
                     i += 1;
-                    self.sleep(300)?;
+                    self.sleep(PANEL_CLOSE_MS)?;
                     continue;
                 }
                 let is_max = scr.has("upgrade_max")
@@ -2398,7 +2444,8 @@ impl RunCtx {
                 if !(s.run.priority_upgrade && !finished(k, &done, &maxed) && !resting(k, &rest)) {
                     i += 1; // priority upgrade keeps on this one until it's done
                 }
-                self.sleep(300)?;
+                // the panel's closing: a unit clicked during it doesn't open
+                self.sleep(PANEL_CLOSE_MS)?;
             }
         })();
         if busy {
