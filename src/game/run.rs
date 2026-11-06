@@ -307,21 +307,6 @@ fn placed_json(
         .collect()
 }
 
-/// One picture of an upgrade panel the macro couldn't make sense of
-/// (upgrade-debug.png next to the macro), to see what OCR is given.
-fn save_upgrade_debug(ctx: &RunCtx, scr: &super::LiveScreen) {
-    static SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if SAVED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    if let Some(f) = scr.frame() {
-        let path = super::data_dir().join("upgrade-debug.png");
-        if f.save_png(&path).is_ok() {
-            ctx.log(format!("upgrade panel picture saved: {}", path.display()));
-        }
-    }
-}
-
 /// When a weather shift banner was last seen: a card pick right after it
 /// uses the weather order (buffs first).
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
@@ -2110,17 +2095,6 @@ impl RunCtx {
                         "slot {slot} at {},{}: panel didn't open after {PANEL_RETRIES} retries - unit not selectable? next unit, back in a minute",
                         at.x, at.y
                     ));
-                    let la = scr.level_area();
-                    self.dump_failure(
-                        "upgrade",
-                        "panel not open",
-                        Some(*h),
-                        vec![super::dump::Crop {
-                            what: "upg_num".into(),
-                            rect: la,
-                            info: serde_json::json!({ "slot": slot, "unit_at": [at.x, at.y] }),
-                        }],
-                    );
                     rest[k] = Some(Instant::now());
                     self.arb
                         .run(super::placing::cancel_batch(*h, keys))
@@ -2133,20 +2107,6 @@ impl RunCtx {
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
                 let before = self.read_level_stable(scr, s.upgrade_read_ms + 1200, None)?;
-                if before.is_none() {
-                    // panel open but the level didn't read: what did it look at?
-                    let la = scr.level_area();
-                    self.dump_failure(
-                        "upgrade",
-                        "level not readable (panel open)",
-                        Some(*h),
-                        vec![super::dump::Crop {
-                            what: "upg_num".into(),
-                            rect: la,
-                            info: serde_json::json!({ "slot": slot, "unit_at": [at.x, at.y] }),
-                        }],
-                    );
-                }
                 let reached = match (want, before) {
                     (Upgrade::Level(n), Some(l)) => l >= n as u32,
                     _ => false,
@@ -2185,7 +2145,6 @@ impl RunCtx {
                             "slot {slot} at {},{}: {cap} upgrade presses and still not MAX / its level - counting it as done, on to the next unit",
                             at.x, at.y
                         ));
-                        save_upgrade_debug(self, scr);
                     }
                     self.sleep(s.upgrade_read_ms.max(500))?;
                     // panel closed under us (a click, a pop-up): this visit
@@ -2227,7 +2186,6 @@ impl RunCtx {
                                     "slot {slot} at {},{}: no change after 3 tries (MAX or no money) - next unit, back in a minute",
                                     at.x, at.y
                                 ));
-                                    save_upgrade_debug(self, scr);
                                 }
                             }
                             (None, Some(a)) => done[k] = a,
@@ -2242,7 +2200,6 @@ impl RunCtx {
                                     "slot {slot} at {},{}: level not readable 3x - next unit, back in a minute",
                                     at.x, at.y
                                 ));
-                                    save_upgrade_debug(self, scr);
                                 }
                             }
                         }

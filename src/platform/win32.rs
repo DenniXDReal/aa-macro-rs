@@ -522,6 +522,52 @@ impl Platform for Win32Platform {
         Ok(())
     }
 
+    fn set_borderless(&self, hwnd: Hwnd, on: bool) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE,
+            SWP_NOSIZE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+            WS_THICKFRAME,
+        };
+        // each window's style before we touched it
+        static ORIGINAL: std::sync::Mutex<Vec<(isize, isize)>> = std::sync::Mutex::new(Vec::new());
+        let frame =
+            (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0 as isize;
+        unsafe {
+            let hw = h(hwnd);
+            let cur = GetWindowLongPtrW(hw, GWL_STYLE);
+            if cur == 0 {
+                bail!("window gone");
+            }
+            let mut orig = ORIGINAL.lock().unwrap_or_else(|e| e.into_inner());
+            let want = if on {
+                let popup = (cur & !frame) | WS_POPUP.0 as isize;
+                if popup == cur {
+                    return Ok(()); // already borderless
+                }
+                if !orig.iter().any(|(k, _)| *k == hwnd.0) {
+                    orig.push((hwnd.0, cur));
+                }
+                popup
+            } else {
+                let Some(i) = orig.iter().position(|(k, _)| *k == hwnd.0) else {
+                    return Ok(()); // never touched
+                };
+                orig.remove(i).1
+            };
+            SetWindowLongPtrW(hw, GWL_STYLE, want);
+            SetWindowPos(
+                hw,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .context("frame changed")
+        }
+    }
+
     fn kill_process(&self, exe: &str) -> Result<u32> {
         if exe.contains(['\\', '/', '"', '&', '|', '<', '>']) {
             bail!("bad process name");

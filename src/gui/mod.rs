@@ -1,9 +1,11 @@
 //! Anime Adventure Macro By DenniXD - the app window.
 //!
-//! Shell: top bar (status, Start/Pause/Stop, F1-F4), icon rail, pages.
-//! Pages: Home (live view, mode, units, alts, session), Accounts (Roblox
-//! Account Manager), Movement (routes), Placement, Patterns, Settings.
+//! Shell (Command Center): top bar (title, Start/Pause/Stop, status),
+//! left sidebar, collapsible log dock at the bottom, pages.
+//! Pages: Dashboard (2x2 client cards, Roblox docked in), Patterns, Routes
+//! (Movement), Settings, Logs; setup: Run setup (Home), Accounts, Placement.
 
+mod command;
 mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
 mod tools;
 
@@ -48,6 +50,8 @@ const BAD: Color32 = Color32::from_rgb(248, 113, 113);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
+    Dashboard,
+    Logs,
     Home,
     Accounts,
     Movement,
@@ -55,15 +59,6 @@ enum Page {
     Patterns,
     Settings,
 }
-
-const PAGES: [(Page, &str); 6] = [
-    (Page::Home, "Home"),
-    (Page::Accounts, "Accounts"),
-    (Page::Movement, "Movement"),
-    (Page::Placement, "Placement"),
-    (Page::Patterns, "Patterns"),
-    (Page::Settings, "Settings"),
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
@@ -166,6 +161,8 @@ pub struct App {
 
     // docking
     dock_rect: Option<egui::Rect>,
+    /// Command Center dashboard (cards, multi-client dock, log bus).
+    dash: command::Dash,
     own_hwnd: Option<crate::geom::Hwnd>,
     last_dock: Instant,
     docked_ok: bool,
@@ -279,7 +276,7 @@ impl App {
             clients: vec![],
             sel: 0,
             main: 0,
-            page: Page::Home,
+            page: Page::Dashboard,
             settings_tab: SettingsTab::General,
             resume_prompt: None,
             resume_answer: None,
@@ -322,6 +319,7 @@ impl App {
             ram_rx,
             ram_tx,
             dock_rect: None,
+            dash: command::Dash::default(),
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
@@ -384,7 +382,9 @@ impl App {
             Ok("placement") => Page::Placement,
             Ok("patterns") => Page::Patterns,
             Ok("settings") => Page::Settings,
-            _ => Page::Home,
+            Ok("home") => Page::Home,
+            Ok("logs") => Page::Logs,
+            _ => Page::Dashboard,
         };
         if app.settings.auto_update_check && app.secrets.has(update::TOKEN_KEY) {
             app.check_update();
@@ -1023,98 +1023,97 @@ impl App {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            // brand
-            let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
-            ui.painter().rect_filled(r, 7.0, PURPLE);
-            ui.painter().text(
-                r.center(),
-                egui::Align2::CENTER_CENTER,
-                "AA",
-                egui::FontId::proportional(11.0),
-                Color32::WHITE,
-            );
+            // ◆ brand mark (no font has the glyph: drawn)
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+            let c = r.center();
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x, c.y - 9.0),
+                    egui::pos2(c.x + 9.0, c.y),
+                    egui::pos2(c.x, c.y + 9.0),
+                    egui::pos2(c.x - 9.0, c.y),
+                ],
+                PURPLE,
+                Stroke::NONE,
+            ));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(
-                    RichText::new("Anime Adventure Macro")
-                        .size(15.0)
-                        .strong()
-                        .color(TEXT),
-                );
+                ui.label(RichText::new("AA-MACRO").size(16.0).strong().color(TEXT));
                 ui.label(
                     RichText::new(format!("{APP_BY} · {}", update::version_label()))
-                        .size(10.5)
+                        .size(10.0)
                         .color(MUTED),
                 );
             });
-            ui.add_space(14.0);
-            // status
-            let (txt, c) = if self.running && self.paused {
-                (format!("Paused · {}", self.settings.run.mode.label()), WARN)
-            } else if self.running {
-                (
-                    format!("Running · {}", self.settings.run.mode.label()),
-                    GOOD,
-                )
+            ui.add_space(18.0);
+            let start =
+                egui::Button::new(RichText::new("▶ START ALL").strong().color(Color32::WHITE))
+                    .fill(if self.running { PURPLE_DIM } else { PURPLE })
+                    .corner_radius(8)
+                    .min_size(Vec2::new(116.0, 32.0));
+            if ui
+                .add_enabled(!self.running, start)
+                .on_hover_text("F2")
+                .clicked()
+            {
+                self.start();
+            }
+            let pause = egui::Button::new(if self.paused {
+                "▶ RESUME"
             } else {
-                ("Idle".to_string(), MUTED)
-            };
-            chip(ui, &txt, TEXT, Some(c));
-            let n = self.clients.len();
-            chip(
-                ui,
-                &format!("{n} client{}", if n == 1 { "" } else { "s" }),
-                TEXT,
-                Some(if n > 0 { GOOD } else { BAD }),
-            );
-            if self.settings.dock {
-                chip(
-                    ui,
-                    if self.docked_ok {
-                        "Docked"
-                    } else {
-                        "Docking…"
-                    },
-                    TEXT,
-                    Some(if self.docked_ok { GOOD } else { WARN }),
-                );
+                "⏸ PAUSE"
+            })
+            .corner_radius(8)
+            .min_size(Vec2::new(92.0, 32.0));
+            if ui
+                .add_enabled(self.running, pause)
+                .on_hover_text("F4")
+                .clicked()
+            {
+                self.toggle_pause();
+            }
+            let stop = egui::Button::new(RichText::new("⏹ STOP").color(if self.running {
+                BAD
+            } else {
+                MUTED
+            }))
+            .corner_radius(8)
+            .min_size(Vec2::new(80.0, 32.0));
+            if ui.add(stop).on_hover_text("F3").clicked() {
+                self.stop();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let start = egui::Button::new(
-                    RichText::new(if self.running { "Running" } else { "Start" })
-                        .strong()
-                        .color(Color32::WHITE),
-                )
-                .fill(if self.running { PURPLE_DIM } else { PURPLE })
-                .corner_radius(8)
-                .min_size(Vec2::new(104.0, 32.0));
-                if ui
-                    .add_enabled(!self.running, start)
-                    .on_hover_text("F2")
-                    .clicked()
-                {
-                    self.start();
-                }
-                let pause = egui::Button::new(if self.paused { "Resume" } else { "Pause" })
-                    .corner_radius(8)
-                    .min_size(Vec2::new(78.0, 32.0));
-                if ui
-                    .add_enabled(self.running, pause)
-                    .on_hover_text("F4")
-                    .clicked()
-                {
-                    self.toggle_pause();
-                }
-                let stop = egui::Button::new(RichText::new("Stop").color(if self.running {
-                    BAD
+                // status: dot + word
+                let (txt, c) = if self.running && self.paused {
+                    ("Paused", WARN)
+                } else if self.running {
+                    ("Running", GOOD)
                 } else {
-                    MUTED
-                }))
-                .corner_radius(8)
-                .min_size(Vec2::new(70.0, 32.0));
-                if ui.add(stop).on_hover_text("F3").clicked() {
-                    self.stop();
+                    ("Idle", MUTED)
+                };
+                ui.label(RichText::new(txt).strong().color(c));
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 5.0, c);
+                if self.running {
+                    ui.painter().circle_stroke(
+                        r.center(),
+                        7.5,
+                        Stroke::new(1.5, c.gamma_multiply(0.35)),
+                    );
                 }
+                ui.label(RichText::new("Status:").color(MUTED));
+                ui.add_space(10.0);
+                let n = self.clients.len();
+                chip(
+                    ui,
+                    &format!(
+                        "{n} client{} · {}",
+                        if n == 1 { "" } else { "s" },
+                        self.settings.run.mode.label()
+                    ),
+                    TEXT,
+                    Some(if n > 0 { GOOD } else { BAD }),
+                );
                 ui.add_space(6.0);
                 // window tools tucked into one menu
                 ui.menu_button(RichText::new("Window").color(MUTED), |ui| {
@@ -1164,38 +1163,44 @@ impl App {
         });
     }
 
+    /// Left sidebar: the Command Center pages, then the setup pages.
     fn rail(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-        ui.vertical_centered(|ui| {
-            for (p, name) in PAGES {
-                let selected = self.page == p;
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(64.0, 54.0), Sense::click());
-                if selected {
-                    ui.painter()
-                        .rect_filled(rect.shrink2(Vec2::new(6.0, 2.0)), 10.0, PURPLE_DIM);
-                } else if resp.hovered() {
-                    ui.painter()
-                        .rect_filled(rect.shrink2(Vec2::new(6.0, 2.0)), 10.0, CARD_HI);
-                }
-                let c = if selected { Color32::WHITE } else { MUTED };
-                let icon = egui::Rect::from_center_size(
-                    egui::pos2(rect.center().x, rect.top() + 20.0),
-                    Vec2::splat(30.0),
+        ui.add_space(12.0);
+        let mut item = |ui: &mut egui::Ui, p: Page, name: &str| {
+            let selected = self.page == p;
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+            if selected {
+                ui.painter().rect_filled(rect, 8.0, PURPLE_DIM);
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+                    2.0,
+                    PURPLE,
                 );
-                draw_icon(ui.painter(), icon, p, c);
-                ui.painter().text(
-                    egui::pos2(rect.center().x, rect.bottom() - 9.0),
-                    egui::Align2::CENTER_CENTER,
-                    name,
-                    egui::FontId::proportional(10.0),
-                    c,
-                );
-                if resp.clicked() {
-                    self.page = p;
-                }
-                ui.add_space(2.0);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect, 8.0, CARD_HI);
             }
-        });
+            ui.painter().text(
+                egui::pos2(rect.left() + 12.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                name,
+                egui::FontId::proportional(13.5),
+                if selected { Color32::WHITE } else { MUTED },
+            );
+            if resp.clicked() {
+                self.page = p;
+            }
+            ui.add_space(2.0);
+        };
+        for (p, name) in command::NAV {
+            item(ui, p, name);
+        }
+        ui.add_space(14.0);
+        ui.label(RichText::new("  SETUP").size(10.0).color(MUTED));
+        ui.add_space(4.0);
+        for (p, name) in command::NAV_SETUP {
+            item(ui, p, name);
+        }
     }
 
     // ---------------- Home ----------------
@@ -3862,75 +3867,6 @@ fn dot(ui: &mut egui::Ui, c: Color32) {
     ui.painter().circle_filled(r.center(), 4.0, c);
 }
 
-/// Simple line icons drawn with the painter (no icon font needed).
-fn draw_icon(p: &egui::Painter, r: egui::Rect, page: Page, c: Color32) {
-    use egui::pos2;
-    let s = Stroke::new(1.8, c);
-    let cx = r.center().x;
-    let cy = r.center().y;
-    match page {
-        Page::Home => {
-            p.line_segment([pos2(cx - 9.0, cy - 1.0), pos2(cx, cy - 9.0)], s);
-            p.line_segment([pos2(cx, cy - 9.0), pos2(cx + 9.0, cy - 1.0)], s);
-            p.rect_stroke(
-                egui::Rect::from_min_max(pos2(cx - 6.5, cy - 3.0), pos2(cx + 6.5, cy + 8.0)),
-                1.0,
-                s,
-                egui::StrokeKind::Middle,
-            );
-        }
-        Page::Accounts => {
-            p.circle_stroke(pos2(cx - 3.5, cy - 4.0), 3.5, s);
-            p.circle_stroke(pos2(cx + 5.0, cy - 2.5), 2.8, s);
-            p.line_segment([pos2(cx - 10.0, cy + 8.0), pos2(cx + 3.0, cy + 8.0)], s);
-            p.line_segment([pos2(cx - 10.0, cy + 8.0), pos2(cx - 3.5, cy + 1.5)], s);
-            p.line_segment([pos2(cx + 3.0, cy + 8.0), pos2(cx - 3.5, cy + 1.5)], s);
-            p.line_segment([pos2(cx + 5.0, cy + 2.0), pos2(cx + 10.0, cy + 7.0)], s);
-        }
-        Page::Movement => {
-            p.circle_stroke(pos2(cx, cy), 9.0, s);
-            p.add(egui::Shape::convex_polygon(
-                vec![pos2(cx, cy - 6.5), pos2(cx + 3.0, cy), pos2(cx - 3.0, cy)],
-                c,
-                Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                vec![pos2(cx - 3.0, cy), pos2(cx + 3.0, cy), pos2(cx, cy + 6.5)],
-                Color32::TRANSPARENT,
-                s,
-            ));
-        }
-        Page::Placement => {
-            p.circle_stroke(pos2(cx, cy - 3.0), 6.0, s);
-            p.circle_filled(pos2(cx, cy - 3.0), 2.0, c);
-            p.line_segment([pos2(cx - 4.2, cy + 1.3), pos2(cx, cy + 9.0)], s);
-            p.line_segment([pos2(cx + 4.2, cy + 1.3), pos2(cx, cy + 9.0)], s);
-        }
-        Page::Patterns => {
-            p.circle_stroke(pos2(cx - 2.0, cy - 2.0), 6.5, s);
-            p.line_segment(
-                [pos2(cx + 2.8, cy + 2.8), pos2(cx + 8.5, cy + 8.5)],
-                Stroke::new(2.4, c),
-            );
-        }
-        Page::Settings => {
-            p.circle_stroke(pos2(cx, cy), 3.0, s);
-            for k in 0..8 {
-                let a = k as f32 * std::f32::consts::TAU / 8.0;
-                let (sn, cs) = a.sin_cos();
-                p.line_segment(
-                    [
-                        pos2(cx + cs * 5.5, cy + sn * 5.5),
-                        pos2(cx + cs * 9.0, cy + sn * 9.0),
-                    ],
-                    Stroke::new(2.2, c),
-                );
-            }
-            p.circle_stroke(pos2(cx, cy), 6.5, s);
-        }
-    }
-}
-
 fn stat(ui: &mut egui::Ui, value: &str, label: &str, color: Color32) {
     ui.vertical(|ui| {
         ui.label(RichText::new(value).size(20.0).strong().color(color));
@@ -4122,14 +4058,24 @@ impl eframe::App for App {
             .show(ui, |ui| {
                 self.top_bar(ui);
             });
+        egui::Panel::bottom("logdock")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG)
+                    .inner_margin(egui::Margin::symmetric(10, 6)),
+            )
+            .show(ui, |ui| {
+                self.log_dock(ui);
+            });
         egui::Panel::left("rail")
-            .exact_size(70.0)
+            .exact_size(158.0)
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
                 self.rail(ui);
             });
         let ppp = ctx.pixels_per_point();
-        if self.settings.dock {
+        if self.settings.dock && self.page != Page::Dashboard {
             let w = self.settings.client_w as f32 / ppp + 24.0;
             egui::Panel::left("dock")
                 .exact_size(w)
@@ -4153,6 +4099,8 @@ impl eframe::App for App {
                     .id_salt("page")
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
+                        Page::Dashboard => self.page_dashboard(ui),
+                        Page::Logs => self.page_logs(ui),
                         Page::Home => self.page_home(ui),
                         Page::Accounts => self.page_accounts(ui),
                         Page::Movement => self.page_movement(ui),
@@ -4161,11 +4109,17 @@ impl eframe::App for App {
                         Page::Settings => self.page_settings(ui),
                     });
             });
-        self.dock_tick(ppp);
+        if self.page == Page::Dashboard {
+            self.dash_dock_tick(ppp);
+        } else {
+            self.dash_release();
+            self.dock_tick(ppp);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.control.stop();
+        self.dash_release();
         for c in &self.clients {
             let _ = self.platform.set_topmost(c.hwnd, false);
         }

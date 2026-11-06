@@ -12,6 +12,7 @@ dependencies = [
  "chrono",
  "clap",
  "eframe",
+ "egui",
  "env_logger",
  "image",
  "log",
