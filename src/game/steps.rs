@@ -10,7 +10,9 @@
 //! Guarantees:
 //! - `exit()` is called exactly once after `enter()`, whatever happens:
 //!   Advance, Fatal, abort, or a panic inside the step.
-//! - `ExternalAbort` / `InputDispatchFailed` are Fatal at once, never retried.
+//! - `ExternalAbort` and hard input failures are Fatal at once, never
+//!   retried; input refused for the moment (RDP minimized, PC locked) is
+//!   waited out every 10 s without counting as a retry, pausing or dumping.
 //! - A retryable failure is retried (after `backoff`) up to `max_retries`
 //!   times in a row, then it's Fatal. The 2nd retry onwards asks for a dump.
 //! - Past `hard_timeout` the step is Fatal(StepTimeout), whatever it returns.
@@ -93,8 +95,12 @@ pub enum FailureReason {
         expected: StateTag,
         got: StateTag,
     },
+    /// Sending input failed. `last_error` is GetLastError after SendInput:
+    /// 0 = Windows refused for the moment (RDP minimized, session locked,
+    /// focus away) - environmental, waited out; anything else is fatal.
     InputDispatchFailed {
         err: String,
+        last_error: u32,
     },
     /// Navigation (used once minimap nav lands).
     NavStuck {
@@ -123,7 +129,32 @@ impl FailureReason {
     }
     pub fn is_fatal_immediately(&self) -> bool {
         use FailureReason::*;
-        matches!(self, ExternalAbort { .. } | InputDispatchFailed { .. })
+        match self {
+            ExternalAbort { .. } => true,
+            InputDispatchFailed { .. } => !self.is_environmental(),
+            _ => false,
+        }
+    }
+    /// Input refused for the moment (RDP minimized, PC locked): waited out
+    /// every 10 s for as long as it lasts, never counted as a retry.
+    pub fn is_environmental(&self) -> bool {
+        matches!(
+            self,
+            FailureReason::InputDispatchFailed { last_error: 0, .. }
+        )
+    }
+    /// From the input layer's error text ("SendInput sent 0/2 (error 5) ...").
+    pub fn from_input_error(err: &str) -> Self {
+        let last_error = err
+            .split("(error ")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
+        FailureReason::InputDispatchFailed {
+            err: err.to_string(),
+            last_error,
+        }
     }
     /// Short text for logs / dump folder reasons (stable for the 5 s dedup).
     pub fn short(&self) -> String {
@@ -135,7 +166,7 @@ impl FailureReason {
             ClickHadNoEffect { what, .. } => format!("click on {what} had no effect"),
             StepTimeout { step, .. } => format!("{} timed out", step.name()),
             UnexpectedState { expected, got } => format!("expected {expected:?}, got {got:?}"),
-            InputDispatchFailed { err } => format!("input failed: {err}"),
+            InputDispatchFailed { last_error, .. } => format!("input failed (error {last_error})"),
             NavStuck { waypoint_index } => format!("stuck at waypoint {waypoint_index}"),
             NavFailed { reason } => format!("navigation failed: {reason}"),
             ExternalAbort { source } => format!("aborted ({source:?})"),
@@ -173,11 +204,20 @@ impl RetryPolicy {
             Step::Lobby => Self::new(15, 45, 5, 500),
             Step::StageSetup => Self::new(10, 25, 3, 1000),
             Step::Walk => Self::walk(None, 0),
-            Step::Place => Self::new(8, 20, 3, 500),
-            Step::Upgrade => Self::new(15, 45, 3, 500),
+            // whole step: a safety net (Place takes seconds, Upgrade the
+            // whole match); per-unit limits are UNIT_PLACE / UNIT_UPGRADE
+            Step::Place => Self::new(600, 600, 1, 5000),
+            Step::Upgrade => Self::new(2400, 2400, 1, 5000),
             Step::End => Self::new(5, 15, 2, 1000),
         }
     }
+
+    /// Per unit inside Place: a unit failing past this is logged + skipped.
+    pub const UNIT_PLACE: Self = Self::new(8, 20, 3, 500);
+    /// Per unit inside Upgrade: same.
+    pub const UNIT_UPGRADE: Self = Self::new(15, 45, 3, 500);
+    /// Waiting out refused input (RDP minimized / PC locked).
+    pub const INPUT_BLOCKED_WAIT: Duration = Duration::from_secs(10);
 
     /// Walk: the route's own `timeout_ms`, else 10 s + 0.5 s per waypoint.
     /// No step-level retries: the navigator recovers by itself.
@@ -241,6 +281,9 @@ pub trait Hooks {
     /// Live info for the overlay (attempt, latest reason).
     fn status(&self, _step: Step, _attempt: u32, _last: Option<&FailureReason>) {}
     /// Dump an intentional Stop too? (Settings, default off)
+    /// Input refused for the moment (`first` = first in a row: log at WARN,
+    /// later ones at DEBUG). No pause, no beep, no dump.
+    fn input_blocked(&self, _step: Step, _first: bool) {}
     fn dump_on_user_stop(&self) -> bool {
         false
     }
@@ -268,8 +311,17 @@ pub fn run_step<C>(
     let mut last: Option<FailureReason> = None;
 
     // a retryable failure: count it, maybe dump, maybe escalate
+    let mut blocked = false;
     let mut on_failure =
         |r: FailureReason, sub: Option<serde_json::Value>| -> Option<FailureReason> {
+            if r.is_environmental() {
+                // wait it out, as long as it lasts; not counted as a retry
+                hooks.input_blocked(step, !blocked);
+                blocked = true;
+                hooks.sleep(RetryPolicy::INPUT_BLOCKED_WAIT);
+                return None;
+            }
+            blocked = false;
             if r.is_fatal_immediately() || !r.is_retryable() {
                 return Some(r);
             }
@@ -612,7 +664,8 @@ mod tests {
     fn input_failure_is_fatal_at_once() {
         let rec = Rec::default();
         let r = FailureReason::InputDispatchFailed {
-            err: "SendInput 0/2".into(),
+            err: "SendInput 0/2 (error 5)".into(),
+            last_error: 5,
         };
         let mut s = Scripted::new(Step::Place, vec![Err(r.clone())]);
         assert_eq!(run_step(&mut s, &(), &rec, TICK), Outcome::Fatal(r));
@@ -696,7 +749,10 @@ mod tests {
         s.enter_err = Some(pnf());
         assert_eq!(run_step(&mut s, &(), &rec, TICK), Outcome::Advanced);
         let mut s2 = Scripted::new(Step::StageSetup, vec![]);
-        s2.enter_err = Some(FailureReason::InputDispatchFailed { err: "x".into() });
+        s2.enter_err = Some(FailureReason::InputDispatchFailed {
+            err: "x".into(),
+            last_error: 87,
+        });
         assert!(matches!(
             run_step(&mut s2, &(), &rec, TICK),
             Outcome::Fatal(_)
@@ -765,6 +821,70 @@ mod tests {
             source: AbortSource::FocusLost
         }
         .is_fatal_immediately());
+    }
+
+    #[test]
+    fn input_refused_is_waited_out_not_retried() {
+        let rec = Rec::default();
+        let blocked =
+            FailureReason::from_input_error("SendInput sent 0/2 (error 0) - input blocked");
+        assert!(blocked.is_environmental() && !blocked.is_fatal_immediately());
+        // more refusals than max_retries: still not Fatal, never dumped
+        let mut s = Scripted::new(
+            Step::Upgrade,
+            vec![
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Ok(StepResult::Advance),
+            ],
+        );
+        assert_eq!(run_step(&mut s, &(), &rec, TICK), Outcome::Advanced);
+        assert!(rec.dumps.lock().unwrap().is_empty());
+        assert!(rec.fatals.lock().unwrap().is_empty());
+        let waits = rec
+            .slept
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| **d == RetryPolicy::INPUT_BLOCKED_WAIT)
+            .count();
+        assert_eq!(waits, 5, "10 s each");
+    }
+
+    #[test]
+    fn hard_input_error_is_fatal() {
+        let r = FailureReason::from_input_error("SendInput sent 0/2 (error 5) - access denied");
+        assert_eq!(
+            r,
+            FailureReason::InputDispatchFailed {
+                err: "SendInput sent 0/2 (error 5) - access denied".into(),
+                last_error: 5
+            }
+        );
+        assert!(r.is_fatal_immediately() && !r.is_environmental());
+        assert!(FailureReason::from_input_error("no code at all").is_environmental());
+    }
+
+    #[test]
+    fn step_level_policies() {
+        let p = RetryPolicy::default_for(Step::Place);
+        assert_eq!(
+            (p.hard_timeout, p.max_retries, p.backoff),
+            (Duration::from_secs(600), 1, Duration::from_secs(5))
+        );
+        let u = RetryPolicy::default_for(Step::Upgrade);
+        assert_eq!(
+            (u.hard_timeout, u.max_retries),
+            (Duration::from_secs(2400), 1)
+        );
+        assert_eq!(
+            RetryPolicy::UNIT_UPGRADE.hard_timeout,
+            Duration::from_secs(45)
+        );
+        assert_eq!(RetryPolicy::UNIT_PLACE.max_retries, 3);
     }
 
     #[test]
