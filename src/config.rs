@@ -37,6 +37,9 @@ pub struct Settings {
     /// Optional safety: after this many upgrade presses on one unit without
     /// seeing MAX / its level, count it as done (0 = off).
     pub upgrade_press_cap: u32,
+    /// Open a unit with a right-click first (left-click is the default and
+    /// what the game documents; in Roblox a right-drag turns the camera).
+    pub upgrade_right_click: bool,
     /// Upgrades: wait this long (ms) after opening a unit / pressing upgrade
     /// before reading its level (OCR).
     pub upgrade_read_ms: u64,
@@ -514,6 +517,7 @@ impl Default for Settings {
             place_check_ms: 3000,
             upgrade_read_ms: 800,
             upgrade_press_cap: 0,
+            upgrade_right_click: false,
             swap_delay_ms: 1200,
             place_shape: Default::default(),
             shape_scale: 1.8,

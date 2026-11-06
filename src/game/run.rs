@@ -360,6 +360,19 @@ fn cards_up(h: Hwnd) {
     v.push((h, Instant::now() + Duration::from_secs(12)));
 }
 
+/// Where to click unit placed at `at` on try `n`: the spot itself, then
+/// a bit above it (the body / nameplate - the camera tilt puts the model
+/// above its ground point), then up-left and up-right of that.
+pub(crate) fn unit_click_point(at: Point, n: u32) -> Point {
+    let (dx, dy) = match n {
+        0 => (0, 0),
+        1 => (0, -14),
+        2 => (-12, -24),
+        _ => (12, -24),
+    };
+    Point::new((at.x + dx).clamp(1, 798), (at.y + dy).clamp(1, 597))
+}
+
 /// Re-clicks of a unit whose panel didn't open, before moving on.
 const PANEL_RETRIES: u32 = 3;
 static UPGRADING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2257,6 +2270,9 @@ impl RunCtx {
         // (MAX / its level not read) = treat it as done, go on to the others
         let mut pressed: Vec<u32> = vec![0; order.len()];
         let mut rest: Vec<Option<Instant>> = vec![None; order.len()];
+        // per unit: the spot that opened its panel last time (the ground
+        // point it was placed at, or a bit above it - the unit's body)
+        let mut aim: Vec<Option<Point>> = vec![None; order.len()];
         let resting = |k: usize, rest: &[Option<Instant>]| {
             rest[k].is_some_and(|t| t.elapsed() < Duration::from_secs(60))
         };
@@ -2305,21 +2321,49 @@ impl RunCtx {
                 for attempt in 0..=PANEL_RETRIES {
                     self.check()?;
                     crate::status::attempt(*h, attempt + 1, PANEL_RETRIES + 1);
+                    // where to click: what worked last time, else the placed
+                    // spot, then a bit above / beside it (the unit stands on
+                    // the spot; its body / nameplate is higher up)
+                    let p = match (attempt, aim[k]) {
+                        (0, Some(p)) => p,
+                        (n, _) => unit_click_point(*at, n),
+                    };
+                    let right = attempt == 0 && s.upgrade_right_click;
                     if attempt > 0 {
                         self.log(format!(
-                            "slot {slot} at {},{}: panel didn't open, clicking unit again ({attempt}/{PANEL_RETRIES})",
-                            at.x, at.y
+                            "slot {slot} at {},{}: panel didn't open, clicking unit again at {},{} ({attempt}/{PANEL_RETRIES})",
+                            at.x, at.y, p.x, p.y
                         ));
                     }
+                    let b = if right {
+                        Batch::new(*h, "open unit (right)").then(Action::Click {
+                            at: p,
+                            button: crate::platform::MouseButton::Right,
+                        })
+                    } else {
+                        Batch::new(*h, "open unit").click(p.x, p.y)
+                    };
                     self.arb
-                        .run(Batch::new(*h, "open unit").click(at.x, at.y).wait(300))
+                        .run(b.wait(300))
                         .map_err(|e| format!("upgrade: {e}"))?;
                     // let the panel start drawing, then look for it
                     self.sleep(s.upgrade_read_ms / 2)?;
                     if self.panel_open(scr, s.upgrade_read_ms + 700)? {
                         open = true;
+                        if aim[k] != Some(p) && !right {
+                            if attempt > 0 {
+                                self.log(format!(
+                                    "slot {slot}: panel opened at {},{} - using that spot from now on",
+                                    p.x, p.y
+                                ));
+                            }
+                            aim[k] = Some(p);
+                        }
                         crate::status::clear_attempt(*h);
                         break;
+                    }
+                    if attempt == 0 {
+                        aim[k] = None; // what worked before doesn't now
                     }
                 }
                 if !open {
@@ -3549,5 +3593,21 @@ mod seq_tests {
         // freed while waiting = taken
         assert!(seq_lock(h, Duration::from_secs(2)).is_some());
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod unit_click_tests {
+    use super::*;
+
+    #[test]
+    fn retries_look_a_bit_above_the_placed_spot() {
+        let at = Point::new(370, 414);
+        assert_eq!(unit_click_point(at, 0), at);
+        assert_eq!(unit_click_point(at, 1), Point::new(370, 400));
+        assert_eq!(unit_click_point(at, 2), Point::new(358, 390));
+        assert_eq!(unit_click_point(at, 3), Point::new(382, 390));
+        // never off the client
+        assert_eq!(unit_click_point(Point::new(5, 10), 2), Point::new(1, 1));
     }
 }

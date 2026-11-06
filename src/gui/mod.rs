@@ -3475,6 +3475,13 @@ impl App {
                         }
                     });
                     ui.end_row();
+                    ui.label("Open units with right-click").on_hover_text(
+                        "try a right-click first when opening a unit to upgrade it (then left-clicks around the spot). Off = left-click. Roblox turns the camera on a right-drag, so leave it off unless it opens panels for you.",
+                    );
+                    changed |= ui
+                        .checkbox(&mut s.upgrade_right_click, "right-click first")
+                        .changed();
+                    ui.end_row();
                     ui.label("Upgrade read wait (ms)").on_hover_text(
                         "after opening a unit / pressing upgrade, wait this long before reading its level",
                     );

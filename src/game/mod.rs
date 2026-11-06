@@ -36,7 +36,10 @@ mod level_tests {
         assert_eq!(parse_level("UPG [7l"), Some(Ok(7)));
         assert_eq!(parse_level("UPG [7|"), Some(Ok(7)));
         assert_eq!(parse_level("UPG [11]"), Some(Ok(11)));
-        assert_eq!(parse_level("UPG [21]"), Some(Ok(21)));
+        // above the highest level there is: a failed read
+        assert_eq!(parse_level("UPG [21]"), None);
+        assert_eq!(parse_level("UPG [74]"), None);
+        assert_eq!(parse_level("UPG [15]"), Some(Ok(15)));
         assert_eq!(parse_level("UPG 5"), Some(Ok(5)));
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
@@ -153,9 +156,21 @@ pub fn weather_shift_text(text: &str) -> Option<String> {
     Some(w)
 }
 
+/// Highest unit level there is (units max out around 10-15): any read
+/// above it is a misread and rejected.
+pub const MAX_LEVEL: u32 = 15;
+
 /// "UPG [3]" -> Ok(3), "MAX" -> Err(()), junk -> None. Tolerates the
 /// usual OCR slips ("[" read as "1", "O" for 0, missing brackets).
 pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
+    match parse_level_raw(text) {
+        // "71", "74": no such level - a failed read, never "upgraded to 71"
+        Some(Ok(n)) if n > MAX_LEVEL => None,
+        r => r,
+    }
+}
+
+fn parse_level_raw(text: &str) -> Option<Result<u32, ()>> {
     let t = text.to_uppercase();
     if t.contains("MAX") {
         return Some(Err(()));
