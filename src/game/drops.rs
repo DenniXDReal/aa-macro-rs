@@ -1,5 +1,5 @@
 //! Rewards read off the end screen (OCR): Gems, Summer Coins, Star
-//! Remnants, ... Rows with a number ("<name> x12", "+12 <name>",
+//! Remnants, Pearls, ... Rows with a number ("<name> x12", "+12 <name>",
 //! "<name> 12"). Tracked names are matched loosely; anything else only
 //! counts when its name has Coin or Portal in it (OCR picks up other text).
 
@@ -55,6 +55,9 @@ pub fn parse_line(line: &str) -> Option<(String, u64)> {
     if low.contains("summer") {
         return Some(("Summer Coin".into(), amount));
     }
+    if low.contains("pearl") {
+        return Some(("Pearls".into(), amount));
+    }
     if low.contains("gem") {
         return Some(("Gems".into(), amount));
     }
@@ -63,7 +66,7 @@ pub fn parse_line(line: &str) -> Option<(String, u64)> {
             return Some((t.to_string(), amount));
         }
     }
-    if low.contains("coin") || low.contains("portal") {
+    if low.contains("coin") || low.contains("portal") || low.contains("charm") {
         let clean: String = name
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '\'')
@@ -116,6 +119,8 @@ mod tests {
             "OCR slip in the name"
         );
         assert_eq!(d.len(), 4, "{d:?}");
+        assert_eq!(parse_line("Pearls x15"), Some(("Pearls".into(), 15)));
+        assert_eq!(parse_line("+3 Pearl"), Some(("Pearls".into(), 3)));
         assert_eq!(
             parse_line("Star Remnant x2"),
             Some(("Star Remnant".into(), 2))

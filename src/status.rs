@@ -68,6 +68,11 @@ pub fn set_step(name: &str) {
     NOW.rcu(|s| s.with_step(name));
 }
 
+/// A new run: no step yet, no attempts (called on Start).
+pub fn reset() {
+    NOW.store(Arc::new(Status::default()));
+}
+
 /// Client `h` is on try `n` of `of` of something (n > 1 = retrying).
 pub fn attempt(h: Hwnd, n: u32, of: u32) {
     NOW.rcu(|s| s.with_attempt(h, n, of));

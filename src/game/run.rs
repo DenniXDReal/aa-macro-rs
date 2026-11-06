@@ -242,6 +242,9 @@ pub enum Event {
     Loss,
     /// Rewards read off the end screen (sent right before Win / Loss).
     Drops(Vec<(String, u64)>),
+    /// A finished run's loot (End step); `reported` = the game loop sent
+    /// the Discord loot report itself.
+    Run(super::loot::RunStats, bool),
     /// Something needs the user (captcha) - ping them.
     Attention(String),
     Done(String),
@@ -265,6 +268,11 @@ pub struct RunCtx {
     pub memory: std::sync::Arc<std::sync::Mutex<crate::spotmem::SpotMemory>>,
     /// Pick up at this saved step (a restart mid-stage), see `resume`.
     pub resume: Option<super::resume::Saved>,
+    /// Discord loot report after every run: (webhook URL, ping user id).
+    /// None = off.
+    pub loot_hook: Option<(String, String)>,
+    /// Run count + totals since Start.
+    pub session: std::sync::Arc<std::sync::Mutex<super::loot::Session>>,
 }
 
 type R<T> = Result<T, String>;
@@ -2423,6 +2431,17 @@ impl RunCtx {
 
     /// `after_end`, choosing Return to Lobby (`lobby`) or Replay.
     pub fn after_end_to(&self, lobby: bool) -> R<bool> {
+        self.after_end_with(lobby, &mut |_| Ok(()))
+    }
+
+    /// `after_end_to`, calling `on_rewards` once on the screen after Next
+    /// (where Replay / Return shows), before either is clicked.
+    pub fn after_end_with(
+        &self,
+        lobby: bool,
+        on_rewards: &mut dyn FnMut(&Self) -> R<()>,
+    ) -> R<bool> {
+        let mut rewards_done = false;
         // straight to the main: spam Next until Replay shows, then Replay
         self.to_main()?;
         let main = self.screen(self.main);
@@ -2444,6 +2463,12 @@ impl RunCtx {
             self.check()?;
             // the button we want: click it, then make sure the end screen goes
             if let Some(p) = main.find_wide(&Self::names(&[want])) {
+                if !rewards_done {
+                    rewards_done = true;
+                    on_rewards(self)?;
+                    // the item's second click may have moved things: look again
+                    continue;
+                }
                 self.click(self.main, p, want)?;
                 clicked = true;
                 let mut gone = self.control.deadline(self.secs(8.0));
@@ -2503,6 +2528,9 @@ impl RunCtx {
             // no Replay on this end screen (some modes only offer the lobby)
             if !lobby && waited.elapsed() > Duration::from_secs_f64(self.secs(15.0)) {
                 if let Some(p) = main.find_wide(&Self::names(&["return_to_lobby"])) {
+                    if !rewards_done {
+                        on_rewards(self)?;
+                    }
                     self.log("no Replay here - going back to the lobby instead");
                     self.click(self.main, p, "return to lobby")?;
                     self.sleep(8000)?;
@@ -2523,6 +2551,115 @@ impl RunCtx {
             self.sleep(8000)?;
         }
         Ok(lobby)
+    }
+
+    /// End step, reward screen (after Next): read Pearls / event currency,
+    /// look for a charm / portal (picture of it), record the run (history +
+    /// session totals), send the Discord loot report and wait for it, then
+    /// click the item again (the game wants a second click to go on).
+    fn end_rewards(&self, won: bool, map: &str, end_drops: &[(String, u64)]) -> R<()> {
+        use super::loot;
+        let main = self.screen(self.main);
+        self.sleep(500)?; // let the reward screen finish drawing
+        let frame = main.frame();
+        let lines = frame
+            .as_ref()
+            .and_then(|f| main.ocr_lines(f))
+            .unwrap_or_default();
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.iter()
+                    .map(|(w, _)| w.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        let drops = loot::merge(end_drops, &super::drops::parse(&texts));
+        // the charm / portal: your drop_* pictures first, else OCR of its name
+        let pics: Vec<String> = ["drop_charm", "drop_portal", "charm", "portal"]
+            .iter()
+            .filter(|n| main.has(n))
+            .map(|n| n.to_string())
+            .collect();
+        let charm: Option<(String, crate::geom::Rect)> = (!pics.is_empty())
+            .then(|| main.find_wide(&pics))
+            .flatten()
+            .map(|p| {
+                (
+                    "item".to_string(),
+                    crate::geom::Rect::new(p.x - 20, p.y - 20, 40, 40),
+                )
+            })
+            .or_else(|| loot::find_charm(&lines));
+        let mut stats = loot::RunStats {
+            run: 0, // numbered by the session below
+            at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            won,
+            mode: self.settings.run.mode.label().to_string(),
+            map: map.to_string(),
+            event_currency: loot::amount(&drops, loot::EVENT_CURRENCY),
+            pearls: loot::amount(&drops, loot::PEARLS),
+            charm: charm.as_ref().map(|c| c.0.clone()),
+            drops,
+            image: None,
+        };
+        // the item's picture
+        let mut picture = None;
+        if let (Some((_, at)), Some(f)) = (&charm, &frame) {
+            if let Some(r) = loot::crop_around(*at, f.width, f.height) {
+                let crop = f.crop(r.x as u32, r.y as u32, r.w as u32, r.h as u32);
+                let dir = loot::image_dir();
+                let name = format!("{}.png", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+                if std::fs::create_dir_all(&dir).is_ok() && crop.save_png(&dir.join(&name)).is_ok()
+                {
+                    stats.image = Some(dir.join(name));
+                }
+                picture = Some(crop);
+            }
+        }
+        let session = {
+            let mut s = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            s.add(&mut stats);
+            s.clone()
+        };
+        if let Err(e) = loot::append_history(&stats) {
+            self.log(format!("run history not saved: {e}"));
+        }
+        self.log(format!(
+            "run #{} {}: event currency {}, pearls {}, charm {}",
+            stats.run,
+            stats.result(),
+            stats.event_currency,
+            stats.pearls,
+            stats.charm.as_deref().unwrap_or("no")
+        ));
+        // Discord: wait for the upload (the picture) before going on, but
+        // never longer than WEBHOOK_WAIT_SECS
+        let reported = if let Some((url, ping)) = &self.loot_hook {
+            let m = loot::message(&stats, &session, picture, false);
+            match crate::webhook::send_and_wait(
+                url,
+                ping,
+                m,
+                Duration::from_secs(loot::WEBHOOK_WAIT_SECS),
+            ) {
+                Ok(None) => self.log(format!("Discord: run #{} sent", stats.run)),
+                Ok(Some(note)) => self.log(format!("Discord: run #{} {note}", stats.run)),
+                Err(e) => self.log(format!("WARN Discord: run #{} - {e}", stats.run)),
+            }
+            true
+        } else {
+            false
+        };
+        let _ = self.tx.send(Event::Run(stats, reported));
+        // the game wants the item clicked again to go on
+        if let Some((_, at)) = &charm {
+            let p = super::loot::click_point(*at);
+            self.click(self.main, p, "dropped item")?;
+            self.sleep(800)?;
+        }
+        Ok(())
     }
 
     /// What's on the main's screen right now, to get back on track after a
@@ -2721,7 +2858,7 @@ impl RunCtx {
             serde_json::json!({ "mode": mode, "map": map.clone(), "won": won }),
         );
         // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
-        {
+        let end_drops = {
             let main = self.screen(self.main);
             let mut drops = vec![];
             // quick: one look (two if nothing read) - Next comes first
@@ -2737,15 +2874,22 @@ impl RunCtx {
             if !drops.is_empty() {
                 let list: Vec<String> = drops.iter().map(|(n, a)| format!("{a} {n}")).collect();
                 self.log(format!("drops: {}", list.join(", ")));
-                let _ = self.tx.send(Event::Drops(drops));
+                let _ = self.tx.send(Event::Drops(drops.clone()));
             }
-        }
+            drops
+        };
         let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
-        if !won && self.settings.run.stop_after_defeat {
+        let stop = !won && self.settings.run.stop_after_defeat;
+        // Next > reward screen: loot scan, Discord report, item click;
+        // then (last run of a schedule step: back to the lobby for the next one)
+        let mut on_rewards = |c: &Self| c.end_rewards(won, &map.clone(), &end_drops);
+        if stop {
+            // still record the run, but don't leave the end screen
+            let _ = self.end_rewards(won, map, &end_drops);
             return Err("stopped after a defeat".into());
         }
-        // last run of a schedule step: back to the lobby for the next one
-        *in_lobby = self.after_end_to(self.settings.run.return_to_lobby || last())?;
+        *in_lobby =
+            self.after_end_with(self.settings.run.return_to_lobby || last(), &mut on_rewards)?;
         Ok(())
     }
 

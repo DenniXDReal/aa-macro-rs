@@ -79,8 +79,9 @@ impl ClientView {
             Health::Ok
         };
         ClientView {
+            // started, first step not reached yet: it begins in the lobby
             step: if st.step.is_empty() {
-                "STARTING".into()
+                "LOBBY".into()
             } else {
                 st.step.to_uppercase()
             },
@@ -249,6 +250,20 @@ impl App {
                                             .color(TEXT),
                                     );
                                     ui.label(RichText::new(label).size(11.0).color(MUTED));
+                                    // the step up here too: always on show,
+                                    // even when the card's bottom is below the fold
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new(&view.step)
+                                                    .monospace()
+                                                    .size(12.0)
+                                                    .strong()
+                                                    .color(health.color()),
+                                            );
+                                        },
+                                    );
                                 });
                                 ui.add_space(4.0);
                                 // top half: the docking slot
@@ -593,6 +608,8 @@ mod tests {
             }],
         };
         let idle = ClientView::build(&st, Some(h), false, false);
+        let fresh = ClientView::build(&crate::status::Status::default(), Some(h), true, false);
+        assert_eq!(fresh.step, "LOBBY");
         assert_eq!((idle.step.as_str(), idle.health), ("IDLE", Health::Idle));
         let v = ClientView::build(&st, Some(h), true, false);
         assert_eq!(v.step, "UPGRADE");

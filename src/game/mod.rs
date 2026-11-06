@@ -8,6 +8,7 @@ pub mod cards;
 pub mod drops;
 pub mod dump;
 pub mod hotbar;
+pub mod loot;
 pub mod minimap;
 pub mod placing;
 pub mod resume;
