@@ -14,6 +14,7 @@ pub mod resume;
 pub mod run;
 #[cfg(test)]
 pub mod sim;
+pub mod steps;
 pub mod textbuttons;
 pub mod trace;
 
