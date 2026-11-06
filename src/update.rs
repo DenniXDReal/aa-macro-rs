@@ -21,6 +21,13 @@ pub const BUILD_SHA: &str = match option_env!("AA_BUILD_SHA") {
     Some(s) => s,
     None => "dev",
 };
+/// Release tag this build updates from: "latest", or a test channel
+/// ("parallel", "test-build") - a test build only updates from its own.
+pub const CHANNEL: &str = match option_env!("AA_CHANNEL") {
+    Some(c) => c,
+    None => "latest",
+};
+
 pub const BUILD_NUM: &str = match option_env!("AA_BUILD_NUM") {
     Some(s) => s,
     None => "dev",
@@ -31,10 +38,15 @@ pub const TOKEN_KEY: &str = "github_token";
 pub fn version_label() -> String {
     let short = &BUILD_SHA[..BUILD_SHA.len().min(7)];
     format!(
-        "v{} build {} ({})",
+        "v{} build {} ({}){}",
         env!("CARGO_PKG_VERSION"),
         BUILD_NUM,
-        short
+        short,
+        match CHANNEL {
+            "latest" => String::new(),
+            "parallel" => " · PARALLEL TEST".into(),
+            c => format!(" · {} ", c.to_uppercase()).trim_end().to_string(),
+        }
     )
 }
 
@@ -115,7 +127,7 @@ fn get(url: &str, token: &str, accept: &str) -> Result<Vec<u8>> {
 
 /// `Some` when the `latest` release was built from a different commit.
 pub fn check(repo: &str, token: &str) -> Result<Option<Available>> {
-    let url = format!("https://api.github.com/repos/{repo}/releases/tags/latest");
+    let url = format!("https://api.github.com/repos/{repo}/releases/tags/{CHANNEL}");
     let rel: Release = serde_json::from_slice(&get(&url, token, "application/vnd.github+json")?)?;
     let (sha, build) = parse_body(rel.body.as_deref().unwrap_or(""))
         .ok_or_else(|| anyhow!("release has no build info"))?;

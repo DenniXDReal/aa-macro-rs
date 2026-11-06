@@ -20,7 +20,12 @@ pub const HISTORY_KEEP: usize = 5000;
 /// run) sits, right of "+55 XP". Used when the pearl icon isn't found.
 pub const PEARL_RECT: Rect = Rect::new(330, 336, 84, 36);
 /// Where the pearl icon is looked for on the end panel.
-const PEARL_SEARCH: Rect = Rect::new(250, 320, 310, 70);
+const PEARL_SEARCH: Rect = Rect::new(250, 315, 300, 80);
+/// The top-left HUD's pearl counter ("+7291" with the flower, under the
+/// wave number) - shows the run's pearls on the end screen too.
+pub const PEARL_HUD: Rect = Rect::new(140, 90, 100, 30);
+/// Where the reward popup / end panel is: only here can a drop be.
+pub const REWARD_AREA: Rect = Rect::new(200, 100, 400, 400);
 
 /// Longest the End step waits for the Discord upload before going on.
 pub const WEBHOOK_WAIT_SECS: u64 = 15;
@@ -98,9 +103,31 @@ pub fn amount(drops: &[(String, u64)], name: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// The bottom-left HUD (Equipped Charm, settings cog): never a drop.
-fn in_hud(r: Rect) -> bool {
-    r.x < 220 && r.y > 470
+/// In the middle of the screen, where the reward popup shows.
+pub fn in_reward_area(r: Rect) -> bool {
+    let c = r.center();
+    REWARD_AREA.contains(c)
+}
+
+/// The pearls from OCR lines of the end panel: the "+7291" on the line
+/// with "+55 XP" (the one that isn't the XP). None = no such line.
+pub fn pearls_from_lines(lines: &[Vec<(String, Rect)>]) -> Option<u64> {
+    for l in lines {
+        let words: Vec<&str> = l.iter().map(|(w, _)| w.as_str()).collect();
+        let Some(xp) = words.iter().position(|w| w.to_uppercase().contains("XP")) else {
+            continue;
+        };
+        // a "+number" on that line that isn't the XP's own number
+        for (i, w) in words.iter().enumerate() {
+            if !w.starts_with('+') || i + 1 == xp || i == xp {
+                continue;
+            }
+            if let Some(n) = parse_amount(w) {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// A charm / portal on the reward screen by OCR: its line's text and the
@@ -113,8 +140,9 @@ pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
             .collect::<Vec<_>>()
             .join(" ");
         let low = text.to_lowercase();
-        // "Equipped Charm:" (bottom left, the charm you wear) isn't a drop
-        if low.contains("equip") || l.first().is_some_and(|(_, r)| in_hud(*r)) {
+        // only the reward popup in the middle: "Equipped Charm:" (bottom
+        // left, the charm you wear) and the minimap aren't drops
+        if low.contains("equip") || l.first().is_some_and(|(_, r)| !in_reward_area(*r)) {
             continue;
         }
         if !(low.contains("charm") || low.contains("portal")) {
@@ -364,6 +392,24 @@ mod tests {
     }
 
     #[test]
+    fn pearls_from_the_xp_line() {
+        let w = |t: &str, x: i32| (t.to_string(), Rect::new(x, 345, 40, 18));
+        let lines = vec![
+            vec![w("Total", 240), w("Time:", 290), w("33:12", 340)],
+            vec![w("+55", 230), w("XP", 270), w("+7291", 345)],
+        ];
+        assert_eq!(pearls_from_lines(&lines), Some(7291));
+        assert_eq!(
+            pearls_from_lines(&[vec![w("+55", 230), w("XP", 270)]]),
+            None
+        );
+        assert_eq!(
+            pearls_from_lines(&[vec![w("Wave", 200), w("+30", 260)]]),
+            None
+        );
+    }
+
+    #[test]
     fn amounts_read_cleanly() {
         assert_eq!(parse_amount("+7291"), Some(7291));
         assert_eq!(parse_amount("+ 7,291"), Some(7291));
@@ -400,6 +446,14 @@ mod tests {
             ("Charm:".to_string(), Rect::new(118, 520, 40, 12)),
         ];
         assert!(find_charm(&[equipped]).is_none());
+        // the minimap corner / anything outside the popup: never a drop
+        assert!(find_charm(&[vec![("Charm".to_string(), Rect::new(700, 520, 40, 12))]]).is_none());
+        assert!(find_charm(&[vec![("Portal".to_string(), Rect::new(20, 300, 40, 12))]]).is_none());
+        assert!(find_charm(&[vec![(
+            "Summer Charm".to_string(),
+            Rect::new(380, 300, 60, 12)
+        )]])
+        .is_some());
         assert!(find_charm(&[vec![(
             "Summer Charm".to_string(),
             Rect::new(85, 578, 60, 10)

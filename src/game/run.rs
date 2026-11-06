@@ -3086,14 +3086,15 @@ impl RunCtx {
         if !main.has_ocr() {
             return Ok(None);
         }
-        for _ in 0..4 {
+        // the panel slides / counts up: several looks over ~5 s
+        for attempt in 0..10 {
             if let Some(f) = main.frame() {
                 let icon = main
                     .has("pearl_icon")
                     .then(|| {
                         main.find(
                             &Self::names(&["pearl_icon"]),
-                            Some(crate::geom::Rect::new(250, 320, 310, 70)),
+                            Some(crate::geom::Rect::new(250, 315, 300, 80)),
                         )
                     })
                     .flatten()
@@ -3113,10 +3114,31 @@ impl RunCtx {
                     ));
                     return Ok(Some(n));
                 }
+                // the panel's "+55 XP  +7291" line, wherever it sits
+                if attempt >= 2 {
+                    let lines =
+                        crate::platform::urgent_ocr(|| main.ocr_lines(&f)).unwrap_or_default();
+                    if let Some(n) = loot::pearls_from_lines(&lines) {
+                        self.log(format!("pearls this run: {n} (the +XP line)"));
+                        return Ok(Some(n));
+                    }
+                }
+                // last: the top-left counter (it shows the run's pearls too)
+                if attempt >= 6 {
+                    let t = crate::platform::urgent_ocr(|| main.ocr_rect(&f, loot::PEARL_HUD));
+                    if let Some(n) = t
+                        .as_deref()
+                        .filter(|t| t.contains('+'))
+                        .and_then(loot::parse_amount)
+                    {
+                        self.log(format!("pearls this run: {n} (the top-left counter)"));
+                        return Ok(Some(n));
+                    }
+                }
             }
-            self.sleep(400)?;
+            self.sleep(500)?;
         }
-        self.log("WARN pearls not read on the end panel");
+        self.log("WARN pearls not read on the end panel (icon box, +XP line or top-left counter)");
         Ok(None)
     }
 
@@ -3158,6 +3180,8 @@ impl RunCtx {
         let charm: Option<(String, crate::geom::Rect)> = (!pics.is_empty())
             .then(|| main.find_wide(&pics))
             .flatten()
+            // only in the reward popup (not the Equipped Charm corner)
+            .filter(|p| loot::REWARD_AREA.contains(*p))
             .map(|p| {
                 (
                     "item".to_string(),

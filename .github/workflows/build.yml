@@ -14,6 +14,7 @@ jobs:
     env:
       AA_BUILD_SHA: ${{ github.sha }}
       AA_BUILD_NUM: ${{ github.run_number }}
+      AA_CHANNEL: ${{ github.ref == 'refs/heads/test-build' && 'test-build' || 'latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +35,7 @@ jobs:
           path: dist/
           if-no-files-found: error
       - name: Zip
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-build') && github.event_name != 'pull_request'
         shell: pwsh
         run: Compress-Archive -Path dist/* -DestinationPath aa-macro-windows.zip -Force
       - name: Publish "latest" release
@@ -46,4 +47,14 @@ jobs:
           body: "Built from ${{ github.sha }} (build ${{ github.run_number }}). Download aa-macro-windows.zip, unzip, double-click aa-macro.exe. Already installed? The app updates itself (Settings → Updates)." 
           prerelease: true
           make_latest: true
+          files: aa-macro-windows.zip
+      - name: Publish "test-build" release
+        if: github.ref == 'refs/heads/test-build' && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-build
+          name: Test build (big update)
+          body: "Built from ${{ github.sha }} (build ${{ github.run_number }}). TEST build: minimap navigation, Challenge every 30 min, dungeon skeleton. Updates itself from this test channel only - latest / parallel are untouched."
+          prerelease: true
+          make_latest: false
           files: aa-macro-windows.zip
