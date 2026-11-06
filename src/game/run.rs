@@ -999,9 +999,10 @@ impl RunCtx {
         self.click(h, Point::new(b.x + b.w / 2, b.y + b.h / 2), "weather card")?;
         // the pick counts once Vote (green, under the cards) is pressed:
         // your weather_vote picture, else the button by its colour
+        // a moment for the pick to register and Vote to show
+        self.sleep(500)?;
         let mut dl = self.control.deadline(self.secs(2.5));
         loop {
-            self.sleep(300)?;
             let at = scr
                 .has("weather_vote")
                 .then(|| scr.find_picture_wide(&Self::names(&["weather_vote"])))
@@ -1016,6 +1017,7 @@ impl RunCtx {
                 self.log("weather shift: no Vote button showed - the card click is all it got");
                 break;
             }
+            self.sleep(300)?;
         }
         Ok(())
     }
