@@ -2192,7 +2192,14 @@ impl RunCtx {
         let mut dl = self.control.deadline(self.secs(ms as f64 / 1000.0));
         let mut last: Option<u32> = None;
         let mut agreed: Option<u32> = None;
+        let mut gen = crate::input::generation(scr.hwnd());
         loop {
+            // input since the last read: earlier reads don't count any more
+            let now = crate::input::generation(scr.hwnd());
+            if now != gen {
+                gen = now;
+                last = None;
+            }
             let v = Self::read_level(scr);
             if v == Some(u32::MAX) {
                 return Ok(v);
@@ -2215,8 +2222,17 @@ impl RunCtx {
     }
 
     fn read_level(scr: &super::LiveScreen) -> Option<u32> {
-        // upgrade reads of different accounts may run at the same time
-        crate::platform::urgent_ocr(|| Self::read_level_now(scr))
+        // upgrade reads of different accounts may run at the same time.
+        // Input sent to this client while reading = the read may show the old
+        // panel: throw it away and read again (up to 3x)
+        for _ in 0..3 {
+            let started = crate::input::generation(scr.hwnd());
+            let v = crate::platform::urgent_ocr(|| Self::read_level_now(scr));
+            if crate::input::generation(scr.hwnd()) == started {
+                return v;
+            }
+        }
+        None
     }
 
     fn read_level_now(scr: &super::LiveScreen) -> Option<u32> {

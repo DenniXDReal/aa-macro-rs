@@ -323,6 +323,10 @@ impl LiveScreen {
         self.frame().and_then(|f| vote_yes(&f))
     }
 
+    pub fn hwnd(&self) -> Hwnd {
+        self.hwnd
+    }
+
     /// A captured pattern by name.
     pub fn pattern(&self, name: &str) -> Option<&Pattern> {
         self.pats.get(&key(name))
@@ -432,6 +436,8 @@ impl LiveScreen {
     /// OCR of the unit panel's level: Some(Ok(n)) = "UPG [n]",
     /// Some(Err(())) = MAX, None = couldn't read it.
     pub fn ocr_level(&self, frame: &crate::capture::Frame) -> Option<Result<u32, ()>> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         if let Some(l) = self
             .platform
             .ocr(frame, self.level_area())
@@ -464,6 +470,8 @@ impl LiveScreen {
     /// Where the unit panel's "UPG [n]" (or MAX) text is, read with OCR over
     /// the whole screen: the unit panel is open = a unit was just placed.
     pub fn find_upg(&self, frame: &crate::capture::Frame) -> Option<Point> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         // where it was last time on this client (read sharper, 4x), then the
         // usual unit panel spot, then the whole screen (2x)
         static LAST: std::sync::Mutex<Vec<(Hwnd, Rect)>> = std::sync::Mutex::new(Vec::new());
@@ -493,6 +501,8 @@ impl LiveScreen {
     /// Card pick screen by OCR: Some(weather) when "Choose a card" is on
     /// screen (weather "" when it isn't readable).
     pub fn ocr_card_screen(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let text = self.platform.ocr(frame, all)?;
         card_screen_text(&text)
@@ -500,22 +510,30 @@ impl LiveScreen {
 
     /// The stage title bar at the top middle (map + mode name).
     pub fn ocr_title(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         self.platform.ocr(frame, Rect::new(150, 0, 500, 48))
     }
 
     /// OCR of one area of a picture.
     pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         self.platform.ocr(frame, area)
     }
 
     /// OCR of the whole screen with word boxes (None without OCR).
     pub fn ocr_lines(&self, frame: &crate::capture::Frame) -> Option<Vec<Vec<(String, Rect)>>> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         self.platform.ocr_lines(frame, all)
     }
 
     /// The whole screen's text, quick (2x read), one line per line.
     pub fn ocr_text_fast(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let Some(lines) = self.ocr_lines(frame) else {
             return self.ocr_all(frame);
         };
@@ -535,6 +553,8 @@ impl LiveScreen {
 
     /// The screen's text, one string per line.
     pub fn ocr_text_lines(&self, frame: &crate::capture::Frame) -> Vec<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         if let Some(l) = self.ocr_lines(frame) {
             return l
                 .iter()
@@ -553,6 +573,8 @@ impl LiveScreen {
 
     /// The hotbar counter of the selected unit ("1/3"), read with OCR.
     pub fn ocr_counter(&self, frame: &crate::capture::Frame) -> Option<(u32, u32)> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let area = hotbar::counter_area(frame.width as i32, frame.height as i32);
         let t = self.platform.ocr(frame, area)?;
         hotbar::parse_count(&t)
@@ -560,12 +582,16 @@ impl LiveScreen {
 
     /// Everything readable on the screen (Windows OCR).
     pub fn ocr_all(&self, frame: &crate::capture::Frame) -> Option<String> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         self.platform.ocr(frame, all)
     }
 
     /// VICTORY (true) / DEFEAT (false) read with OCR from the upper middle.
     pub fn ocr_end(&self, frame: &crate::capture::Frame) -> Option<bool> {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         // the upper 60% of the screen (the title sits in different places on
         // the VICTORY and DEFEAT screens)
         let area = Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5);
@@ -575,6 +601,8 @@ impl LiveScreen {
 
     /// One OCR read of the whole screen: (card screen weather, weather shift).
     pub fn ocr_events(&self, frame: &crate::capture::Frame) -> (Option<String>, Option<String>) {
+        let fresh = self.fresh(frame);
+        let frame: &crate::capture::Frame = &fresh;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         match self.platform.ocr(frame, all) {
             Some(t) => (card_screen_text(&t), weather_shift_text(&t)),
@@ -592,7 +620,56 @@ impl LiveScreen {
 
     /// The client's picture right now.
     pub fn frame(&self) -> Option<crate::capture::Frame> {
-        self.platform.capture_client(self.hwnd).ok()
+        let f = self.platform.capture_client(self.hwnd).ok()?;
+        // frozen / minimized window: input landed since the last picture but
+        // the picture didn't change at all (the game world always moves) -
+        // look once more, and if it's still identical don't trust it
+        let gen = crate::input::generation(self.hwnd);
+        let hash = f.quick_hash();
+        let same_after_input = {
+            let mut m = LAST_SHOT.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = m
+                .iter()
+                .find(|(h, ..)| *h == self.hwnd)
+                .map(|(_, ph, pg)| (*ph, *pg));
+            m.retain(|(h, ..)| *h != self.hwnd);
+            m.push((self.hwnd, hash, gen));
+            prev.is_some_and(|(ph, pg)| ph == hash && pg < gen)
+        };
+        if same_after_input {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let g = self.platform.capture_client(self.hwnd).ok()?;
+            if g.quick_hash() == hash {
+                trace::log(&format!(
+                    "stale picture: client window {:?} didn't change after input (frozen / minimized?)",
+                    self.hwnd
+                ));
+                return None;
+            }
+            return Some(g);
+        }
+        Some(f)
+    }
+
+    /// `f`, or a fresh picture when `f` is too old for this read (urgent
+    /// reads: 250 ms, background: 1 s).
+    pub fn fresh<'a>(
+        &self,
+        f: &'a crate::capture::Frame,
+    ) -> std::borrow::Cow<'a, crate::capture::Frame> {
+        let urgent = crate::platform::OCR_IS_URGENT.with(|c| c.get());
+        let max = if urgent {
+            MAX_AGE_URGENT
+        } else {
+            MAX_AGE_BACKGROUND
+        };
+        if f.age() <= max {
+            return std::borrow::Cow::Borrowed(f);
+        }
+        match self.platform.capture_client(self.hwnd).ok() {
+            Some(n) if n.width == f.width && n.height == f.height => std::borrow::Cow::Owned(n),
+            _ => std::borrow::Cow::Borrowed(f),
+        }
     }
 
     /// Captured pattern names (normalised) starting with `prefix`.
@@ -682,6 +759,14 @@ impl RouteEnv for LiveScreen {
         buttonmem::get(&key(pattern))
     }
 }
+
+/// Oldest picture an urgent read (placement check, upgrade level) may use.
+pub const MAX_AGE_URGENT: std::time::Duration = std::time::Duration::from_millis(250);
+/// Oldest picture a background read (cards, end screen, events) may use.
+pub const MAX_AGE_BACKGROUND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Last picture per client: (window, quick hash, input generation then).
+static LAST_SHOT: std::sync::Mutex<Vec<(Hwnd, u64, u64)>> = std::sync::Mutex::new(Vec::new());
 
 /// (client, names, missing since) for the OCR backup's patience.
 static MISSING: std::sync::Mutex<Vec<(Hwnd, String, std::time::Instant)>> =

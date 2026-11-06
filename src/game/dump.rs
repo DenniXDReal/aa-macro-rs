@@ -83,6 +83,10 @@ pub fn dump_in(root: &Path, step: &str, reason: &str, clients: Vec<ClientShot>) 
         "step_params": now.as_ref().map(|s| s.params.clone()),
         "step_now": now.as_ref().map(|s| s.name.clone()),
         "elapsed_in_step_ms": now.as_ref().map(|s| s.since.elapsed().as_millis() as u64),
+        "generation": crate::input::generation_all()
+            .iter()
+            .map(|(h, g)| serde_json::json!([format!("{h:?}"), g]))
+            .collect::<Vec<_>>(),
         "time": chrono::Local::now().to_rfc3339(),
         "repeat_count": 1,
     });
