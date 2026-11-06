@@ -31,6 +31,12 @@ mod level_tests {
         assert_eq!(parse_level("upg [O]"), Some(Ok(0)));
         assert_eq!(parse_level("UPG 13]"), Some(Ok(3)));
         assert_eq!(parse_level("UPG [10]"), Some(Ok(10)));
+        // closing bracket read as 1 (your log: "upgraded to 71")
+        assert_eq!(parse_level("UPG [71"), Some(Ok(7)));
+        assert_eq!(parse_level("UPG [7l"), Some(Ok(7)));
+        assert_eq!(parse_level("UPG [7|"), Some(Ok(7)));
+        assert_eq!(parse_level("UPG [11]"), Some(Ok(11)));
+        assert_eq!(parse_level("UPG [21]"), Some(Ok(21)));
         assert_eq!(parse_level("UPG 5"), Some(Ok(5)));
         assert_eq!(parse_level("MAX"), Some(Err(())));
         assert_eq!(parse_level("UPG [MAX]"), Some(Err(())));
@@ -175,7 +181,21 @@ pub fn parse_level(text: &str) -> Option<Result<u32, ()>> {
         d.parse().ok()
     };
     if let Some(i) = after.find('[') {
-        return num(&after[i + 1..]).map(Ok);
+        let inside = &after[i + 1..];
+        let n = num(inside)?;
+        // "[7]" read as "[71" / "[7l": the closing bracket came out as a 1
+        // (your log: "upgraded to 71"). No ']' after the digits and a
+        // trailing 1-like mark = the bracket.
+        let digits = n.to_string();
+        let raw_after = text.to_uppercase();
+        let closing = raw_after
+            .rfind('[')
+            .map(|j| raw_after[j..].contains(']'))
+            .unwrap_or(false);
+        if !closing && digits.len() >= 2 && digits.ends_with('1') {
+            return digits[..digits.len() - 1].parse().ok().map(Ok);
+        }
+        return Some(Ok(n));
     }
     let n = num(after)?;
     // "[3]" read as "13]": no '[' but a ']' - the leading 1 was the bracket

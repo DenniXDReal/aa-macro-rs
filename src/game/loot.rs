@@ -98,6 +98,11 @@ pub fn amount(drops: &[(String, u64)], name: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The bottom-left HUD (Equipped Charm, settings cog): never a drop.
+fn in_hud(r: Rect) -> bool {
+    r.x < 220 && r.y > 470
+}
+
 /// A charm / portal on the reward screen by OCR: its line's text and the
 /// box around that line (frame coordinates).
 pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
@@ -108,6 +113,10 @@ pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
             .collect::<Vec<_>>()
             .join(" ");
         let low = text.to_lowercase();
+        // "Equipped Charm:" (bottom left, the charm you wear) isn't a drop
+        if low.contains("equip") || l.first().is_some_and(|(_, r)| in_hud(*r)) {
+            continue;
+        }
         if !(low.contains("charm") || low.contains("portal")) {
             continue;
         }
@@ -384,6 +393,17 @@ mod tests {
         assert_eq!(t, "Lucky Charm");
         assert_eq!((r.x, r.w), (300, 85));
         assert!(find_charm(&[line(&[("Gems", 1), ("x50", 50)])]).is_none());
+        // your run: "Equipped Charm:" (the one you wear) was taken for a drop
+        let equipped = vec![
+            ("Equipped".to_string(), Rect::new(65, 520, 50, 12)),
+            ("Charm:".to_string(), Rect::new(118, 520, 40, 12)),
+        ];
+        assert!(find_charm(&[equipped]).is_none());
+        assert!(find_charm(&[vec![(
+            "Summer Charm".to_string(),
+            Rect::new(85, 578, 60, 10)
+        )]])
+        .is_none());
         let c = crop_around(r, 800, 599).unwrap();
         assert!(c.contains(click_point(r)));
         // near the edge: clamped, still there
