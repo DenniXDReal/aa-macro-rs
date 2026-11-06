@@ -379,7 +379,12 @@ pub fn dungeon<'a>() -> Simple<'a> {
     Simple::new(
         Step::Dungeon,
         |c| {
-            let won = c.run.dungeon_floor()?;
+            let (map, last) = {
+                let r = c.round();
+                (r.map.clone(), r.last)
+            };
+            // every account on its own (no party in dungeons)
+            let won = c.run.dungeon_all(&map, last)?;
             c.round().won = Some(won);
             Ok(())
         },

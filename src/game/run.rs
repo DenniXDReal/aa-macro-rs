@@ -3514,9 +3514,11 @@ impl RunCtx {
             // Challenge runs from the next :00 / :30 on
             super::challenge::reset();
             let r = (|| -> R<()> {
+                // dungeons are solo: no party (each account runs its own)
                 if self.settings.run.own_team
                     && self.settings.run.party_invite
                     && self.clients.len() > 1
+                    && self.settings.run.mode != Mode::Dungeon
                 {
                     self.party_up()?;
                 }
@@ -3768,6 +3770,62 @@ impl RunCtx {
         }
     }
 
+    /// Dungeon on every account at once, each on its own (dungeons can't be
+    /// played as a party - no syncing them): one thread per account runs
+    /// its own floor; an alt's end screen (Next / Replay or Return, Win /
+    /// Loss, loot report) is handled on that alt. Ok(won) of the main - its
+    /// end screen is the End step's.
+    pub(crate) fn dungeon_all(&self, map: &str, last: bool) -> R<bool> {
+        let hs: Vec<Hwnd> = self.clients.iter().map(|c| c.0).collect();
+        if hs.len() <= 1 {
+            return self.dungeon_floor();
+        }
+        self.log(format!(
+            "dungeon: {} accounts, each on its own (no party)",
+            hs.len()
+        ));
+        let results: Vec<(Hwnd, R<bool>)> = std::thread::scope(|sc| {
+            let jobs: Vec<_> = hs
+                .iter()
+                .map(|h| {
+                    let h = *h;
+                    sc.spawn(move || {
+                        let mut c = self.clone();
+                        c.main = h;
+                        let r = c.dungeon_floor().and_then(|won| {
+                            if h != self.main {
+                                c.end_round(won, map, last, &EndOnce::default())?;
+                            }
+                            Ok(won)
+                        });
+                        (h, r)
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|j| {
+                    j.join()
+                        .unwrap_or((Hwnd(0), Err("dungeon thread panicked".into())))
+                })
+                .collect()
+        });
+        let mut main_won = None;
+        for (h, r) in results {
+            let n = self.clients.iter().position(|c| c.0 == h).unwrap_or(0) + 1;
+            match r {
+                Ok(won) if h == self.main => main_won = Some(won),
+                Ok(won) => self.log(format!(
+                    "dungeon: client {n} {}",
+                    if won { "won" } else { "lost" }
+                )),
+                Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
+                Err(e) if h == self.main => return Err(e),
+                Err(e) => self.log(format!("WARN dungeon: client {n} - {e}")),
+            }
+        }
+        main_won.ok_or_else(|| "dungeon: the main account didn't finish".into())
+    }
+
     /// Dungeon floor (skeleton): until the end screen, every few seconds -
     /// shop open: buy from your list; shrine: switch it per your rules;
     /// doors (your door_* pictures): take the one highest on your room
@@ -3952,7 +4010,11 @@ impl RunCtx {
             }
         }
         self.watch.clear();
-        if self.settings.run.own_team && self.settings.run.party_invite && self.clients.len() > 1 {
+        if self.settings.run.own_team
+            && self.settings.run.party_invite
+            && self.clients.len() > 1
+            && self.settings.run.mode != Mode::Dungeon
+        {
             self.party_up()?;
         }
         let _ = self.tx.send(Event::Reconnect(
