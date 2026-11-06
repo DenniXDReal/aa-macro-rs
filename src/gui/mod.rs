@@ -161,8 +161,10 @@ pub struct App {
 
     // docking
     dock_rect: Option<egui::Rect>,
-    /// Command Center dashboard (cards, multi-client dock, log bus).
+    /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
+    /// Another copy of the macro was already running at launch.
+    other_instance: bool,
     own_hwnd: Option<crate::geom::Hwnd>,
     last_dock: Instant,
     docked_ok: bool,
@@ -320,6 +322,7 @@ impl App {
             ram_tx,
             dock_rect: None,
             dash: command::Dash::default(),
+            other_instance: false,
             own_hwnd: None,
             last_dock: Instant::now() - Duration::from_secs(10),
             docked_ok: false,
@@ -386,6 +389,11 @@ impl App {
             Ok("logs") => Page::Logs,
             _ => Page::Dashboard,
         };
+        app.other_instance = app.platform.another_instance();
+        if app.other_instance {
+            app.say("WARN another copy of the macro is already running - close it (Task Manager) or both will drive Roblox");
+        }
+        app.say("Ready - nothing runs until you press START ALL (F2)");
         if app.settings.auto_update_check && app.secrets.has(update::TOKEN_KEY) {
             app.check_update();
         }
@@ -4098,6 +4106,21 @@ impl eframe::App for App {
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12))
             .show(ui, |ui| {
+                if self.other_instance {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(70, 22, 30))
+                        .stroke(Stroke::new(1.0, BAD))
+                        .corner_radius(10)
+                        .inner_margin(10)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                RichText::new("Another copy of the macro is already running. It can click and place on its own - close it in Task Manager, then restart this one.")
+                                    .color(TEXT),
+                            );
+                        });
+                    ui.add_space(6.0);
+                }
                 self.admin_banner(ui);
                 self.update_banner(ui);
                 egui::ScrollArea::vertical()

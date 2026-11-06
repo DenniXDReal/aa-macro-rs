@@ -583,7 +583,9 @@ mod tests {
     fn sky_island_route_is_built_in() {
         let dir = std::env::temp_dir().join("aa-no-user-routes");
         let routes = Routes::load(&dir);
-        let r = routes.find_map("sky island").expect("Sky Island route baked in");
+        let r = routes
+            .find_map("sky island")
+            .expect("Sky Island route baked in");
         let a = r.to_actions(&FakeEnv(vec![]), &Vars::default()).unwrap();
         let (w, ak) = (Key::parse("w").unwrap(), Key::parse("a").unwrap());
         assert_eq!(

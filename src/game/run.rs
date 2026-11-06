@@ -2076,6 +2076,7 @@ impl RunCtx {
                 let mut open = false;
                 for attempt in 0..=PANEL_RETRIES {
                     self.check()?;
+                    crate::status::attempt(*h, attempt + 1, PANEL_RETRIES + 1);
                     if attempt > 0 {
                         self.log(format!(
                             "slot {slot} at {},{}: panel didn't open, clicking unit again ({attempt}/{PANEL_RETRIES})",
@@ -2089,6 +2090,7 @@ impl RunCtx {
                     self.sleep(s.upgrade_read_ms / 2)?;
                     if self.panel_open(scr, s.upgrade_read_ms + 700)? {
                         open = true;
+                        crate::status::clear_attempt(*h);
                         break;
                     }
                 }

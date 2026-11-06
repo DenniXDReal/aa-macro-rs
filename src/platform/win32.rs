@@ -525,6 +525,25 @@ impl Platform for Win32Platform {
         Ok(())
     }
 
+    fn another_instance(&self) -> bool {
+        use windows::core::w;
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        static OTHER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OTHER.get_or_init(|| unsafe {
+            // one name for every channel (latest + parallel): both would
+            // drive the same Roblox windows. Kept open until the app exits.
+            match CreateMutexW(None, false, w!("Local\\AAMacroByDenniXD")) {
+                Ok(h) => {
+                    let other = GetLastError() == ERROR_ALREADY_EXISTS;
+                    std::mem::forget(h);
+                    other
+                }
+                Err(_) => false,
+            }
+        })
+    }
+
     fn set_borderless(&self, hwnd: Hwnd, on: bool) -> Result<()> {
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE,
