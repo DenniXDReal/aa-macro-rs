@@ -806,6 +806,8 @@ impl App {
                 ping,
                 fields: vec![],
                 here,
+                extra: vec![],
+                thumbnail: None,
             },
         );
     }
@@ -3928,6 +3930,8 @@ impl App {
                         ping: true,
                         fields: vec![],
                         here: false,
+                        extra: vec![],
+                        thumbnail: None,
                     };
                     let _ = tx.send(match webhook::send(&url, &ping, &m) {
                         Ok(()) => "webhook test sent - check Discord".into(),

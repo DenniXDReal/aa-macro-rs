@@ -165,6 +165,13 @@ pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
 
 /// Picture area for a dropped item whose label / icon is at `at`: the icon
 /// sits above its name, so mostly upwards. Clamped to the frame.
+/// The middle of the end screen: the VICTORY / DEFEAT title, the pearls and
+/// the rewards (not the HUD / chat around them).
+pub fn end_shot_rect(w: u32, h: u32) -> Rect {
+    let (w, h) = (w as i32, h as i32);
+    Rect::new(w * 15 / 100, h * 5 / 100, w * 70 / 100, h * 80 / 100)
+}
+
 pub fn crop_around(at: Rect, w: u32, h: u32) -> Option<Rect> {
     let c = at.center();
     Rect::new(c.x - 110, c.y - 150, 220, 200).intersect(&Rect::new(0, 0, w as i32, h as i32))
@@ -243,6 +250,8 @@ pub fn message(
         ping,
         fields,
         here: false,
+        extra: vec![],
+        thumbnail: None,
     }
 }
 
@@ -537,5 +546,13 @@ mod tests {
         assert_eq!(h.last().unwrap().run, 99_999);
         assert_eq!(thousands(1_250), "1,250");
         assert_eq!(thousands(999), "999");
+    }
+
+    #[test]
+    fn end_shot_is_the_middle() {
+        let r = end_shot_rect(800, 600);
+        assert_eq!((r.x, r.y, r.w, r.h), (120, 30, 560, 480));
+        assert!(r.x + r.w <= 800 && r.y + r.h <= 600);
+        assert!(r.contains(REWARD_AREA.center()));
     }
 }

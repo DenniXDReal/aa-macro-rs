@@ -68,6 +68,10 @@ pub struct Message {
     pub fields: Vec<(String, String, bool)>,
     /// Ping @here (everyone online in the channel) as well.
     pub here: bool,
+    /// More pictures (file name, picture), after `screenshot`.
+    pub extra: Vec<(String, Frame)>,
+    /// One of `extra`'s file names shown as the embed's thumbnail.
+    pub thumbnail: Option<String>,
 }
 
 /// `https://discord.com/api/webhooks/<id>/<token>` (also ptb./canary., discordapp.com).
@@ -96,6 +100,16 @@ pub fn valid_url(url: &str) -> bool {
 
 /// JSON payload for Discord (embed + optional mention + attachment ref).
 pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Value {
+    payload_with(m, ping_user, has_image, &[])
+}
+
+/// `payload`, with `extra` file names uploaded after screenshot.png.
+pub fn payload_with(
+    m: &Message,
+    ping_user: &str,
+    has_image: bool,
+    extra: &[String],
+) -> serde_json::Value {
     let mention = if m.ping
         && !ping_user.trim().is_empty()
         && ping_user.trim().chars().all(|c| c.is_ascii_digit())
@@ -112,6 +126,9 @@ pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Val
     });
     if has_image {
         embed["image"] = serde_json::json!({"url": "attachment://screenshot.png"});
+    }
+    if let Some(t) = m.thumbnail.as_ref().filter(|t| extra.contains(t)) {
+        embed["thumbnail"] = serde_json::json!({"url": format!("attachment://{t}")});
     }
     if !m.fields.is_empty() {
         embed["fields"] = m
@@ -134,9 +151,16 @@ pub fn payload(m: &Message, ping_user: &str, has_image: bool) -> serde_json::Val
             "parse": if m.here { vec!["everyone"] } else { vec![] },
         },
     });
+    // tell Discord which uploaded file the embed's attachment:// means
+    let mut files: Vec<serde_json::Value> = vec![];
     if has_image {
-        // tell Discord which uploaded file the embed's attachment:// means
-        p["attachments"] = serde_json::json!([{"id": 0, "filename": "screenshot.png"}]);
+        files.push(serde_json::json!({"id": 0, "filename": "screenshot.png"}));
+    }
+    for (i, n) in extra.iter().enumerate() {
+        files.push(serde_json::json!({"id": i + has_image as usize, "filename": n}));
+    }
+    if !files.is_empty() {
+        p["attachments"] = serde_json::Value::Array(files);
     }
     p
 }
@@ -165,7 +189,15 @@ pub fn send(url: &str, ping_user: &str, m: &Message) -> Result<()> {
         bail!("that isn't a Discord webhook URL (https://discord.com/api/webhooks/...)");
     }
     let image = m.screenshot.as_ref().map(png).transpose()?;
-    let body = payload(m, ping_user, image.is_some()).to_string();
+    let mut files: Vec<(String, Vec<u8>)> = vec![];
+    if let Some(img) = image {
+        files.push(("screenshot.png".into(), img));
+    }
+    let extra_names: Vec<String> = m.extra.iter().map(|(n, _)| n.clone()).collect();
+    for (n, f) in &m.extra {
+        files.push((n.clone(), png(f)?));
+    }
+    let body = payload_with(m, ping_user, m.screenshot.is_some(), &extra_names).to_string();
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
@@ -176,21 +208,21 @@ pub fn send(url: &str, ping_user: &str, m: &Message) -> Result<()> {
         )
         .build()
         .new_agent();
-    let resp = match image {
-        None => agent.post(url.trim()).header("Content-Type", "application/json").send(body.as_bytes()),
-        Some(img) => {
-            let boundary = "----aamacro7d3f1c";
-            let mut data = Vec::new();
-            data.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{body}\r\n").as_bytes(),
-            );
-            data.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"screenshot.png\"\r\nContent-Type: image/png\r\n\r\n").as_bytes(),
-            );
-            data.extend_from_slice(&img);
-            data.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-            agent.post(url.trim()).header("Content-Type", &format!("multipart/form-data; boundary={boundary}")).send(&data[..])
-        }
+    let resp = if files.is_empty() {
+        agent
+            .post(url.trim())
+            .header("Content-Type", "application/json")
+            .send(body.as_bytes())
+    } else {
+        let boundary = "----aamacro7d3f1c";
+        let data = multipart(boundary, &body, &files);
+        agent
+            .post(url.trim())
+            .header(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&data[..])
     }
     .map_err(|e| anyhow!("Discord unreachable: {e}"))?;
     let code = resp.status().as_u16();
@@ -203,14 +235,32 @@ pub fn send(url: &str, ping_user: &str, m: &Message) -> Result<()> {
     Ok(())
 }
 
+/// multipart/form-data: payload_json, then files[0], files[1], ...
+pub fn multipart(boundary: &str, body: &str, files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n{body}\r\n").as_bytes(),
+    );
+    for (i, (name, bytes)) in files.iter().enumerate() {
+        data.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files[{i}]\"; filename=\"{name}\"\r\nContent-Type: image/png\r\n\r\n").as_bytes(),
+        );
+        data.extend_from_slice(bytes);
+        data.extend_from_slice(b"\r\n");
+    }
+    data.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    data
+}
+
 /// `send`, and when that fails with a picture: once more without it.
 /// Ok(note) = sent (note says the picture was dropped).
 pub fn send_with_fallback(url: &str, ping_user: &str, m: &mut Message) -> Result<Option<String>> {
     let res = send(url, ping_user, m);
     match res {
         Ok(()) => Ok(None),
-        Err(e) if m.screenshot.is_some() => {
+        Err(e) if m.screenshot.is_some() || !m.extra.is_empty() => {
             m.screenshot = None;
+            m.extra.clear();
             send(url, ping_user, m)?;
             Ok(Some(format!("sent without the picture ({e})")))
         }
@@ -310,6 +360,42 @@ mod tests {
     }
 
     #[test]
+    fn several_pictures_in_one_post() {
+        let m = Message {
+            kind: Kind::Win,
+            title: "Run #1 Complete - Victory".into(),
+            body: String::new(),
+            screenshot: None,
+            ping: false,
+            fields: vec![],
+            here: false,
+            extra: vec![],
+            thumbnail: Some("charm.png".into()),
+        };
+        let p = payload_with(&m, "", true, &["charm.png".to_string()]);
+        assert_eq!(
+            p["embeds"][0]["image"]["url"],
+            "attachment://screenshot.png"
+        );
+        assert_eq!(p["embeds"][0]["thumbnail"]["url"], "attachment://charm.png");
+        assert_eq!(p["attachments"][0]["filename"], "screenshot.png");
+        assert_eq!(p["attachments"][1]["id"], 1);
+        assert_eq!(p["attachments"][1]["filename"], "charm.png");
+        let data = multipart(
+            "B",
+            "{}",
+            &[
+                ("screenshot.png".into(), vec![1, 2]),
+                ("charm.png".into(), vec![3]),
+            ],
+        );
+        let t = String::from_utf8_lossy(&data);
+        assert!(t.contains("name=\"files[0]\"; filename=\"screenshot.png\""));
+        assert!(t.contains("name=\"files[1]\"; filename=\"charm.png\""));
+        assert!(t.ends_with("--B--\r\n"));
+    }
+
+    #[test]
     fn payload_mentions_only_digits() {
         let m = Message {
             kind: Kind::Win,
@@ -319,6 +405,8 @@ mod tests {
             ping: true,
             fields: vec![("Pearls".into(), "15".into(), true)],
             here: false,
+            extra: vec![],
+            thumbnail: None,
         };
         let p = payload(&m, "123456789", true);
         assert_eq!(p["content"], "<@123456789>");

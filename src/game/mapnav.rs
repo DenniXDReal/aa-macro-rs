@@ -52,8 +52,11 @@ pub struct MapData {
     pub spawn: Option<[i32; 2]>,
     /// The enemies' path, spawn first, every few px.
     pub path: Vec<[i32; 2]>,
-    /// Where to walk, in order (empty = no minimap walk here).
+    /// Where to walk, in order. Empty = along the enemy path from the base
+    /// towards the spawn, `walk_pct` of the way (the front line).
     pub walk: Vec<[i32; 2]>,
+    /// This map's share of the path to walk, % (None = Settings' value).
+    pub walk_pct: Option<u8>,
     /// Camera settings the file was made with (free-form, for reference).
     pub camera: Option<serde_json::Value>,
     pub notes: String,
@@ -131,9 +134,69 @@ pub fn from_minimap(map: &str, m: &Frame) -> MapData {
         spawn: r.spawn.map(|p| [p.0, p.1]),
         path: r.path.iter().map(|p| [p.0, p.1]).collect(),
         walk: vec![],
+        walk_pct: None,
         camera: None,
         notes: String::new(),
     }
+}
+
+/// Where to walk on this map: your walk points if it has any, else the
+/// enemy path from the base end towards the spawn, stopping `pct` % of the
+/// way along it (this map's own % if set). Empty = nothing to walk.
+pub fn walk_points(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
+    if !d.walk.is_empty() {
+        return d.walk.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+    }
+    if d.path.len() < 2 {
+        return vec![];
+    }
+    let pct = d.walk_pct.unwrap_or(default_pct).clamp(1, 100) as f32 / 100.0;
+    // stored spawn -> base: walk it base -> spawn
+    let pts: Vec<(f32, f32)> = d
+        .path
+        .iter()
+        .rev()
+        .map(|p| (p[0] as f32, p[1] as f32))
+        .collect();
+    let total: f32 = pts
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    let stop = total * pct;
+    let mut out = vec![pts[0]];
+    let mut done = 0.0;
+    for w in pts.windows(2) {
+        let seg = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if done + seg >= stop {
+            // the exact stop point on this stretch
+            let t = if seg > 0.0 { (stop - done) / seg } else { 0.0 };
+            out.push((
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            ));
+            return out;
+        }
+        done += seg;
+        out.push(w[1]);
+    }
+    out
+}
+
+/// `points` from the one nearest `me` on (no walking back to the start).
+pub fn from_nearest(points: &[(f32, f32)], me: (f32, f32)) -> Vec<(f32, f32)> {
+    let Some(i) = points
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let da = (a.1 .0 - me.0).hypot(a.1 .1 - me.1);
+            let db = (b.1 .0 - me.0).hypot(b.1 .1 - me.1);
+            da.total_cmp(&db)
+        })
+        .map(|(i, _)| i)
+    else {
+        return vec![];
+    };
+    points[i..].to_vec()
 }
 
 /// Make a map file for every saved minimap picture (maps/minimap/*.png)
@@ -622,6 +685,37 @@ mod tests {
         let t = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<MapData>(&t).unwrap(), d);
         assert_eq!(key("Navy Bay (Summer)"), key("navy_bay"));
+    }
+
+    #[test]
+    fn walks_part_of_the_path() {
+        // a straight path, stored spawn (100,10) -> base (0,10): 100 px
+        let d = MapData {
+            path: (0..=10).rev().map(|i| [i * 10, 10]).collect(),
+            ..Default::default()
+        };
+        let half = walk_points(&d, 50);
+        assert_eq!(half.first(), Some(&(0.0, 10.0)), "starts at the base end");
+        assert_eq!(half.last(), Some(&(50.0, 10.0)), "stops half way");
+        let d35 = MapData {
+            walk_pct: Some(35),
+            ..d.clone()
+        };
+        assert_eq!(
+            walk_points(&d35, 50).last(),
+            Some(&(35.0, 10.0)),
+            "this map's own %"
+        );
+        // your own points win
+        let mine = MapData {
+            walk: vec![[5, 5], [20, 30]],
+            ..d.clone()
+        };
+        assert_eq!(walk_points(&mine, 50), vec![(5.0, 5.0), (20.0, 30.0)]);
+        assert!(walk_points(&MapData::default(), 50).is_empty());
+        // standing at 22,10: no going back to the base first
+        let rest = from_nearest(&half, (22.0, 10.0));
+        assert_eq!(rest.first(), Some(&(20.0, 10.0)));
     }
 
     #[test]

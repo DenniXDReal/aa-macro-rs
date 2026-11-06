@@ -45,6 +45,18 @@ impl App {
                 ui.checkbox(&mut self.settings.minimap_nav, "walk by the minimap when a map has no route")
                     .changed()
                     .then(|| self.dirty());
+                ui.label("Max path distance");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut self.settings.minimap_walk_pct)
+                            .range(5..=100)
+                            .suffix(" %"),
+                    )
+                    .on_hover_text("maps without your own walk points walk the enemy path from the base end, this far towards the spawn (the front line), then place")
+                    .changed()
+                {
+                    self.dirty();
+                }
             });
             ui.label(
                 RichText::new("A map without a recorded route walks to its map file's points by the minimap: W tells which way is which, the arrow is re-read every 200 ms and steered; stuck for 600 ms = back up and strafe. Pick a map, click the points to walk to in order.")
@@ -65,13 +77,25 @@ impl App {
                         .show(ui, |ui| {
                             for d in all.values() {
                                 let sel = self.maps_ui.sel == d.map;
-                                let txt = format!(
-                                    "{}  ·  {} walk pt{}",
-                                    d.map,
-                                    d.walk.len(),
-                                    if d.walk.len() == 1 { "" } else { "s" }
-                                );
-                                let col = if d.walk.is_empty() { MUTED } else { GOOD };
+                                let txt = if d.walk.is_empty() {
+                                    format!(
+                                        "{}  ·  path {}%",
+                                        d.map,
+                                        d.walk_pct.unwrap_or(self.settings.minimap_walk_pct)
+                                    )
+                                } else {
+                                    format!(
+                                        "{}  ·  {} walk pt{}",
+                                        d.map,
+                                        d.walk.len(),
+                                        if d.walk.len() == 1 { "" } else { "s" }
+                                    )
+                                };
+                                let col = if d.walk.is_empty() && d.path.len() < 2 {
+                                    MUTED
+                                } else {
+                                    GOOD
+                                };
                                 if ui
                                     .selectable_label(sel, RichText::new(txt).color(col))
                                     .clicked()
@@ -150,6 +174,24 @@ impl App {
         if let Some(s) = d.spawn {
             p.circle_stroke(at(s), 7.0, Stroke::new(2.0, BAD));
         }
+        // no points of yours: the part of the path it walks (dotted)
+        if d.walk.is_empty() {
+            let auto = mapnav::walk_points(&d, self.settings.minimap_walk_pct);
+            for q in &auto {
+                p.circle_filled(
+                    at([q.0 as i32, q.1 as i32]),
+                    2.5,
+                    Color32::from_rgb(190, 150, 255),
+                );
+            }
+            if let Some(end) = auto.last() {
+                p.circle_stroke(
+                    at([end.0 as i32, end.1 as i32]),
+                    8.0,
+                    Stroke::new(2.0, PURPLE),
+                );
+            }
+        }
         // the walk, numbered
         for (i, w) in d.walk.iter().enumerate() {
             if i > 0 {
@@ -172,6 +214,27 @@ impl App {
             }
         }
         ui.horizontal(|ui| {
+            let mut own = d.walk_pct.is_some();
+            if ui
+                .checkbox(&mut own, "own path %")
+                .on_hover_text(
+                    "this map walks a different share of the path than the setting (e.g. 35%)",
+                )
+                .changed()
+            {
+                d.walk_pct = own.then_some(self.settings.minimap_walk_pct);
+                self.maps_ui.dirty = true;
+            }
+            if let Some(pct) = d.walk_pct.as_mut() {
+                if ui
+                    .add(egui::DragValue::new(pct).range(5..=100).suffix(" %"))
+                    .changed()
+                {
+                    self.maps_ui.dirty = true;
+                }
+            }
+        });
+        ui.horizontal(|ui| {
             ui.label(RichText::new(&d.map).strong());
             if ui.button("Undo point").clicked() {
                 d.walk.pop();
@@ -193,7 +256,7 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("click = add a point (walked in order) · white ring = base · red ring = enemy spawn · green = enemy path")
+            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · purple ring = where it stops")
                 .size(11.0)
                 .color(MUTED),
         );

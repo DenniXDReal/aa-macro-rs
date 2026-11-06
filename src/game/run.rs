@@ -296,6 +296,8 @@ pub(crate) struct EndOnce {
     pub rewarded: std::sync::atomic::AtomicBool,
     /// End-screen drops + pearls, as first read.
     pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
+    /// The VICTORY / DEFEAT panel (centre of the screen), for Discord.
+    pub shot: std::sync::Mutex<Option<crate::capture::Frame>>,
 }
 
 impl RunCtx {
@@ -1591,14 +1593,21 @@ impl RunCtx {
         } else if let Some(d) = (!map.is_empty() && s.minimap_nav)
             .then(|| super::mapnav::find(map))
             .flatten()
-            .filter(|d| !d.walk.is_empty())
+            .filter(|d| !super::mapnav::walk_points(d, s.minimap_walk_pct).is_empty())
         {
             // no recorded route: walk by the minimap to the map file's points
             for h in self.main_last(self.movers()) {
                 self.log(format!(
-                    "minimap walk: {} ({} point(s))",
+                    "minimap walk: {} ({})",
                     d.map,
-                    d.walk.len()
+                    if d.walk.is_empty() {
+                        format!(
+                            "{}% along the enemy path",
+                            d.walk_pct.unwrap_or(s.minimap_walk_pct)
+                        )
+                    } else {
+                        format!("{} point(s)", d.walk.len())
+                    }
                 ));
                 match self.minimap_walk(h, &d) {
                     Ok(()) => self.log("minimap walk: there"),
@@ -1701,7 +1710,10 @@ impl RunCtx {
             "minimap walk: W goes {:.0}° on the minimap",
             super::mapnav::bearing(dirs.w.0, dirs.w.1)
         ));
-        let points: Vec<(f32, f32)> = d.walk.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+        let points = super::mapnav::from_nearest(
+            &super::mapnav::walk_points(d, self.settings.minimap_walk_pct),
+            me,
+        );
         let mut nav = Nav::new(dirs, points);
         let started = Instant::now();
         let mut dl = self.control.deadline(self.secs(90.0));
@@ -3152,6 +3164,7 @@ impl RunCtx {
         map: &str,
         end_drops: &[(String, u64)],
         pearls: Option<u64>,
+        end_shot: Option<crate::capture::Frame>,
     ) -> R<()> {
         use super::loot;
         let main = self.screen(self.main);
@@ -3238,7 +3251,17 @@ impl RunCtx {
         // Discord: wait for the upload (the picture) before going on, but
         // never longer than WEBHOOK_WAIT_SECS
         let reported = if let Some((url, ping)) = &self.loot_hook {
-            let m = loot::message(&stats, &session, picture, false);
+            // the VICTORY / DEFEAT panel is the big picture; the charm (if
+            // any) rides along as charm.png, shown as the thumbnail
+            let m = match (end_shot, picture) {
+                (Some(shot), Some(charm)) => {
+                    let mut m = loot::message(&stats, &session, Some(shot), false);
+                    m.extra = vec![("charm.png".to_string(), charm)];
+                    m.thumbnail = Some("charm.png".to_string());
+                    m
+                }
+                (shot, charm) => loot::message(&stats, &session, shot.or(charm), false),
+            };
             match crate::webhook::send_and_wait(
                 url,
                 ping,
@@ -3501,6 +3524,12 @@ impl RunCtx {
             };
             // the pearls (Summer Event currency) on the VICTORY / DEFEAT panel
             let pearls = self.read_pearls()?;
+            // the result panel, while it's still up (Next comes after)
+            let shot = self.screen(self.main).frame().map(|f| {
+                let r = super::loot::end_shot_rect(f.width, f.height);
+                f.crop(r.x as u32, r.y as u32, r.w as u32, r.h as u32)
+            });
+            *once.shot.lock().unwrap_or_else(|e| e.into_inner()) = shot;
             let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
             once.reported.store(true, Ordering::Relaxed);
             *once.read.lock().unwrap_or_else(|e| e.into_inner()) = (end_drops.clone(), pearls);
@@ -3515,7 +3544,8 @@ impl RunCtx {
             if once.rewarded.swap(true, Ordering::Relaxed) {
                 return Ok(());
             }
-            c.end_rewards(won, map, &end_drops, pearls)
+            let shot = once.shot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            c.end_rewards(won, map, &end_drops, pearls, shot)
         };
         if stop {
             // still record the run, but don't leave the end screen
