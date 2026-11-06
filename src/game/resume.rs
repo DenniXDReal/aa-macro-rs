@@ -26,7 +26,7 @@ impl Saved {
     }
     /// A step worth resuming (in a stage, past the walk).
     pub fn resumable(&self) -> bool {
-        matches!(self.step.as_str(), "place" | "upgrade")
+        matches!(self.step.as_str(), "vote" | "place" | "upgrade")
     }
 }
 
@@ -89,6 +89,19 @@ pub fn install() {
     ONCE.call_once(|| super::trace::on_step(on_step));
 }
 
+/// Where to pick up, given the saved step and what's on screen now. Never
+/// Walk again (the character is already positioned past it); a saved Vote
+/// with no vote box any more means the round is past it: go to Place.
+pub fn resume_at(saved: &str, vote_box_up: bool) -> Option<super::steps::Step> {
+    use super::steps::Step;
+    match saved {
+        "vote" if vote_box_up => Some(Step::Vote),
+        "vote" | "place" => Some(Step::Place),
+        "upgrade" => Some(Step::Upgrade),
+        _ => None,
+    }
+}
+
 /// Placed units from the "upgrade" step's params: (client number, slot, x, y).
 pub fn placed(s: &Saved) -> Vec<(usize, usize, i32, i32)> {
     s.step_params["placed"]
@@ -112,6 +125,21 @@ pub fn placed(s: &Saved) -> Vec<(usize, usize, i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_fails_soft_past_the_vote() {
+        use crate::game::steps::Step;
+        assert_eq!(resume_at("vote", true), Some(Step::Vote));
+        assert_eq!(
+            resume_at("vote", false),
+            Some(Step::Place),
+            "vote already over"
+        );
+        assert_eq!(resume_at("place", true), Some(Step::Place));
+        assert_eq!(resume_at("upgrade", false), Some(Step::Upgrade));
+        assert_eq!(resume_at("walk", false), None);
+        assert_eq!(resume_at("lobby", false), None);
+    }
 
     #[test]
     fn round_trip_and_window() {

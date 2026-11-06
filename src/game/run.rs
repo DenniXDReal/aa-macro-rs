@@ -2524,8 +2524,21 @@ impl RunCtx {
                             return self.round_from_upgrade(in_lobby, map, last, placed);
                         }
                     }
-                    "place" => {
-                        self.log(format!("resuming: placing on {m} ({} s ago)", r.age_secs()));
+                    "place" | "vote" => {
+                        let main = self.screen(self.main);
+                        let vote_up = main.find_vote_yes().is_some();
+                        if super::resume::resume_at(&r.step, vote_up)
+                            == Some(super::steps::Step::Vote)
+                        {
+                            self.log("resuming: voting, then placing");
+                            for h in self.main_last(self.clients.iter().map(|c| c.0).collect()) {
+                                if let Some(p) = self.screen(h).find_vote_yes() {
+                                    self.click(h, p, "vote start")?;
+                                }
+                            }
+                        } else {
+                            self.log(format!("resuming: placing on {m} ({} s ago)", r.age_secs()));
+                        }
                         *map = m;
                         return self.round_from_place(in_lobby, map, last);
                     }
