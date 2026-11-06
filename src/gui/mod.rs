@@ -252,6 +252,8 @@ impl App {
             .cloned()
             .unwrap_or_else(|| "Space Center".into());
         let routes = Routes::load(&Routes::user_dir_default());
+        // running macros pick up pattern / route edits without a restart
+        crate::hotreload::watch(Library::default_dir(), routes.user_dir.clone());
         let route_sel = "Space Center".to_string();
         let (log_tx, log_rx) = mpsc::channel();
         let (upd_tx, upd_rx) = mpsc::channel();
@@ -433,7 +435,7 @@ impl App {
             main,
             clients,
             settings: self.settings.clone(),
-            routes: self.routes.clone(),
+            routes: self.routes.clone().into(),
             placements: self.placements.clone(),
             tx,
             speed: 1.0,

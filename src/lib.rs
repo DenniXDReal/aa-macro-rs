@@ -19,6 +19,7 @@ pub mod flows;
 pub mod game;
 pub mod geom;
 pub mod gui;
+pub mod hotreload;
 pub mod input;
 pub mod keys;
 pub mod layout;

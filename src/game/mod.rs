@@ -86,7 +86,6 @@ use crate::input::Probe;
 use crate::movement::RouteEnv;
 use crate::platform::Platform;
 use crate::vision::{key, Library, Pattern};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// OCR text of a screen -> Some(weather) if it's the card pick screen.
@@ -280,24 +279,25 @@ pub fn upg_line(lines: &[Vec<(String, Rect)>]) -> Option<(String, Point)> {
 pub struct LiveScreen {
     platform: Arc<dyn Platform>,
     hwnd: Hwnd,
-    pats: Arc<HashMap<String, Pattern>>,
+    /// Swapped by hot-reload when the patterns folder changes.
+    pats: crate::hotreload::LivePatterns,
 }
 
 impl LiveScreen {
     pub fn new(platform: Arc<dyn Platform>, hwnd: Hwnd, lib: &Library) -> Self {
-        let pats = lib.patterns().map(|p| (key(&p.name), p.clone())).collect();
         Self {
             platform,
             hwnd,
-            pats: Arc::new(pats),
+            pats: crate::hotreload::live_patterns(crate::hotreload::pattern_map(lib)),
         }
     }
 
     /// Centre of the first of `names` found now (inside `region` if given).
     pub fn find(&self, names: &[String], region: Option<Rect>) -> Option<Point> {
+        let pats = self.pats.load_full();
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let hit = names.iter().find_map(|n| {
-            let p = self.pats.get(&key(n))?;
+            let p = pats.get(&key(n))?;
             match p.find_in(&frame, region) {
                 Some(h) => {
                     crate::debugbus::hit(
@@ -338,8 +338,8 @@ impl LiveScreen {
     }
 
     /// A captured pattern by name.
-    pub fn pattern(&self, name: &str) -> Option<&Pattern> {
-        self.pats.get(&key(name))
+    pub fn pattern(&self, name: &str) -> Option<Pattern> {
+        self.pats.load().get(&key(name)).cloned()
     }
 
     /// Read button labels right now (no waiting for the picture first).
@@ -388,6 +388,7 @@ impl LiveScreen {
         names: &[String],
         within: Option<Rect>,
     ) -> Vec<Point> {
+        let pats = self.pats.load_full();
         use std::sync::Mutex;
         use std::time::{Duration, Instant};
         type Lines = Vec<Vec<(String, Rect)>>;
@@ -401,7 +402,7 @@ impl LiveScreen {
         }
         // captured and only just gone: don't OCR yet (it's slow, and a
         // "wait until it's gone" loop would crawl)
-        let captured = names.iter().any(|n| self.pats.contains_key(&key(n)));
+        let captured = names.iter().any(|n| pats.contains_key(&key(n)));
         if captured && self.missing_for(names) < Duration::from_millis(2500) {
             return vec![];
         }
@@ -434,7 +435,8 @@ impl LiveScreen {
     /// Where the unit panel's level text sits: around your `unit_placed`
     /// capture, else the AHK macro's spot.
     pub fn level_area(&self) -> Rect {
-        match self.pats.get(&key("unit_placed")) {
+        let pats = self.pats.load_full();
+        match pats.get(&key("unit_placed")) {
             Some(p) => {
                 let c = p.captured_at;
                 Rect::new(c.x - 30, c.y - 6, c.w + 60, c.h + 12)
@@ -644,6 +646,7 @@ impl LiveScreen {
     /// Is `name` in an already captured picture (no new capture)?
     pub fn find_in_frame(&self, frame: &crate::capture::Frame, name: &str) -> bool {
         self.pats
+            .load()
             .get(&key(name))
             .and_then(|p| p.find_in(frame, None))
             .is_some()
@@ -708,6 +711,7 @@ impl LiveScreen {
     pub fn with_prefix(&self, prefix: &str) -> Vec<String> {
         let mut v: Vec<String> = self
             .pats
+            .load()
             .keys()
             .filter(|k| k.starts_with(prefix))
             .cloned()
@@ -717,16 +721,18 @@ impl LiveScreen {
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.pats.contains_key(&key(name))
+        let pats = self.pats.load_full();
+        pats.contains_key(&key(name))
     }
 
     /// Like `find`, but over the whole picture (the button may sit somewhere
     /// else than where you captured it, e.g. Next on a DEFEAT vs VICTORY screen).
     pub fn find_wide(&self, names: &[String]) -> Option<Point> {
+        let pats = self.pats.load_full();
         let frame = self.platform.capture_client(self.hwnd).ok()?;
         let all = Rect::new(0, 0, frame.width as i32, frame.height as i32);
         let hit = names.iter().find_map(|n| {
-            let p = self.pats.get(&key(n))?;
+            let p = pats.get(&key(n))?;
             match p
                 .find_in(&frame, None)
                 .or_else(|| p.find_in(&frame, Some(all)))
@@ -754,10 +760,11 @@ impl LiveScreen {
     /// Every place `name` shows on the whole picture (e.g. one Invite button
     /// per alt in the party list), top to bottom.
     pub fn find_all_wide(&self, name: &str) -> Vec<Point> {
+        let pats = self.pats.load_full();
         let Some(frame) = self.platform.capture_client(self.hwnd).ok() else {
             return vec![];
         };
-        let Some(p) = self.pats.get(&key(name)) else {
+        let Some(p) = pats.get(&key(name)) else {
             return self.find_text(&frame, &[name.to_string()], None);
         };
         let mut out = vec![];
@@ -785,9 +792,10 @@ impl LiveScreen {
 
     /// Names in `names` that you haven't captured yet.
     pub fn missing(&self, names: &[String]) -> Vec<String> {
+        let pats = self.pats.load_full();
         names
             .iter()
-            .filter(|n| !self.pats.contains_key(&key(n)))
+            .filter(|n| !pats.contains_key(&key(n)))
             .cloned()
             .collect()
     }

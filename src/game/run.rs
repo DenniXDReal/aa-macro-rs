@@ -255,7 +255,8 @@ pub struct RunCtx {
     /// Every client: (hwnd, screen). Index = client number - 1.
     pub clients: Vec<(Hwnd, LiveScreen)>,
     pub settings: Settings,
-    pub routes: Routes,
+    /// Swapped by hot-reload when your route files change.
+    pub routes: crate::hotreload::LiveRoutes,
     pub placements: Placements,
     pub tx: Sender<Event>,
     /// 1.0 = real timing; tests use a small value.
@@ -486,8 +487,8 @@ impl RunCtx {
         let s = &self.settings;
         let mode = s.run.mode;
         let key = lobby_route(mode);
-        let route = self
-            .routes
+        let routes = self.routes.get();
+        let route = routes
             .lobby
             .get(key)
             .ok_or(format!("no lobby route '{key}'"))?;
@@ -1164,7 +1165,7 @@ impl RunCtx {
         let vote = Self::names(&["vote_start"]);
         let mut map: Option<String> = None;
         // map names the OCR can recognise: every map with a route + your loading_ captures
-        let mut known: Vec<String> = self.routes.maps.keys().cloned().collect();
+        let mut known: Vec<String> = self.routes.get().maps.keys().cloned().collect();
         known.extend(detect.iter().map(|p| map_from_pattern(p)));
         known.extend(
             crate::movement::Stages::builtin()
@@ -1351,7 +1352,7 @@ impl RunCtx {
             }
         }
         if let Some(r) = (!map.is_empty())
-            .then(|| self.routes.find_map(&map))
+            .then(|| self.routes.get().find_map(&map).cloned())
             .flatten()
         {
             for h in self.main_last(self.movers()) {
@@ -1409,7 +1410,8 @@ impl RunCtx {
         if !scr.has("tp_spawn") {
             return Ok(());
         }
-        let Some(r) = self.routes.lobby.get("tp_spawn") else {
+        let routes = self.routes.get();
+        let Some(r) = routes.lobby.get("tp_spawn") else {
             return Ok(());
         };
         let b = r
