@@ -99,6 +99,9 @@ pub struct Settings {
     pub adaptations: Adaptations,
     /// Disconnect / captcha recovery (Settings > Recovery).
     pub recovery: RecoverySettings,
+    /// No recorded route for the map: walk by the minimap to its map
+    /// file's points (maps/data/<Map>.json).
+    pub minimap_nav: bool,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).
     pub resume_mode: ResumeMode,
@@ -534,6 +537,7 @@ impl Default for Settings {
             placement_detect: PlacementDetect::Panel,
             adaptations: Adaptations::default(),
             recovery: RecoverySettings::default(),
+            minimap_nav: true,
             schedule: Schedule::default(),
             dump_on_miss: false,
             step_machine: false,

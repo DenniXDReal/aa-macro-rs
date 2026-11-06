@@ -9,6 +9,7 @@ pub mod dump;
 pub mod hotbar;
 pub mod loot;
 pub mod machine;
+pub mod mapnav;
 pub mod minimap;
 pub mod placing;
 pub mod resume;

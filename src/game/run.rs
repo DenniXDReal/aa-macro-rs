@@ -1547,8 +1547,149 @@ impl RunCtx {
                     self.log(format!("map walk: {e} - placing from here"));
                 }
             }
+        } else if let Some(d) = (!map.is_empty() && s.minimap_nav)
+            .then(|| super::mapnav::find(map))
+            .flatten()
+            .filter(|d| !d.walk.is_empty())
+        {
+            // no recorded route: walk by the minimap to the map file's points
+            for h in self.main_last(self.movers()) {
+                self.log(format!(
+                    "minimap walk: {} ({} point(s))",
+                    d.map,
+                    d.walk.len()
+                ));
+                match self.minimap_walk(h, &d) {
+                    Ok(()) => self.log("minimap walk: there"),
+                    Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
+                    Err(e) => self.log(format!("minimap walk: {e} - placing from here")),
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Where this client's arrow is on its minimap (the one nearest
+    /// `near`, else the biggest), or None.
+    fn arrow_at(&self, h: Hwnd, near: Option<(f32, f32)>) -> Option<(f32, f32)> {
+        let f = self.screen(h).frame()?;
+        let r = super::mapnav::read_client(&f)?;
+        match near {
+            Some(n) => r.players.iter().map(|p| p.at).min_by(|a, b| {
+                let da = (a.0 - n.0).powi(2) + (a.1 - n.1).powi(2);
+                let db = (b.0 - n.0).powi(2) + (b.1 - n.1).powi(2);
+                da.total_cmp(&db)
+            }),
+            None => r.players.first().map(|p| p.at),
+        }
+    }
+
+    /// Hold `keys` for `ms` on `h`.
+    fn hold_keys(&self, h: Hwnd, keys: &[&str], ms: u64) -> R<()> {
+        let ks: Vec<crate::keys::Key> = keys
+            .iter()
+            .filter_map(|k| crate::keys::Key::parse(k))
+            .collect();
+        let mut b = Batch::new(h, "minimap walk");
+        for k in &ks {
+            b = b.then(Action::KeyDown(*k));
+        }
+        b = b.wait(ms);
+        for k in ks.iter().rev() {
+            b = b.then(Action::KeyUp(*k));
+        }
+        self.arb
+            .run(b)
+            .map(|_| ())
+            .map_err(|e| format!("minimap walk: {e}"))
+    }
+
+    /// Walk client `h` to the map file's `walk` points by its minimap:
+    /// find which way W goes (a short W press, watching the arrows - the
+    /// one that moved is this client's), then pulse the keys towards each
+    /// point, correcting every look; stuck (no move for 600 ms) = back up
+    /// and strafe. 90 s at most.
+    pub(crate) fn minimap_walk(&self, h: Hwnd, d: &super::mapnav::MapData) -> R<()> {
+        use super::mapnav::{read_client, Cmd, KeyDirs, Nav, W};
+        // which arrow is mine, and which way W goes
+        let before: Vec<(f32, f32)> = self
+            .screen(h)
+            .frame()
+            .and_then(|f| read_client(&f))
+            .map(|r| r.players.into_iter().map(|p| p.at).collect())
+            .unwrap_or_default();
+        if before.is_empty() {
+            return Err("no arrow on the minimap".into());
+        }
+        let mut dirs = None;
+        let mut me = before[0];
+        for ms in [400, 800] {
+            self.hold_keys(h, &[W], ms)?;
+            self.sleep(150)?;
+            let after: Vec<(f32, f32)> = self
+                .screen(h)
+                .frame()
+                .and_then(|f| read_client(&f))
+                .map(|r| r.players.into_iter().map(|p| p.at).collect())
+                .unwrap_or_default();
+            // the arrow that moved the most (from where it was)
+            let best = before
+                .iter()
+                .filter_map(|b| {
+                    let a = after.iter().min_by(|x, y| {
+                        let dx = (x.0 - b.0).powi(2) + (x.1 - b.1).powi(2);
+                        let dy = (y.0 - b.0).powi(2) + (y.1 - b.1).powi(2);
+                        dx.total_cmp(&dy)
+                    })?;
+                    let mv = (a.0 - b.0, a.1 - b.1);
+                    (mv.0.hypot(mv.1) < 25.0).then_some((*a, mv))
+                })
+                .max_by(|x, y| x.1 .0.hypot(x.1 .1).total_cmp(&y.1 .0.hypot(y.1 .1)));
+            if let Some((a, mv)) = best {
+                me = a;
+                if let Some(k) = KeyDirs::from_w_move(mv.0, mv.1) {
+                    dirs = Some(k);
+                    break;
+                }
+            }
+        }
+        let Some(dirs) = dirs else {
+            return Err("the arrow didn't move on W (blocked, or not this map?)".into());
+        };
+        self.log(format!(
+            "minimap walk: W goes {:.0}° on the minimap",
+            super::mapnav::bearing(dirs.w.0, dirs.w.1)
+        ));
+        let points: Vec<(f32, f32)> = d.walk.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+        let mut nav = Nav::new(dirs, points);
+        let started = Instant::now();
+        let mut dl = self.control.deadline(self.secs(90.0));
+        let mut lost = 0;
+        loop {
+            self.check()?;
+            if dl.expired() {
+                return Err(format!("not there after 90 s (waypoint {})", nav.next + 1));
+            }
+            let Some(pos) = self.arrow_at(h, Some(me)) else {
+                lost += 1;
+                if lost > 10 {
+                    return Err("lost the arrow on the minimap".into());
+                }
+                self.sleep(200)?;
+                continue;
+            };
+            lost = 0;
+            me = pos;
+            match nav.step(started.elapsed().as_millis() as u64, pos) {
+                Cmd::Arrived => return Ok(()),
+                Cmd::GiveUp(why) => return Err(why),
+                Cmd::Moves(moves) => {
+                    for (keys, ms) in moves {
+                        self.hold_keys(h, &keys, ms)?;
+                    }
+                }
+            }
+        }
     }
 
     /// Every client votes Start (alts first), then back on the main.

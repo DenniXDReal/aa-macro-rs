@@ -7,6 +7,7 @@
 
 mod command;
 mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
+mod mapsui;
 mod tools;
 
 use crate::accounts::{self, AccountRole, AccountSlot, Ram};
@@ -133,6 +134,8 @@ pub struct App {
     /// Summer minimaps waiting for a name: file -> typed name / thumbnail.
     mm_names: std::collections::HashMap<String, String>,
     mm_tex: std::collections::HashMap<String, TextureHandle>,
+    /// Routes page: minimap map files editor.
+    maps_ui: mapsui::MapsUi,
     /// TEMPORARY (debug_tp): where the TP click would land.
     tp_dbg_click: Option<Point>,
     hits: Vec<(String, Rect, Option<Hit>)>,
@@ -306,6 +309,7 @@ impl App {
             detect_map: String::new(),
             mm_names: Default::default(),
             mm_tex: Default::default(),
+            maps_ui: Default::default(),
             tp_dbg_click: None,
             hits: vec![],
             map,
@@ -2922,6 +2926,8 @@ impl App {
                 });
             });
         });
+        ui.add_space(10.0);
+        self.minimap_maps_ui(ui);
     }
 
     /// `{map}` / `{act}` for routes, from the Home page.

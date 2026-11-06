@@ -25,7 +25,11 @@ fn list(dir: &str) -> Vec<(String, String)> {
 fn main() {
     println!("cargo:rerun-if-changed=assets");
     let mut out = String::new();
-    for (name, dir) in [("ROUTES", "assets/routes"), ("LOBBY", "assets/lobby")] {
+    for (name, dir) in [
+        ("ROUTES", "assets/routes"),
+        ("LOBBY", "assets/lobby"),
+        ("MAPDATA", "assets/mapdata"),
+    ] {
         out.push_str(&format!("pub const {name}: &[(&str, &str)] = &[\n"));
         for (stem, abs) in list(dir) {
             out.push_str(&format!(
