@@ -4,6 +4,31 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Disconnect / captcha recovery.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RecoverySettings {
+    /// Disconnect box: click Reconnect, back to the lobby, party, go on.
+    pub reconnect: bool,
+    /// At most this many reconnects an hour (then the full relaunch, if on).
+    pub max_reconnects_per_hour: u32,
+    /// Captcha: pause the macro until it's gone (you type it).
+    pub captcha_pause: bool,
+    /// Captcha ping on Discord: @here (true) or just your user ping.
+    pub captcha_here: bool,
+}
+
+impl Default for RecoverySettings {
+    fn default() -> Self {
+        Self {
+            reconnect: true,
+            max_reconnects_per_hour: 6,
+            captcha_pause: true,
+            captcha_here: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -78,6 +103,8 @@ pub struct Settings {
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
+    /// Disconnect / captcha recovery (Settings > Recovery).
+    pub recovery: RecoverySettings,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).
     pub resume_mode: ResumeMode,
@@ -512,6 +539,7 @@ impl Default for Settings {
             click_mode: crate::input::ClickMode::Safe,
             placement_detect: PlacementDetect::Panel,
             adaptations: Adaptations::default(),
+            recovery: RecoverySettings::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
             step_machine: false,

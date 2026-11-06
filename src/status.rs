@@ -25,11 +25,19 @@ pub struct Status {
     pub step_since: Option<Instant>,
     /// The latest retry per client (cleared when it went through).
     pub attempts: Vec<Attempt>,
+    /// Watchdog findings per client ("CAPTCHA", "DISCONNECTED").
+    pub incidents: Vec<(Hwnd, &'static str)>,
 }
 
 impl Status {
     pub fn attempt(&self, h: Hwnd) -> Option<&Attempt> {
         self.attempts.iter().find(|a| a.hwnd == h)
+    }
+    pub fn incident(&self, h: Hwnd) -> Option<&'static str> {
+        self.incidents
+            .iter()
+            .find(|(c, _)| *c == h)
+            .map(|(_, w)| *w)
     }
     fn with_step(&self, name: &str) -> Status {
         Status {
@@ -37,6 +45,7 @@ impl Status {
             step_since: Some(Instant::now()),
             // a new step starts with a clean slate
             attempts: vec![],
+            incidents: self.incidents.clone(),
         }
     }
     fn with_attempt(&self, h: Hwnd, n: u32, of: u32) -> Status {
@@ -71,6 +80,21 @@ pub fn set_step(name: &str) {
 /// A new run: no step yet, no attempts (called on Start).
 pub fn reset() {
     NOW.store(Arc::new(Status::default()));
+}
+
+/// What the watchdog sees on client `h` (None = all clear).
+pub fn set_incident(h: Hwnd, what: Option<&'static str>) {
+    if snapshot().incident(h) == what {
+        return;
+    }
+    NOW.rcu(|s| {
+        let mut s = (**s).clone();
+        s.incidents.retain(|(c, _)| *c != h);
+        if let Some(w) = what {
+            s.incidents.push((h, w));
+        }
+        s
+    });
 }
 
 /// Client `h` is on try `n` of `of` of something (n > 1 = retrying).

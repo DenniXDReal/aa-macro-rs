@@ -249,6 +249,12 @@ pub enum Event {
     Attention(String),
     /// Step machine: a step went Fatal - the loop paused itself (F4 resumes).
     Fatal(String),
+    /// Captcha on a client: the watchdog paused the macro until it's gone.
+    Captcha(String),
+    /// The captcha is gone: the watchdog un-paused.
+    CaptchaGone,
+    /// Disconnect recovery: what happened (Reconnecting / back / failed).
+    Reconnect(String),
     Done(String),
 }
 
@@ -275,6 +281,8 @@ pub struct RunCtx {
     pub loot_hook: Option<(String, String)>,
     /// Run count + totals since Start.
     pub session: std::sync::Arc<std::sync::Mutex<super::loot::Session>>,
+    /// Recovery watchdog's findings (disconnect / captcha per client).
+    pub watch: std::sync::Arc<super::watchdog::Watch>,
     /// Step machine: the running step's hard deadline. `check()` / `sleep()`
     /// fail with "step timed out" past it (the old loop never sets it).
     pub step_deadline: std::sync::Arc<std::sync::Mutex<Option<crate::control::Deadline>>>,
@@ -295,6 +303,9 @@ pub const PLACE_TO_UPGRADE_MS: u64 = 1500;
 
 /// Next button pictures, tried in this order (capture with F6).
 pub const NEXT_PICS: &[&str] = &["defeat_next_btn", "victory_next_btn", "next_button"];
+
+/// Start of what `check()` returns when a client is disconnected.
+pub const DISCONNECTED: &str = "disconnected";
 
 /// What `check()` / `sleep()` return past the step deadline.
 pub const STEP_TIMED_OUT: &str = "step timed out";
@@ -473,6 +484,11 @@ impl RunCtx {
         self.control
             .checkpoint()
             .map_err(|_| "stopped".to_string())?;
+        // the watchdog saw Roblox's disconnect box: stop what we're doing,
+        // the loop reconnects
+        if let Some(i) = self.watch.stopping_disconnect() {
+            return Err(format!("{DISCONNECTED} (client {})", i.client));
+        }
         self.past_deadline()
     }
     /// Err once the step machine's deadline for this step has passed.
@@ -873,41 +889,40 @@ impl RunCtx {
         } else {
             self.settings.run.card_priority.clone()
         };
+        // the highest card of your list on offer (exact name first, else
+        // the same card at another tier)
         let pick = super::cards::choose(&names, &prio);
-        let shown: Vec<String> = names
-            .iter()
-            .map(|n| n.clone().unwrap_or_else(|| "?".into()))
-            .collect();
-        let (p, why) = match pick {
+        let (i, p, fallback) = match pick {
             Some(i) => {
                 let b = super::cards::CARD_BOXES[i];
-                (
-                    Point::new(b.x + b.w / 2, b.y + b.h / 2),
-                    format!(
-                        "card: {} - #{} in your order (offered: {})",
-                        shown[i],
-                        prio.iter()
-                            .position(|p| *p == shown[i])
-                            .map(|x| (x + 1).to_string())
-                            .unwrap_or_else(|| "~".into()),
-                        shown.join(" / ")
-                    ),
-                )
+                (i, Point::new(b.x + b.w / 2, b.y + b.h / 2), "")
             }
             None => {
                 let (p, green) = super::cards::pick(&f);
+                let i = super::cards::CARD_BOXES
+                    .iter()
+                    .position(|b| p.x >= b.x && p.x < b.x + b.w)
+                    .unwrap_or(1);
                 (
+                    i,
                     p,
-                    format!(
-                        "card: couldn't read them ({}) - {}",
-                        shown.join(" / "),
-                        if green { "green one" } else { "middle one" }
-                    ),
+                    if green {
+                        "the green one"
+                    } else {
+                        "the middle one"
+                    },
                 )
             }
         };
-        self.log(why);
-        self.vote_card(h, pick.unwrap_or(1), p)?;
+        self.log(super::cards::picker_line(
+            "priority list",
+            &names,
+            &prio,
+            pick,
+            i,
+            fallback,
+        ));
+        self.vote_card(h, i, p)?;
         Ok(true)
     }
 
@@ -1012,20 +1027,16 @@ impl RunCtx {
         let names = Self::read_weather_cards(scr, &f);
         let prio = super::weather::load();
         let (i, rank) = super::weather::pick(&names, &prio);
-        let shown: Vec<String> = names
-            .iter()
-            .map(|n| n.clone().unwrap_or_else(|| "?".into()))
-            .collect();
         self.log(format!(
-            "weather shift: card {} ({}) - {} (offered: {})",
-            i + 1,
-            shown[i],
-            match rank {
-                Some(r) => format!("#{} on your weather list", r + 1),
-                None if names.iter().all(|n| n.is_none()) => "none read - leftmost".to_string(),
-                None => "none on your list - leftmost".to_string(),
-            },
-            shown.join(" / ")
+            "weather shift: {}",
+            super::cards::picker_line(
+                "weather list",
+                &names,
+                &prio,
+                rank.map(|_| i),
+                i,
+                "the leftmost",
+            )
         ));
         let b = super::cards::CARD_BOXES[i];
         self.click(h, Point::new(b.x + b.w / 2, b.y + b.h / 2), "weather card")?;
@@ -3262,6 +3273,8 @@ impl RunCtx {
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
             sc.spawn(|| self.anti_afk(&finished));
+            // disconnect box / captcha on any client
+            sc.spawn(|| self.watchdog(&finished));
             let r = (|| -> R<()> {
                 if self.settings.run.own_team
                     && self.settings.run.party_invite
@@ -3401,9 +3414,22 @@ impl RunCtx {
                                 self.dump_failure(&super::trace::current_name(), &e, None, vec![]);
                             }
                             // a client dropped out (Roblox "Disconnected" / error
-                            // code box): no point retrying - relaunch everything
-                            if let Some(who) = self.disconnected() {
-                                return Err(format!("{who} disconnected from the game ({e})"));
+                            // code box): reconnect, else relaunch everything
+                            if e.starts_with(DISCONNECTED) || self.disconnected().is_some() {
+                                match self.recover_disconnect() {
+                                    Ok(()) => {
+                                        in_lobby = true;
+                                        resume = None;
+                                        fails = 0;
+                                        self.sleep(500)?;
+                                        continue;
+                                    }
+                                    Err(r) => {
+                                        return Err(format!(
+                                            "disconnected from the game - reconnect failed: {r}"
+                                        ))
+                                    }
+                                }
                             }
                             fails += 1;
                             if fails > 3 {
@@ -3430,6 +3456,164 @@ impl RunCtx {
                 }
             }
         }
+    }
+
+    /// Recovery watchdog: every few seconds, every client - disconnect box
+    /// (your `disconnect_box` picture, or its words), captcha (`captcha`
+    /// picture, or its words). Captcha: pause + ping until it's gone.
+    fn watchdog(&self, finished: &std::sync::atomic::AtomicBool) {
+        use super::watchdog::{EVERY, OCR_EVERY_NTH};
+        use std::sync::atomic::Ordering;
+        let mut n: u32 = 0;
+        while !finished.load(Ordering::Relaxed) && !self.control.is_stopped() {
+            n += 1;
+            self.watch_once(n % OCR_EVERY_NTH == 0);
+            // the watchdog's own wait ignores pause (it has to see the
+            // captcha go away while paused)
+            let until = Instant::now() + Duration::from_secs_f64(self.secs(EVERY.as_secs_f64()));
+            while Instant::now() < until {
+                if finished.load(Ordering::Relaxed) || self.control.is_stopped() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    /// One watchdog look at every client (`ocr`: also read the screen when
+    /// no picture matched). Captcha: pause + ping; gone: carry on.
+    pub(crate) fn watch_once(&self, ocr: bool) {
+        use super::watchdog::{classify, Kind};
+        use std::sync::atomic::Ordering;
+        for (i, (h, scr)) in self.clients.iter().enumerate() {
+            let pic = |name: &str| {
+                scr.has(name) && scr.find_picture_wide(&Self::names(&[name])).is_some()
+            };
+            let (dis, cap) = (pic("disconnect_box"), pic("captcha"));
+            let text = (ocr && !dis && !cap)
+                .then(|| scr.frame().and_then(|f| scr.ocr_all(&f)))
+                .flatten();
+            let kind = classify(dis, cap, text.as_deref());
+            if self.watch.set(*h, i + 1, kind) {
+                let what = kind.map(Kind::label).unwrap_or("");
+                self.log(format!("watchdog: client {} - {what}", i + 1));
+            }
+            crate::status::set_incident(*h, kind.map(Kind::label));
+        }
+        // captcha: hold everything until it's typed
+        let captcha = self.watch.first(Kind::Captcha);
+        let ours = self.watch.captcha_paused.load(Ordering::Relaxed);
+        match (captcha, ours) {
+            (Some(c), false) if self.settings.recovery.captcha_pause => {
+                self.watch.captcha_paused.store(true, Ordering::Relaxed);
+                self.control.set_paused(true);
+                let why = format!(
+                    "Captcha on client {} - type it in Roblox, the macro is paused until it's gone",
+                    c.client
+                );
+                self.log(format!("WARN {why}"));
+                let _ = self.tx.send(Event::Captcha(why));
+            }
+            (None, true) => {
+                self.watch.captcha_paused.store(false, Ordering::Relaxed);
+                self.control.set_paused(false);
+                self.log("captcha gone - carrying on");
+                let _ = self.tx.send(Event::CaptchaGone);
+            }
+            _ => {}
+        }
+    }
+
+    /// Disconnect recovery: Reconnect on every disconnected client, wait
+    /// for the lobby, party up again. The stage is lost (an aborted run, no
+    /// Discord report); the loop goes on from the lobby. Err = couldn't
+    /// (then the full relaunch takes over, if it's on).
+    pub(crate) fn recover_disconnect(&self) -> R<()> {
+        use super::watchdog::{Kind, Recovering, RECONNECT_WAIT_SECS};
+        let rec = &self.settings.recovery;
+        if !rec.reconnect {
+            return Err("reconnect is off (Settings > Recovery)".into());
+        }
+        if !self.watch.allow_reconnect(rec.max_reconnects_per_hour) {
+            return Err(format!(
+                "{} reconnects already this hour",
+                rec.max_reconnects_per_hour
+            ));
+        }
+        let _r = Recovering::new(&self.watch);
+        // which clients: what the watchdog saw, else a fresh look
+        let mut who: Vec<(Hwnd, usize)> = self
+            .watch
+            .incidents()
+            .into_iter()
+            .filter(|i| i.kind == Kind::Disconnected)
+            .map(|i| (i.hwnd, i.client))
+            .collect();
+        if who.is_empty() {
+            for (i, (h, scr)) in self.clients.iter().enumerate() {
+                let dis = (scr.has("disconnect_box")
+                    && scr
+                        .find_picture_wide(&Self::names(&["disconnect_box"]))
+                        .is_some())
+                    || scr
+                        .frame()
+                        .and_then(|f| scr.ocr_all(&f))
+                        .is_some_and(|t| disconnect_text(&t));
+                if dis {
+                    who.push((*h, i + 1));
+                }
+            }
+        }
+        let list: Vec<String> = who.iter().map(|(_, n)| format!("client {n}")).collect();
+        self.log(format!(
+            "disconnected: {} - run aborted, reconnecting",
+            if list.is_empty() {
+                "?".into()
+            } else {
+                list.join(", ")
+            }
+        ));
+        let _ = self.tx.send(Event::Reconnect(format!(
+            "Disconnected ({}) - reconnecting",
+            list.join(", ")
+        )));
+        for (h, n) in &who {
+            let scr = self.screen(*h);
+            let Some(p) = scr.find_wide(&Self::names(&["reconnect_button"])) else {
+                return Err(format!(
+                    "client {n}: no Reconnect button on its disconnect box"
+                ));
+            };
+            self.click(*h, p, "reconnect")?;
+            // back in the lobby: the box gone and the lobby's buttons there
+            let mut dl = self.control.deadline(self.secs(RECONNECT_WAIT_SECS));
+            loop {
+                self.sleep(2000)?;
+                let lobby = scr
+                    .find(&Self::names(&["play_button", "areas_button"]), None)
+                    .is_some();
+                if lobby {
+                    self.watch.set(*h, *n, None);
+                    crate::status::set_incident(*h, None);
+                    self.log(format!("client {n}: reconnected - in the lobby"));
+                    break;
+                }
+                if dl.expired() {
+                    return Err(format!(
+                        "client {n}: not back in the lobby {RECONNECT_WAIT_SECS:.0} s after Reconnect"
+                    ));
+                }
+            }
+        }
+        self.watch.clear();
+        if self.settings.run.own_team && self.settings.run.party_invite && self.clients.len() > 1 {
+            self.party_up()?;
+        }
+        let _ = self.tx.send(Event::Reconnect(
+            "Reconnected - next round from the lobby".into(),
+        ));
+        self.to_main()?;
+        Ok(())
     }
 
     /// A client showing Roblox's "Disconnected" / "Error Code" box.

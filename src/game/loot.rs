@@ -214,6 +214,7 @@ pub fn message(
         screenshot: image,
         ping,
         fields,
+        here: false,
     }
 }
 

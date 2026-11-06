@@ -248,6 +248,7 @@ mod tests {
             loot_hook: None,
             session: Default::default(),
             step_deadline: Default::default(),
+            watch: Default::default(),
             placements: Placements::default(),
             tx,
             speed: 0.02,
@@ -729,6 +730,102 @@ mod tests {
         assert!(replays >= 2, "replayed {replays}x");
     }
 
+    /// Disconnect box: check() stops what's running, the recovery clicks
+    /// Reconnect, waits for the lobby and carries on; limits respected.
+    #[test]
+    fn disconnect_reconnects_to_the_lobby() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0 disconnected*/
+            scr(vec![
+                el("disconnect_box", 300, 250, None),
+                el("reconnect_button", 330, 330, Some(1)),
+            ]),
+            /*1 lobby*/ scr(vec![el("play_button", 70, 300, None)]),
+        ]));
+        let mut s = Settings::default();
+        s.recovery.max_reconnects_per_hour = 1;
+        let (c, _rx, _arb) = ctx(sim.clone(), s);
+        c.watch_once(false);
+        let inc = c.watch.first(crate::game::watchdog::Kind::Disconnected);
+        assert_eq!(inc.map(|i| i.client), Some(1), "watchdog saw it");
+        let e = c.check().unwrap_err();
+        assert!(e.starts_with(crate::game::run::DISCONNECTED), "{e}");
+        // the step machine stops its step for it, and calls it a disconnect
+        use crate::game::steps::{AbortSource, Hooks};
+        assert_eq!(c.should_abort(), Some(AbortSource::Disconnect));
+        assert!(matches!(
+            crate::game::machine::classify(
+                &e,
+                crate::game::steps::Step::Upgrade,
+                std::time::Duration::ZERO
+            ),
+            crate::game::steps::FailureReason::ExternalAbort {
+                source: AbortSource::Disconnect
+            }
+        ));
+        c.recover_disconnect().expect("reconnected");
+        assert!(sim
+            .clicks
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n == "reconnect_button"));
+        assert_eq!(sim.screen_now(), 1, "in the lobby");
+        assert!(c.watch.incidents().is_empty());
+        assert!(c.check().is_ok(), "nothing stops the loop now");
+        // 1 an hour: the next one goes to the relaunch instead
+        let e = c.recover_disconnect().unwrap_err();
+        assert!(e.contains("reconnects already this hour"), "{e}");
+    }
+
+    #[test]
+    fn reconnect_off_means_relaunch() {
+        let sim = Arc::new(Sim::new(vec![scr(vec![el(
+            "disconnect_box",
+            300,
+            250,
+            None,
+        )])]));
+        let mut s = Settings::default();
+        s.recovery.reconnect = false;
+        let (c, _rx, _arb) = ctx(sim, s);
+        assert!(c
+            .recover_disconnect()
+            .unwrap_err()
+            .contains("reconnect is off"));
+    }
+
+    /// Captcha: paused + the app told; gone: un-paused + told.
+    #[test]
+    fn captcha_pauses_until_gone() {
+        let sim = Arc::new(Sim::new(vec![
+            /*0 captcha, gone after a few looks*/
+            Screen {
+                els: vec![el("captcha", 300, 250, None)],
+                auto: Some((3, 1)),
+                wheel_down: None,
+            },
+            /*1 stage*/ scr(vec![el("vote_start", 400, 100, None)]),
+        ]));
+        let (c, rx, _arb) = ctx(sim, Settings::default());
+        c.watch_once(false);
+        assert!(c.control.is_paused(), "paused for the captcha");
+        let mut told = false;
+        while let Ok(e) = rx.try_recv() {
+            told |= matches!(e, Event::Captcha(_));
+        }
+        assert!(told, "app pinged");
+        for _ in 0..6 {
+            c.watch_once(false);
+        }
+        assert!(!c.control.is_paused(), "carries on once it's gone");
+        let mut gone = false;
+        while let Ok(e) = rx.try_recv() {
+            gone |= matches!(e, Event::CaptchaGone);
+        }
+        assert!(gone);
+    }
+
     /// Step machine: a step that keeps failing (no Play Here button) ends
     /// in Fatal - the loop pauses itself and tells the app.
     #[test]
@@ -857,6 +954,7 @@ mod tests {
             loot_hook: None,
             session: Default::default(),
             step_deadline: Default::default(),
+            watch: Default::default(),
             placements: Placements::default(),
             tx,
             speed: 0.02,

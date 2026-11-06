@@ -46,6 +46,11 @@ pub fn classify(err: &str, step: Step, elapsed: Duration) -> FailureReason {
             source: AbortSource::UserStop,
         };
     }
+    if err.starts_with(super::run::DISCONNECTED) {
+        return FailureReason::ExternalAbort {
+            source: AbortSource::Disconnect,
+        };
+    }
     if err == STEP_TIMED_OUT {
         return FailureReason::StepTimeout { step, elapsed };
     }
@@ -520,12 +525,34 @@ pub(crate) fn run_rounds(
                 return Err("stopped".into());
             }
             Err((step, reason)) => {
-                // a client dropped out: relaunch, not a pause
-                if let Some(who) = run.disconnected() {
-                    return Err(format!(
-                        "{who} disconnected from the game ({})",
-                        reason.short()
-                    ));
+                // a client dropped out: reconnect (the stage is lost - an
+                // aborted run, no Discord report), next round from the
+                // lobby; can't = relaunch (if it's on)
+                let dropped = matches!(
+                    reason,
+                    FailureReason::ExternalAbort {
+                        source: AbortSource::Disconnect
+                    }
+                ) || run.disconnected().is_some();
+                if dropped {
+                    match run.recover_disconnect() {
+                        Ok(()) => {
+                            run.log(format!(
+                                "step machine: {} aborted by the disconnect - next round from the lobby",
+                                step.name()
+                            ));
+                            in_lobby = true;
+                            prev_map.clear();
+                            fatals = 0;
+                            run.sleep(500)?;
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "disconnected from the game - reconnect failed: {e}"
+                            ))
+                        }
+                    }
                 }
                 fatals += 1;
                 if fatals > 3 {
@@ -564,7 +591,14 @@ pub(crate) fn run_rounds(
 
 impl Hooks for RunCtx {
     fn should_abort(&self) -> Option<AbortSource> {
-        self.control.is_stopped().then_some(AbortSource::UserStop)
+        if self.control.is_stopped() {
+            Some(AbortSource::UserStop)
+        } else {
+            // the watchdog saw the disconnect box: the loop reconnects
+            self.watch
+                .stopping_disconnect()
+                .map(|_| AbortSource::Disconnect)
+        }
     }
     fn sleep(&self, d: Duration) {
         // a Stop shows up in should_abort() right after

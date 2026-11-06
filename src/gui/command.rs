@@ -68,6 +68,15 @@ impl ClientView {
                 health: Health::Idle,
             };
         }
+        // the watchdog's finding (captcha / disconnected) beats the step
+        if let Some(w) = h.and_then(|h| st.incident(h)) {
+            return ClientView {
+                step: w.into(),
+                gen,
+                attempt: None,
+                health: Health::Paused,
+            };
+        }
         let att = h
             .and_then(|h| st.attempt(h))
             .filter(|a| a.at.elapsed() < ATTEMPT_SHOWN);
@@ -610,6 +619,7 @@ mod tests {
                 of: 4,
                 at: Instant::now(),
             }],
+            incidents: vec![(Hwnd(0xBAD), "CAPTCHA")],
         };
         let idle = ClientView::build(&st, Some(h), false, false);
         let fresh = ClientView::build(&crate::status::Status::default(), Some(h), true, false);
@@ -621,6 +631,9 @@ mod tests {
         assert_eq!(v.health, Health::Retrying);
         let p = ClientView::build(&st, Some(h), true, true);
         assert_eq!(p.health, Health::Paused);
+        // the watchdog's finding shows instead of the step
+        let cap = ClientView::build(&st, Some(Hwnd(0xBAD)), true, false);
+        assert_eq!((cap.step.as_str(), cap.health), ("CAPTCHA", Health::Paused));
         let other = ClientView::build(&st, Some(Hwnd(1)), true, false);
         assert_eq!((other.attempt, other.health), (None, Health::Ok));
     }
