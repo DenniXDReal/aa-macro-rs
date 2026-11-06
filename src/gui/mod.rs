@@ -2032,14 +2032,14 @@ impl App {
                         let label = |u: Upgrade| match u {
                             Upgrade::None => "none".to_string(),
                             Upgrade::Max => "MAX".to_string(),
-                            Upgrade::Level(n) => format!("{n}x"),
+                            Upgrade::Level(n) => format!("Lv {n}"),
                         };
                         ComboBox::from_id_salt(("upg", i))
                             .width(62.0)
                             .selected_text(label(u.upgrade))
                             .show_ui(ui, |ui| {
                                 let mut opts = vec![Upgrade::None];
-                                opts.extend((1..=8).map(Upgrade::Level));
+                                opts.extend((1..=crate::game::MAX_LEVEL as u8).map(Upgrade::Level));
                                 opts.push(Upgrade::Max);
                                 for o in opts {
                                     changed |=
