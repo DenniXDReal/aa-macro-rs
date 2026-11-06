@@ -210,6 +210,29 @@ pub fn end_text(t: &str) -> Option<bool> {
     }
 }
 
+/// The weather shift's green Vote button under the cards (it shows once a
+/// card is picked; the pick only counts after it): its centre, by colour.
+/// Cancel (red) sits right of it, so nothing is clicked blind.
+pub fn weather_vote_button(f: &crate::capture::Frame) -> Option<Point> {
+    let (mut n, mut x0, mut x1, mut y0, mut y1) = (0u32, i32::MAX, 0, i32::MAX, 0);
+    for y in (465..525).step_by(2) {
+        for x in (240..430).step_by(2) {
+            let Some((r, g, b)) = f.rgb(x, y) else {
+                continue;
+            };
+            if g > 170 && r < 140 && b < 90 {
+                n += 1;
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    (n >= 150 && (50..=170).contains(&(x1 - x0)) && (12..=50).contains(&(y1 - y0)))
+        .then(|| Point::new((x0 + x1) / 2, (y0 + y1) / 2))
+}
+
 /// Where the end panel's Next button sits (VICTORY / DEFEAT, 800x599): the
 /// fallback click when neither your picture nor its green is found.
 pub const NEXT_SPOT: Point = Point::new(320, 395);
@@ -919,5 +942,31 @@ mod next_tests {
         assert!((268..=372).contains(&NEXT_SPOT.x) && (377..=411).contains(&NEXT_SPOT.y));
         // nothing green: nothing found
         assert!(next_green(&crate::capture::Frame::solid(800, 599, 20, 20, 20)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod weather_vote_tests {
+    use super::weather_vote_button;
+
+    fn load(name: &str) -> crate::capture::Frame {
+        crate::capture::Frame::load_png(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn vote_button_found_only_when_shown() {
+        // Vote: about 282..390 x 482..510 on this screenshot
+        let p = weather_vote_button(&load("weather_vote_button.png")).expect("Vote button");
+        assert!(
+            (285..=390).contains(&p.x) && (482..=510).contains(&p.y),
+            "{p:?}"
+        );
+        // cards still coming in: no button yet
+        assert!(weather_vote_button(&load("weather_no_vote_button.png")).is_none());
     }
 }
