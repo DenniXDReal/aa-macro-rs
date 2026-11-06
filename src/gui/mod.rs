@@ -3079,7 +3079,7 @@ impl App {
         card(ui, |ui| {
             ui.label(RichText::new("WEATHER SHIFT CARDS").size(11.0).color(MUTED));
             ui.label(
-                RichText::new("When the weather shifts and 3 cards are offered, the macro reads their names and votes for the one highest in this list (one card per line, top = best). None of them in the list = the leftmost card. Names as the game shows them, with the tier: \"Attack I\", \"Enemy Speed II\".")
+                RichText::new("When the weather shifts and 3 cards are offered, the macro reads their names and votes for the one highest in this list (one card per line, top = best). None of them in the list = the leftmost card. Names as the game shows them (weather cards have no tier): \"Leyline\", \"Mud\", \"Kite Strings\". Default: the buffs first, then the SummerPearls cards from mildest to harshest.")
                     .size(11.0)
                     .color(MUTED),
             );
@@ -3100,7 +3100,7 @@ impl App {
             if !bad.is_empty() {
                 ui.label(
                     RichText::new(format!(
-                        "Not a card name the macro can read (check spelling / tier): {}",
+                        "Not a weather card name (check spelling): {}",
                         bad.join(", ")
                     ))
                     .size(11.0)
