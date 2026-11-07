@@ -1731,6 +1731,7 @@ impl RunCtx {
             .minimap_nav
             .then(|| super::mapnav::find(map))
             .flatten()
+            .or_else(|| s.minimap_nav.then(|| self.map_file_known(map)).flatten())
             .or_else(|| {
                 (s.prefer_minimap && s.minimap_nav)
                     .then(|| self.map_file_now(map))
@@ -1750,7 +1751,7 @@ impl RunCtx {
         };
         if failed && route.is_some() && mini.is_some() {
             self.log(format!(
-                "minimap walk failed on {map} earlier - using the recorded route"
+                "minimap walk failed on {map} earlier - using the recorded movement"
             ));
         }
         if let (true, Some(d)) = (use_mini, mini) {
@@ -1778,7 +1779,7 @@ impl RunCtx {
                         String::new()
                     },
                     if route.is_some() {
-                        " - preferred over the recorded route"
+                        " - preferred over the recorded movement"
                     } else {
                         ""
                     }
@@ -1800,9 +1801,9 @@ impl RunCtx {
                         self.log(format!(
                             "WARN minimap walk: {e} - placing from here; {}",
                             if route.is_some() {
-                                "next round on this map uses the recorded route"
+                                "next round on this map uses the recorded movement"
                             } else {
-                                "no recorded route for this map either"
+                                "no recorded movement for this map either"
                             }
                         ));
                         break;
@@ -1813,7 +1814,7 @@ impl RunCtx {
         } else if let Some(r) = route {
             if s.prefer_minimap {
                 self.log(format!(
-                    "minimap walk: no usable minimap path for {map} - using the recorded route"
+                    "minimap walk: no usable minimap path for {map} - using the recorded movement"
                 ));
             }
             for h in self.main_last(self.movers()) {
@@ -1827,7 +1828,7 @@ impl RunCtx {
             }
         } else if s.prefer_minimap {
             self.log(format!(
-                "ERROR minimap walk: no minimap path and no recorded route for {map} - placing from here"
+                "ERROR minimap walk: no minimap path and no recorded movement for {map} - placing from here"
             ));
         }
         Ok(())
@@ -1869,6 +1870,24 @@ impl RunCtx {
         scr.frame()
             .and_then(|f| scr.ocr_all(&f))
             .is_some_and(|t| super::watchdog::captcha_text(&t))
+    }
+
+    /// The minimap on screen is one of the built-in (or saved) ones: its map
+    /// file, saved under this map's name (so your % for it sticks).
+    fn map_file_known(&self, map: &str) -> Option<super::mapnav::MapData> {
+        let f = self.screen(self.main).frame()?;
+        let m = super::minimap::crop(&f)?;
+        let all: Vec<super::mapnav::MapData> = super::mapnav::load_all().into_values().collect();
+        let mut d = super::mapnav::recognise(&m, &all)?;
+        self.log(format!(
+            "minimap walk: {map}'s minimap is '{}' - using its map file",
+            d.map
+        ));
+        if super::mapnav::key(&d.map) != super::mapnav::key(map) {
+            d.map = map.to_string();
+            let _ = super::mapnav::save(&d);
+        }
+        Some(d)
     }
 
     /// A map file for `map` from the minimap on screen right now (saved for

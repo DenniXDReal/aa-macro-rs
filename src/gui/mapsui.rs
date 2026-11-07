@@ -1,4 +1,4 @@
-//! Routes page: minimap map files (maps/data/<Map>.json) - make them from
+//! Movement page: minimap map files (maps/data/<Map>.json) - make them from
 //! the saved minimap pictures, and click the walk points onto a minimap.
 
 use super::{card, App, BAD, GOOD, MUTED, PURPLE, TEXT, WARN};
@@ -19,6 +19,8 @@ pub struct MapsUi {
     dirty: bool,
     /// A click adds a walk point (else: sets where it stops on the path).
     click_walk: bool,
+    /// The editor's rename box.
+    rename: String,
 }
 
 impl App {
@@ -44,7 +46,7 @@ impl App {
                         format!("made {}: {}", made.len(), made.join(", "))
                     };
                 }
-                ui.checkbox(&mut self.settings.minimap_nav, "walk by the minimap when a map has no route")
+                ui.checkbox(&mut self.settings.minimap_nav, "walk by the minimap when a map has no recorded movement")
                     .changed()
                     .then(|| self.dirty());
                 ui.label("Max Path Distance %");
@@ -61,7 +63,7 @@ impl App {
                 }
             });
             ui.label(
-                RichText::new("A map without a recorded route walks to its map file's points by the minimap: W tells which way is which, the arrow is re-read every 200 ms and steered; stuck for 600 ms = back up and strafe. Pick a map, click the points to walk to in order.")
+                RichText::new("A map without recorded movement walks to its map file's points by the minimap: W tells which way is which, the arrow is re-read every 200 ms and steered; stuck for 600 ms = back up and strafe. Pick a map, click the points to walk to in order.")
                     .size(11.0)
                     .color(MUTED),
             );
@@ -125,24 +127,27 @@ impl App {
         // its minimap picture
         if self.maps_ui.tex.as_ref().is_none_or(|(n, _)| *n != d.map) {
             let p = crate::game::minimap::dir().join(format!("{}.png", d.map));
-            self.maps_ui.tex = crate::capture::Frame::load_png(&p).ok().map(|f| {
-                let mut rgba = f.bgra.clone();
-                for px in rgba.chunks_exact_mut(4) {
-                    px.swap(0, 2);
-                }
-                let img = ColorImage::from_rgba_unmultiplied(
-                    [f.width as usize, f.height as usize],
-                    &rgba,
-                );
-                (
-                    d.map.clone(),
-                    ui.ctx().load_texture(
-                        format!("navmap-{}", d.map),
-                        img,
-                        TextureOptions::NEAREST,
-                    ),
-                )
-            });
+            self.maps_ui.tex = crate::capture::Frame::load_png(&p)
+                .ok()
+                .or_else(|| mapnav::library_picture(&d.map))
+                .map(|f| {
+                    let mut rgba = f.bgra.clone();
+                    for px in rgba.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                    let img = ColorImage::from_rgba_unmultiplied(
+                        [f.width as usize, f.height as usize],
+                        &rgba,
+                    );
+                    (
+                        d.map.clone(),
+                        ui.ctx().load_texture(
+                            format!("navmap-{}", d.map),
+                            img,
+                            TextureOptions::NEAREST,
+                        ),
+                    )
+                });
         }
         let size = Vec2::splat(mapnav::SIZE as f32 * ZOOM);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -359,6 +364,45 @@ impl App {
                 }
             }
         }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.maps_ui.rename)
+                    .desired_width(160.0)
+                    .hint_text("real map name"),
+            );
+            if ui
+                .button("Rename")
+                .on_hover_text("name this map file after the real map (e.g. Minimap 03 -> Navy Bay); the built-in picture stays as well")
+                .clicked()
+                && !self.maps_ui.rename.trim().is_empty()
+            {
+                let old = d.map.clone();
+                d.map = self.maps_ui.rename.trim().to_string();
+                self.maps_ui.msg = match mapnav::save(&d) {
+                    Ok(_) => {
+                        let old_file = mapnav::user_dir().join(format!("{old}.json"));
+                        let _ = std::fs::remove_file(old_file);
+                        // its picture under the new name too
+                        if let Some(f) = crate::capture::Frame::load_png(
+                            &crate::game::minimap::dir().join(format!("{old}.png")),
+                        )
+                        .ok()
+                        .or_else(|| mapnav::library_picture(&old))
+                        {
+                            let _ = std::fs::create_dir_all(crate::game::minimap::dir());
+                            let _ = f.save_png(
+                                &crate::game::minimap::dir().join(format!("{}.png", d.map)),
+                            );
+                        }
+                        self.maps_ui.sel = d.map.clone();
+                        self.maps_ui.dirty = false;
+                        self.maps_ui.rename.clear();
+                        format!("renamed {old} -> {}", d.map)
+                    }
+                    Err(e) => format!("not renamed: {e}"),
+                };
+            }
+        });
         ui.horizontal(|ui| {
             ui.label("click =");
             ui.radio_value(&mut self.maps_ui.click_walk, false, "set the stop point")

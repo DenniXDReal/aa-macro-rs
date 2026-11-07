@@ -585,7 +585,7 @@ impl App {
 pub(super) const NAV: [(Page, &str); 5] = [
     (Page::Dashboard, "📊  Dashboard"),
     (Page::Patterns, "🖼  Patterns"),
-    (Page::Movement, "🗺  Routes"),
+    (Page::Movement, "🗺  Movement"),
     (Page::Settings, "⚙  Settings"),
     (Page::Logs, "📝  Logs"),
 ];

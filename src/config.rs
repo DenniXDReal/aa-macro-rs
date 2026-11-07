@@ -118,7 +118,7 @@ pub struct Settings {
     /// shape, hill units on any green first).
     pub advanced_placement: bool,
     /// Per client number (1 = the first): which lane it walks and its own
-    /// % (Routes page).
+    /// % (Movement page).
     pub client_walk: std::collections::BTreeMap<usize, crate::game::mapnav::ClientWalk>,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).

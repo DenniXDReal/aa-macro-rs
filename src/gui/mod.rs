@@ -135,7 +135,7 @@ pub struct App {
     /// Summer minimaps waiting for a name: file -> typed name / thumbnail.
     mm_names: std::collections::HashMap<String, String>,
     mm_tex: std::collections::HashMap<String, TextureHandle>,
-    /// Routes page: minimap map files editor.
+    /// Movement page: minimap map files editor.
     maps_ui: mapsui::MapsUi,
     /// TEMPORARY (debug_tp): where the TP click would land.
     tp_dbg_click: Option<Point>,
@@ -3540,11 +3540,11 @@ impl App {
                 changed |= toggle(
                     ui,
                     &mut self.settings.prefer_minimap,
-                    "Prefer Minimap Navigation over Recorded Routes",
+                    "Prefer Minimap Navigation over Recorded Movement",
                 );
                 ui.label(
                     RichText::new(format!(
-                        "On: every map walks by its minimap ({}% along the green path, or your walk points) - a map with no map file gets one from its minimap on arrival. Recorded routes are only the fallback.",
+                        "On: every map walks by its minimap ({}% along the green path, or your walk points) - a map with no map file gets one from its minimap on arrival. Recorded movement is only the fallback.",
                         self.settings.minimap_walk_pct
                     ))
                     .size(11.0)

@@ -14,7 +14,7 @@
 //! (0..146). `walk` = where to walk, in order; empty = no minimap walk on
 //! that map. A file can be made from a saved minimap picture
 //! ([`from_minimap`]): base, spawn and path are found, `walk` is yours to
-//! set (Routes page).
+//! set (Movement page).
 
 use crate::capture::Frame;
 use serde::{Deserialize, Serialize};
@@ -88,9 +88,81 @@ pub fn user_dir() -> PathBuf {
     super::data_dir().join("maps").join("data")
 }
 
-/// Every map file: built-in, then yours on top (same map = yours).
+/// The built-in minimap pictures read into map files (once).
+pub fn library() -> &'static [MapData] {
+    static LIB: std::sync::OnceLock<Vec<MapData>> = std::sync::OnceLock::new();
+    LIB.get_or_init(|| {
+        crate::movement::gen::MINIMAPS
+            .iter()
+            .filter_map(|(name, png)| {
+                let f = Frame::from_png_bytes(png).ok()?;
+                let d = from_minimap(name, &f);
+                (d.path.len() >= 2).then_some(d)
+            })
+            .collect()
+    })
+}
+
+/// A built-in minimap picture by map name (for the editor).
+pub fn library_picture(map: &str) -> Option<Frame> {
+    crate::movement::gen::MINIMAPS
+        .iter()
+        .find(|(n, _)| key(n) == key(map))
+        .and_then(|(_, png)| Frame::from_png_bytes(png).ok())
+}
+
+/// Average distance (px) from each point of `a` to the nearest of `b`.
+fn reach(a: &[[i32; 2]], b: &[[i32; 2]]) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return f32::MAX;
+    }
+    let sum: f32 = a
+        .iter()
+        .map(|p| {
+            b.iter()
+                .map(|q| ((p[0] - q[0]) as f32).hypot((p[1] - q[1]) as f32))
+                .fold(f32::MAX, f32::min)
+        })
+        .sum();
+    sum / a.len() as f32
+}
+
+/// Paths this close on average (both ways, px) = the same map.
+pub const SAME_MAP_PX: f32 = 6.0;
+
+/// Which built-in / saved map a minimap shows, by its enemy path(s): the
+/// closest one within `SAME_MAP_PX`.
+pub fn recognise(m: &Frame, maps: &[MapData]) -> Option<MapData> {
+    let live = from_minimap("", m);
+    if live.path.len() < 2 {
+        return None;
+    }
+    let all = |d: &MapData| -> Vec<[i32; 2]> {
+        d.path
+            .iter()
+            .chain(d.lanes.iter().flatten())
+            .copied()
+            .collect()
+    };
+    let lp = all(&live);
+    maps.iter()
+        .filter(|d| d.path.len() >= 2)
+        .map(|d| {
+            let dp = all(d);
+            (reach(&lp, &dp).max(reach(&dp, &lp)), d)
+        })
+        .filter(|(s, _)| *s <= SAME_MAP_PX)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, d)| d.clone())
+}
+
+/// Every map file: the built-in minimaps, the built-in files, then yours
+/// on top (same map = yours).
 pub fn load_all() -> BTreeMap<String, MapData> {
     let mut out = BTreeMap::new();
+    for d in library() {
+        out.insert(key(&d.map), d.clone());
+    }
     for (stem, text) in crate::movement::gen::MAPDATA {
         if let Ok(mut d) = serde_json::from_str::<MapData>(text) {
             if d.map.is_empty() {
@@ -1183,7 +1255,7 @@ mod tests {
             (e.0 - 31.0).abs() < 1.0 && (e.1 - 65.0).abs() < 1.0,
             "{e:?}"
         );
-        // the lane's own % (Routes page) when the client has none
+        // the lane's own % (Movement page) when the client has none
         let mut d2 = d.clone();
         d2.lane_pct.insert("right".into(), 80);
         assert_eq!(plan(&d2, walk(LanePick::Right, None), 50, 0).pct, 80);
@@ -1361,5 +1433,48 @@ mod tests {
         set_stop(&mut t, lane, pct);
         assert_eq!(t.lane_pct.get("left"), Some(&pct));
         assert_eq!(t.walk_pct, None);
+    }
+
+    /// Your minimaps are built in, and a fresh look at the same map (other
+    /// arrows / units on it) is recognised as it.
+    #[test]
+    fn built_in_minimaps() {
+        let lib = library();
+        assert_eq!(
+            lib.len(),
+            14,
+            "{:?}",
+            lib.iter().map(|d| &d.map).collect::<Vec<_>>()
+        );
+        assert!(lib
+            .iter()
+            .any(|d| d.map == "Assassin Park" && d.lanes.len() == 1));
+        // the older pictures of the same maps
+        for (fixture, want) in [
+            ("minimap_1.png", "Minimap 01"),
+            ("minimap_2.png", "Minimap 02"),
+            ("minimap_3.png", "Minimap 03"),
+            ("minimap_4.png", "Minimap 04"),
+            ("minimap_5.png", "Minimap 05"),
+            ("minimap_6.png", "Assassin Park"),
+            ("minimap_7.png", "Minimap 06"),
+            ("minimap_8.png", "Minimap 07"),
+            ("minimap_9.png", "Minimap 08"),
+            ("minimap_10.png", "Minimap 09"),
+            ("minimap_11.png", "Minimap 10"),
+            ("minimap_12b.png", "Minimap 11"),
+            ("minimap_13b.png", "Minimap 12"),
+            ("minimap_14b.png", "Minimap 13"),
+        ] {
+            let f = Frame::load_png(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(fixture),
+            )
+            .unwrap();
+            let got = recognise(&f, lib).map(|d| d.map);
+            assert_eq!(got.as_deref(), Some(want), "{fixture}");
+        }
+        assert!(library_picture("assassin park").is_some());
     }
 }

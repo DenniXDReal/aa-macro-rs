@@ -52,6 +52,25 @@ fn main() {
         ));
     }
     out.push_str("];\n");
+    // built-in minimap pictures (assets/minimaps/<Map>.png)
+    out.push_str("pub const MINIMAPS: &[(&str, &[u8])] = &[\n");
+    let mut mm: Vec<String> = fs::read_dir("assets/minimaps")
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    mm.sort();
+    for f in mm {
+        let stem = f.trim_end_matches(".png");
+        out.push_str(&format!(
+            "    ({stem:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/minimaps/{f}\"))),\n"
+        ));
+    }
+    out.push_str("];\n");
     out.push_str("pub const STAGES: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/stages.json\"));\n");
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("assets_gen.rs");
     fs::write(dest, out).unwrap();
