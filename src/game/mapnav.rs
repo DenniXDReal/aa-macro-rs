@@ -75,13 +75,18 @@ pub struct MapData {
     pub notes: String,
 }
 
-/// "Navy Bay" / "navy_bay" / "Navy Bay (Summer)" -> "navybay".
+/// "Navy Bay" / "navy_bay" / "Navy Bay (Summer)" / "Navy Bay_summerevent"
+/// -> "navybay" (the summer version has the same paths).
 pub fn key(name: &str) -> String {
     let base = name.split('(').next().unwrap_or(name);
-    base.chars()
+    let k: String = base
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
-        .collect()
+        .collect();
+    k.strip_suffix("summerevent")
+        .map(str::to_string)
+        .unwrap_or(k)
 }
 
 pub fn user_dir() -> PathBuf {
@@ -1323,6 +1328,7 @@ mod tests {
         let t = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<MapData>(&t).unwrap(), d);
         assert_eq!(key("Navy Bay (Summer)"), key("navy_bay"));
+        assert_eq!(key("Navy Bay_summerevent"), key("navy_bay"));
     }
 
     #[test]
@@ -1470,20 +1476,20 @@ mod tests {
             .any(|d| d.map == "Assassin Park" && d.lanes.len() == 1));
         // the older pictures of the same maps
         for (fixture, want) in [
-            ("minimap_1.png", "Minimap 01"),
-            ("minimap_2.png", "Minimap 02"),
-            ("minimap_3.png", "Minimap 03"),
-            ("minimap_4.png", "Minimap 04"),
-            ("minimap_5.png", "Minimap 05"),
+            ("minimap_1.png", "Snowy Kingdom"),
+            ("minimap_2.png", "Adventurer Town"),
+            ("minimap_3.png", "Air Craft"),
+            ("minimap_4.png", "Navy Bay"),
+            ("minimap_5.png", "Haunted Mansion"),
             ("minimap_6.png", "Assassin Park"),
-            ("minimap_7.png", "Minimap 06"),
-            ("minimap_8.png", "Minimap 07"),
-            ("minimap_9.png", "Minimap 08"),
-            ("minimap_10.png", "Minimap 09"),
-            ("minimap_11.png", "Minimap 10"),
-            ("minimap_12b.png", "Minimap 11"),
-            ("minimap_13b.png", "Minimap 12"),
-            ("minimap_14b.png", "Minimap 13"),
+            ("minimap_7.png", "Fabled Kingdom"),
+            ("minimap_8.png", "Future City"),
+            ("minimap_9.png", "Puppet Island"),
+            ("minimap_10.png", "Snowy Town"),
+            ("minimap_11.png", "Walled City"),
+            ("minimap_12b.png", "Mountain Temple"),
+            ("minimap_13b.png", "Sand Village"),
+            ("minimap_14b.png", "Storm Hideout"),
         ] {
             let f = Frame::load_png(
                 &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
