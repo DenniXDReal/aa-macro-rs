@@ -661,6 +661,9 @@ pub struct MiniRead {
     pub lanes: Vec<Vec<(i32, i32)>>,
     /// Each extra lane's spawn.
     pub lane_spawns: Vec<(i32, i32)>,
+    /// Other players' arrows (blue chevrons) - how an account sees the
+    /// others move (your own arrow sometimes stops turning on its minimap).
+    pub others: Vec<(f32, f32)>,
 }
 
 fn white(r: u8, g: u8, b: u8) -> bool {
@@ -672,6 +675,16 @@ fn blue(r: u8, g: u8, b: u8) -> bool {
 fn green(r: u8, g: u8, b: u8) -> bool {
     g > 150 && r < 160 && b < 110 && g as i32 - r as i32 > 50
 }
+/// Another player's arrow: mid blue (placed units are cyan / deep blue
+/// dots and don't count).
+fn player_blue(r: u8, g: u8, b: u8) -> bool {
+    // arrows ~(78,139,222); unit dots ~(70,110,255) - bluer and darker
+    (40..=115).contains(&r)
+        && (120..=175).contains(&g)
+        && (180..=238).contains(&b)
+        && b as i32 - g as i32 >= 45
+}
+
 /// The second lane's colour (Assassin Park's purple).
 fn purple(r: u8, g: u8, b: u8) -> bool {
     r > 100 && b > 150 && g < 80 && b as i32 - g as i32 > 100
@@ -844,6 +857,12 @@ pub fn read(m: &Frame) -> MiniRead {
         };
         out.players.push(Player { at, heading });
     }
+    // other players: blue chevrons about an arrow's size
+    out.others = groups(m, player_blue)
+        .iter()
+        .filter(|g| (8..=60).contains(&g.len()))
+        .map(|g| centre(g))
+        .collect();
     // the paths: from the end by the heart out to each lane's far end
     // (lanes share the stretch by the heart, so one walk over all of them)
     let greens: Vec<(i32, i32)> = groups(m, green).into_iter().flatten().collect();
@@ -1476,5 +1495,42 @@ mod tests {
             assert_eq!(got.as_deref(), Some(want), "{fixture}");
         }
         assert!(library_picture("assassin park").is_some());
+    }
+
+    /// Another player's blue arrow is read (your crop), placed units' dots
+    /// (sample 11) are not.
+    #[test]
+    fn other_players_blue_arrows() {
+        let crop = Frame::load_png(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/blue_arrow.png"),
+        )
+        .unwrap();
+        // put the crop into a minimap-sized picture at (40, 60)
+        let mut px = vec![0u8; (SIZE * SIZE * 4) as usize];
+        for p in px.chunks_exact_mut(4) {
+            p.copy_from_slice(&[30, 40, 30, 255]);
+        }
+        let mut f = Frame::new(SIZE as u32, SIZE as u32, px);
+        for y in 0..crop.height {
+            for x in 0..crop.width {
+                let s = ((y * crop.width + x) * 4) as usize;
+                let d = (((60 + y) * SIZE as u32 + 40 + x) * 4) as usize;
+                f.bgra[d..d + 4].copy_from_slice(&crop.bgra[s..s + 4]);
+            }
+        }
+        let r = read(&f);
+        assert_eq!(r.others.len(), 1, "{:?}", r.others);
+        let (x, y) = r.others[0];
+        assert!(
+            (x - 79.0).abs() < 4.0 && (y - 71.0).abs() < 4.0,
+            "{:?}",
+            r.others
+        );
+        // the units' dots on sample 11 aren't players
+        assert!(
+            read(&load(11)).others.is_empty(),
+            "{:?}",
+            read(&load(11)).others
+        );
     }
 }

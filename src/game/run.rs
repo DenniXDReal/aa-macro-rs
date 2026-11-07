@@ -1916,16 +1916,49 @@ impl RunCtx {
     /// Where this client's arrow is on its minimap (the one nearest
     /// `near`, else the biggest), or None.
     fn arrow_at(&self, h: Hwnd, near: Option<(f32, f32)>) -> Option<(f32, f32)> {
-        let f = self.screen(h).frame()?;
-        let r = super::mapnav::read_client(&f)?;
-        match near {
-            Some(n) => r.players.iter().map(|p| p.at).min_by(|a, b| {
-                let da = (a.0 - n.0).powi(2) + (a.1 - n.1).powi(2);
-                let db = (b.0 - n.0).powi(2) + (b.1 - n.1).powi(2);
-                da.total_cmp(&db)
-            }),
-            None => r.players.first().map(|p| p.at),
+        let own = (|| {
+            let f = self.screen(h).frame()?;
+            let r = super::mapnav::read_client(&f)?;
+            match near {
+                Some(n) => r.players.iter().map(|p| p.at).min_by(|a, b| {
+                    let da = (a.0 - n.0).powi(2) + (a.1 - n.1).powi(2);
+                    let db = (b.0 - n.0).powi(2) + (b.1 - n.1).powi(2);
+                    da.total_cmp(&db)
+                }),
+                None => r.players.first().map(|p| p.at),
+            }
+        })();
+        // your own arrow sometimes freezes on its minimap: another account
+        // sees you as a blue arrow - if that one moved and yours didn't,
+        // go by it
+        if let Some(n) = near {
+            let still = |p: (f32, f32)| (p.0 - n.0).hypot(p.1 - n.1) < 1.0;
+            if own.is_none_or(still) {
+                if let Some(b) = self.seen_by_others(h, n) {
+                    if !still(b) {
+                        return Some(b);
+                    }
+                }
+            }
         }
+        own
+    }
+
+    /// `h`'s player as another account's minimap shows it (a blue arrow,
+    /// the one nearest `near`, within 20 px).
+    fn seen_by_others(&self, h: Hwnd, near: (f32, f32)) -> Option<(f32, f32)> {
+        self.clients
+            .iter()
+            .filter(|c| c.0 != h)
+            .filter_map(|(_, scr)| {
+                let f = scr.frame()?;
+                super::mapnav::read_client(&f)
+            })
+            .flat_map(|r| r.others)
+            .map(|p| ((p.0 - near.0).hypot(p.1 - near.1), p))
+            .filter(|(d, _)| *d <= 20.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, p)| p)
     }
 
     /// Hold `keys` for `ms` on `h`.
@@ -1992,6 +2025,18 @@ impl RunCtx {
             if let Some((a, mv)) = best {
                 me = a;
                 if let Some(k) = KeyDirs::from_w_move(mv.0, mv.1) {
+                    dirs = Some(k);
+                    break;
+                }
+            }
+            // didn't move on its own minimap: how another account saw it go
+            if let Some(b) = self.seen_by_others(h, before[0]) {
+                let mv = (b.0 - before[0].0, b.1 - before[0].1);
+                if let Some(k) = KeyDirs::from_w_move(mv.0, mv.1) {
+                    self.log(
+                        "minimap walk: own arrow didn't move - going by another account's minimap",
+                    );
+                    me = b;
                     dirs = Some(k);
                     break;
                 }
