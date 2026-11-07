@@ -62,6 +62,20 @@ impl App {
                     self.dirty();
                 }
             });
+            ui.horizontal(|ui| {
+                ui.label("Already there if spawned on the path between");
+                let (mut lo, mut hi) = (self.settings.walk_ok_min, self.settings.walk_ok_max);
+                let a = ui.add(egui::DragValue::new(&mut lo).range(0..=100).suffix(" %"));
+                ui.label("and");
+                let b = ui.add(egui::DragValue::new(&mut hi).range(0..=100).suffix(" %"));
+                if a.changed() || b.changed() {
+                    self.settings.walk_ok_min = lo.min(hi);
+                    self.settings.walk_ok_max = hi.max(lo);
+                    self.dirty();
+                }
+            })
+            .response
+            .on_hover_text("a client that starts on the path in this range doesn't walk (maps with a stop of your own: within 5 % of it). Also no walk when the map's recorded movement doesn't move.");
             ui.label(
                 RichText::new("A map without recorded movement walks to its map file's points by the minimap: W tells which way is which, the arrow is re-read every 200 ms and steered; stuck for 600 ms = back up and strafe. Pick a map, click the points to walk to in order.")
                     .size(11.0)

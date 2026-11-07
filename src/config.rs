@@ -110,6 +110,10 @@ pub struct Settings {
     /// route is the fallback); a map with no map file gets one from its
     /// minimap there and then.
     pub prefer_minimap: bool,
+    /// Already on the path between these % (of the enemies' walk from
+    /// their spawn) at the start = no walk (maps with no stop of your own).
+    pub walk_ok_min: u8,
+    pub walk_ok_max: u8,
     /// Before each placement click, hover and read the highlight (Hill:
     /// green needed, Ground: no red); blocked = nudge 10 px, 3 times.
     pub verify_terrain: bool,
@@ -589,6 +593,8 @@ impl Default for Settings {
             minimap_nav: true,
             minimap_walk_pct: 50,
             prefer_minimap: false,
+            walk_ok_min: 20,
+            walk_ok_max: 50,
             verify_terrain: true,
             advanced_placement: true,
             client_walk: Default::default(),

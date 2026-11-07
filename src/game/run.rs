@@ -1789,6 +1789,18 @@ impl RunCtx {
                         ""
                     }
                 ));
+                // already somewhere good? (spawned on the path in range, or
+                // the map's recorded movement doesn't walk at all)
+                if let Some(why) = self.no_walk_needed(h, &d, &cw, &plan, route.as_ref()) {
+                    self.log(format!("minimap walk: client {no} - {why} - no walk"));
+                    WALKED.lock().unwrap_or_else(|e| e.into_inner()).push((
+                        h,
+                        d.clone(),
+                        cw,
+                        plan.pct,
+                    ));
+                    continue;
+                }
                 WALKED
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1893,6 +1905,47 @@ impl RunCtx {
             let _ = super::mapnav::save(&d);
         }
         Some(d)
+    }
+
+    /// Does `h` need to walk at all? Some(reason) when not: it's on the path
+    /// already where it should be (your own stop for this map / lane /
+    /// client: within 5 % of it; else Settings' "already there" range), or
+    /// the map's recorded movement doesn't move.
+    fn no_walk_needed(
+        &self,
+        h: Hwnd,
+        d: &super::mapnav::MapData,
+        cw: &super::mapnav::ClientWalk,
+        plan: &super::mapnav::Plan,
+        route: Option<&crate::movement::Route>,
+    ) -> Option<String> {
+        if plan.pct == 0 {
+            return None; // your own walk points: always walked
+        }
+        let s = &self.settings;
+        let me = self.arrow_at(h, None)?;
+        let own = cw.pct.is_some() || d.walk_pct.is_some() || !d.lane_pct.is_empty();
+        let floor = walk_floor();
+        if let Some(here) = super::mapnav::already_there(
+            d,
+            me,
+            plan.pct,
+            own,
+            (s.walk_ok_min, s.walk_ok_max),
+            floor,
+        ) {
+            return Some(format!(
+                "spawned on the path at {here}% (wanted {}%)",
+                plan.pct
+            ));
+        }
+        let (_, here, _) = super::mapnav::stop_from_click(d, me, 10.0)?;
+        if route.is_some_and(|r| r.hold_ms() <= 300) && here >= floor {
+            return Some(format!(
+                "on the path at {here}% and this map's recorded movement doesn't walk"
+            ));
+        }
+        None
     }
 
     /// A map file for `map` from the minimap on screen right now (saved for

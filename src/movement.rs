@@ -174,6 +174,20 @@ impl Route {
         serde_json::from_str(json).context("bad route json")
     }
 
+    /// How long it holds movement keys in all (0 = it doesn't walk).
+    pub fn hold_ms(&self) -> u64 {
+        fn d(s: &[Step]) -> u64 {
+            s.iter()
+                .map(|x| match x {
+                    Step::Hold { ms, .. } => *ms,
+                    Step::IfImage { then, .. } => d(then),
+                    _ => 0,
+                })
+                .sum()
+        }
+        d(&self.steps)
+    }
+
     /// Fixed time the route takes (waits + holds; pattern waits not counted).
     pub fn duration_ms(&self) -> u64 {
         fn d(s: &[Step]) -> u64 {

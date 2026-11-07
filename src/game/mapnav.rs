@@ -488,6 +488,27 @@ pub fn stop_from_click(
         .map(|(i, pct, p, _)| (i, pct, p))
 }
 
+/// Is a client starting at `me` already where it should stop? Some(its %)
+/// when it's on the path (within 10 px) and: within 5 % of `want` when the
+/// stop is your own (`own`), else between `lo` and `hi` %; never under
+/// `floor` (Sandstorm).
+pub fn already_there(
+    d: &MapData,
+    me: (f32, f32),
+    want: u8,
+    own: bool,
+    (lo, hi): (u8, u8),
+    floor: u8,
+) -> Option<u8> {
+    let (_, here, _) = stop_from_click(d, me, 10.0)?;
+    let ok = if own {
+        (here as i32 - want as i32).abs() <= 5
+    } else {
+        here >= lo && here <= hi
+    };
+    (ok && here >= floor).then_some(here)
+}
+
 /// Put a stop clicked on the editor's map into the map file: the map's own
 /// % on a 1-lane map, the lane's on a map with more.
 pub fn set_stop(d: &mut MapData, lane: usize, pct: u8) {
@@ -697,6 +718,50 @@ fn purple(r: u8, g: u8, b: u8) -> bool {
 /// Lanes other than the green one, by colour.
 const EXTRA_LANES: [fn(u8, u8, u8) -> bool; 1] = [purple];
 
+/// The enemies' spawn icon (the green swirl): where green is packed
+/// tightest - the path is a thin line, the icon a filled disc (an 11 x 11
+/// square holds 60+ of its pixels, never more than ~50 of the path's).
+fn spawn_icon(m: &Frame) -> Option<(f32, f32)> {
+    let (w, h) = (m.width as i32, m.height as i32);
+    let loose = |x: i32, y: i32| {
+        m.rgb(x, y).is_some_and(|(r, g, b)| {
+            g >= 90 && g as i32 - r as i32 >= 40 && g as i32 - b as i32 >= 40
+        })
+    };
+    let mut on = vec![false; (w * h) as usize];
+    for y in BORDER..h - BORDER {
+        for x in BORDER..w - BORDER {
+            on[(y * w + x) as usize] = loose(x, y);
+        }
+    }
+    // counts over 11x11 squares (summed-area table)
+    let mut sat = vec![0i32; ((w + 1) * (h + 1)) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let v = on[(y * w + x) as usize] as i32;
+            let i = ((y + 1) * (w + 1) + x + 1) as usize;
+            sat[i] = v + sat[i - 1] + sat[i - (w + 1) as usize] - sat[i - (w + 2) as usize];
+        }
+    }
+    let area = |x0: i32, y0: i32, x1: i32, y1: i32| {
+        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), (x1 + 1).min(w), (y1 + 1).min(h));
+        let at = |x: i32, y: i32| sat[(y * (w + 1) + x) as usize];
+        at(x1, y1) - at(x0, y1) - at(x1, y0) + at(x0, y0)
+    };
+    let mut best = (0, (0, 0));
+    for y in 0..h {
+        for x in 0..w {
+            if on[(y * w + x) as usize] {
+                let n = area(x - 5, y - 5, x + 5, y + 5);
+                if n > best.0 {
+                    best = (n, (x, y));
+                }
+            }
+        }
+    }
+    (best.0 >= 56).then(|| (best.1 .0 as f32, best.1 .1 as f32))
+}
+
 /// Breadth-first over `on` from `start`: (steps, came-from) per pixel.
 fn trace(on: &[bool], w: i32, h: i32, start: (i32, i32)) -> (Vec<u32>, Vec<usize>) {
     let mut dist = vec![u32::MAX; (w * h) as usize];
@@ -903,8 +968,25 @@ pub fn read(m: &Frame) -> MiniRead {
                 }
             }
         }
-        // start: the green nearest the heart (else any end of it)
-        let from = out.base.unwrap_or((greens[0].0 as f32, greens[0].1 as f32));
+        // start: the green nearest the heart; no heart seen (your arrow
+        // can sit on it at the start): the end farthest from the enemies'
+        // spawn icon
+        let from = match (out.base, spawn_icon(m)) {
+            (Some(b), _) => b,
+            (None, Some(sp)) => {
+                let s0 = nearest(&greens, sp).unwrap_or(greens[0]);
+                let (d0, _) = trace(&on, w, h, s0);
+                let far = greens
+                    .iter()
+                    .filter(|p| d0[(p.1 * w + p.0) as usize] != u32::MAX)
+                    .max_by_key(|p| d0[(p.1 * w + p.0) as usize])
+                    .copied()
+                    .unwrap_or(greens[0]);
+                out.base = Some((far.0 as f32, far.1 as f32));
+                (far.0 as f32, far.1 as f32)
+            }
+            (None, None) => (greens[0].0 as f32, greens[0].1 as f32),
+        };
         let start = nearest(&greens, from).unwrap_or(greens[0]);
         let (dist, prev) = trace(&on, w, h, start);
         let at = |p: &(i32, i32)| dist[(p.1 * w + p.0) as usize];
@@ -1467,7 +1549,7 @@ mod tests {
         let lib = library();
         assert_eq!(
             lib.len(),
-            14,
+            17,
             "{:?}",
             lib.iter().map(|d| &d.map).collect::<Vec<_>>()
         );
@@ -1538,5 +1620,54 @@ mod tests {
             "{:?}",
             read(&load(11)).others
         );
+    }
+
+    /// Your "haven't moved yet" minimaps: where each player starts, as %
+    /// of the enemies' walk (Magic Town's heart is under the arrow - the
+    /// base comes from the enemies' spawn icon instead).
+    #[test]
+    fn where_players_spawn() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/spawn");
+        let at = |n: &str| {
+            let f = Frame::load_png(&dir.join(format!("{n}.png"))).unwrap();
+            let r = read(&f);
+            let d = from_minimap(n, &f);
+            let me = r.players[0].at;
+            (d, me)
+        };
+        let pct = |n: &str| {
+            let (d, me) = at(n);
+            stop_from_click(&d, me, 30.0).map(|x| x.1)
+        };
+        assert_eq!(pct("Magic Town"), Some(100), "at the base");
+        assert_eq!(pct("Sand Village"), Some(100));
+        assert!(
+            pct("Navy Bay_summerevent").unwrap() < 25,
+            "near the enemies' spawn"
+        );
+        assert!(pct("Air Craft_summerevent").unwrap() < 25);
+        // already there (20-50 %): Puppet Island, Snowy Kingdom
+        for n in ["Puppet Island_summerevent", "Snowy Kingdom"] {
+            let (d, me) = at(n);
+            assert!(
+                already_there(&d, me, 50, false, (20, 50), 0).is_some(),
+                "{n}"
+            );
+        }
+        // at the base / near the spawn / off the path: walk
+        for n in ["Magic Town", "Navy Bay_summerevent", "Mountain Temple"] {
+            let (d, me) = at(n);
+            assert!(
+                already_there(&d, me, 50, false, (20, 50), 0).is_none(),
+                "{n}"
+            );
+        }
+        // your own stop: within 5 % of it
+        let (d, me) = at("Snowy Kingdom");
+        assert!(already_there(&d, me, 47, true, (20, 50), 0).is_some());
+        assert!(already_there(&d, me, 70, true, (20, 50), 0).is_none());
+        // Sandstorm floor
+        let (d, me) = at("Navy Bay_summerevent");
+        assert!(already_there(&d, me, 19, true, (0, 100), 25).is_none());
     }
 }
