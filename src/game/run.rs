@@ -397,6 +397,29 @@ pub(crate) fn placed_json(
 /// uses the weather order (buffs first).
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
+/// The weather now (Sandstorm, ...), as last seen this match.
+static WEATHER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+/// The weather turned to Sandstorm: clients that stopped too close to the
+/// enemy spawn walk back up once the vote is done.
+static SANDSTORM_REWALK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// This match's minimap walks: (client, map file, its lane / %).
+static WALKED: std::sync::Mutex<
+    Vec<(Hwnd, super::mapnav::MapData, super::mapnav::ClientWalk, u8)>,
+> = std::sync::Mutex::new(Vec::new());
+
+fn weather_now() -> Option<&'static str> {
+    *WEATHER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The lowest % a minimap walk may stop at in this weather.
+fn walk_floor() -> u8 {
+    if weather_now() == Some("Sandstorm") {
+        super::weather::SANDSTORM_MIN_PCT
+    } else {
+        0
+    }
+}
+
 /// Accounts still upgrading (0 = all done: idle clicks keep things awake).
 /// After closing a unit panel: its closing animation eats clicks, so the
 /// next unit's click waits this long (your log: the first click on a unit
@@ -913,6 +936,7 @@ impl RunCtx {
         }
         if !weather.is_empty() {
             self.log(format!("card screen - weather: {weather}"));
+            self.set_weather(&weather);
         }
         // read the three card titles and take the first one in your order
         let names = Self::read_cards(scr, &f);
@@ -1072,6 +1096,14 @@ impl RunCtx {
         let scr = self.screen(h);
         let Some(f) = scr.frame() else { return Ok(()) };
         let names = Self::read_weather_cards(scr, &f);
+        // the cards are the new weather's: note it (if the banner wasn't read)
+        if let Some(w) = names
+            .iter()
+            .flatten()
+            .find_map(|n| super::weather::weather_of_card(n))
+        {
+            self.set_weather(w);
+        }
         let prio = super::weather::load();
         let (i, rank) = super::weather::pick(&names, &prio);
         self.log(format!(
@@ -1163,7 +1195,69 @@ impl RunCtx {
             "weather shift: {}",
             if weather.is_empty() { "?" } else { weather }
         ));
+        self.set_weather(weather);
         Ok(())
+    }
+
+    /// Note the weather from any text naming one; turning Sandstorm
+    /// mid-match queues the walk-back-up.
+    fn set_weather(&self, text: &str) {
+        let Some(w) = super::weather::weather_in(text) else {
+            return;
+        };
+        let was = {
+            let mut cur = WEATHER.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *cur, Some(w))
+        };
+        if was != Some(w) {
+            self.log(format!("weather now: {w}"));
+            if w == "Sandstorm" {
+                SANDSTORM_REWALK.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Sandstorm came: every client whose minimap walk stopped under the
+    /// floor walks on to it (placing goes on from there).
+    fn sandstorm_rewalk(&self) -> R<()> {
+        let floor = walk_floor();
+        let todo: Vec<_> = WALKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|w| w.1.walk.is_empty() && w.3 < floor)
+            .cloned()
+            .collect();
+        for (h, d, cw, _) in todo {
+            let plan = super::mapnav::plan(&d, cw, self.settings.minimap_walk_pct, floor);
+            self.log(format!(
+                "Sandstorm: client {} walks to {}% on {} (enemies can't be hurt before ~20%)",
+                self.client_no(h),
+                plan.pct,
+                plan.lane
+            ));
+            match self.minimap_walk(h, &plan.points) {
+                Ok(()) => {
+                    for w in WALKED.lock().unwrap_or_else(|e| e.into_inner()).iter_mut() {
+                        if w.0 == h {
+                            w.3 = plan.pct;
+                        }
+                    }
+                }
+                Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
+                Err(e) => self.log(format!("Sandstorm walk: {e}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Client number (1 = the first) of `h`.
+    fn client_no(&self, h: Hwnd) -> usize {
+        self.clients
+            .iter()
+            .position(|c| c.0 == h)
+            .map(|i| i + 1)
+            .unwrap_or(1)
     }
 
     /// Card screen on any client (alts first); back to the main after an alt.
@@ -1178,6 +1272,11 @@ impl RunCtx {
         }
         if alt_done {
             self.to_main()?;
+        }
+        // Sandstorm arrived: walk up out of the no-damage stretch
+        if SANDSTORM_REWALK.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.sleep(1500)?; // the vote screen closing
+            self.sandstorm_rewalk()?;
         }
         Ok(())
     }
@@ -1596,25 +1695,28 @@ impl RunCtx {
             _ => false,
         };
         if let (true, Some(d)) = (use_mini, mini) {
+            self.stage_weather(map);
+            let floor = walk_floor();
+            WALKED.lock().unwrap_or_else(|e| e.into_inner()).clear();
             for h in self.main_last(self.movers()) {
+                let no = self.client_no(h);
+                let cw = s.client_walk.get(&no).copied().unwrap_or_default();
+                let plan = super::mapnav::plan(&d, cw, s.minimap_walk_pct, floor);
                 self.log(format!(
-                    "minimap walk: {} ({}){}",
+                    "minimap walk: client {no} on {} - {}{}{}",
                     d.map,
-                    if d.walk.is_empty() {
+                    if plan.pct == 0 {
+                        format!("{} point(s) of yours", d.walk.len())
+                    } else {
+                        format!("{}, {}% along the enemy path", plan.lane, plan.pct)
+                    },
+                    if plan.raised {
                         format!(
-                            "{}% along the enemy path{}",
-                            d.walk_pct.unwrap_or(s.minimap_walk_pct),
-                            if d.lanes.is_empty() {
-                                String::new()
-                            } else {
-                                format!(
-                                    ", stopping where it covers all {} lanes",
-                                    d.lanes.len() + 1
-                                )
-                            }
+                            " (Sandstorm: at least {}%)",
+                            super::weather::SANDSTORM_MIN_PCT
                         )
                     } else {
-                        format!("{} point(s)", d.walk.len())
+                        String::new()
                     },
                     if route.is_some() {
                         " - preferred over the recorded route"
@@ -1622,7 +1724,11 @@ impl RunCtx {
                         ""
                     }
                 ));
-                match self.minimap_walk(h, &d) {
+                WALKED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((h, d.clone(), cw, plan.pct));
+                match self.minimap_walk(h, &plan.points) {
                     Ok(()) => self.log("minimap walk: there"),
                     Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
                     Err(e) => self.log(format!("minimap walk: {e} - placing from here")),
@@ -1649,6 +1755,26 @@ impl RunCtx {
             ));
         }
         Ok(())
+    }
+
+    /// The weather at the start of a round: kept from the last round on the
+    /// same map, forgotten on a new one; a weather named on screen (the HUD)
+    /// wins.
+    fn stage_weather(&self, map: &str) {
+        static MAP: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+        {
+            let mut m = MAP.lock().unwrap_or_else(|e| e.into_inner());
+            if super::mapnav::key(&m) != super::mapnav::key(map) {
+                *WEATHER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *m = map.to_string();
+            }
+        }
+        let scr = self.screen(self.main);
+        if let Some(t) = scr.frame().and_then(|f| scr.ocr_all(&f)) {
+            self.set_weather(&t);
+        }
+        // a Sandstorm seen here is already in the plan: no walk-back
+        SANDSTORM_REWALK.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// A captcha on the main client: your `captcha` picture (its fixed
@@ -1726,7 +1852,7 @@ impl RunCtx {
     /// one that moved is this client's), then pulse the keys towards each
     /// point, correcting every look; stuck (no move for 600 ms) = back up
     /// and strafe. 90 s at most.
-    pub(crate) fn minimap_walk(&self, h: Hwnd, d: &super::mapnav::MapData) -> R<()> {
+    pub(crate) fn minimap_walk(&self, h: Hwnd, targets: &[(f32, f32)]) -> R<()> {
         use super::mapnav::{read_client, Cmd, KeyDirs, Nav, W};
         // which arrow is mine, and which way W goes
         let before: Vec<(f32, f32)> = self
@@ -1777,10 +1903,7 @@ impl RunCtx {
             "minimap walk: W goes {:.0}° on the minimap",
             super::mapnav::bearing(dirs.w.0, dirs.w.1)
         ));
-        let points = super::mapnav::from_nearest(
-            &super::mapnav::walk_points_covering(d, self.settings.minimap_walk_pct),
-            me,
-        );
+        let points = super::mapnav::from_nearest(targets, me);
         let mut nav = Nav::new(dirs, points);
         let started = Instant::now();
         let mut dl = self.control.deadline(self.secs(90.0));

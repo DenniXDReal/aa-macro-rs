@@ -45,14 +45,14 @@ impl App {
                 ui.checkbox(&mut self.settings.minimap_nav, "walk by the minimap when a map has no route")
                     .changed()
                     .then(|| self.dirty());
-                ui.label("Max path distance");
+                ui.label("Max Path Distance %");
                 if ui
                     .add(
                         egui::DragValue::new(&mut self.settings.minimap_walk_pct)
                             .range(5..=100)
                             .suffix(" %"),
                     )
-                    .on_hover_text("maps without your own walk points walk the enemy path from the base end, this far towards the spawn (the front line), then place")
+                    .on_hover_text("where to stop: % of the enemies' walk from their spawn (0 % = their spawn, 100 % = your base). Walks out from the base along the path to it, then places. Sandstorm: at least 25 %.")
                     .changed()
                 {
                     self.dirty();
@@ -66,6 +66,8 @@ impl App {
             if !self.maps_ui.msg.is_empty() {
                 ui.label(RichText::new(&self.maps_ui.msg).size(11.0).color(WARN));
             }
+            ui.add_space(4.0);
+            self.client_walk_ui(ui);
             ui.add_space(6.0);
             ui.horizontal_top(|ui| {
                 // the list
@@ -186,9 +188,48 @@ impl App {
         if let Some(s) = d.spawn {
             p.circle_stroke(at(s), 7.0, Stroke::new(2.0, BAD));
         }
+        // lane names at their spawns (2+ lanes)
+        let polys = mapnav::lane_polys(&d);
+        if polys.len() > 1 {
+            for (poly, name) in polys.iter().zip(mapnav::lane_names(&d)) {
+                p.text(
+                    at(poly[0]) + Vec2::new(0.0, -14.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    name,
+                    egui::FontId::proportional(11.0),
+                    Color32::WHITE,
+                );
+            }
+        }
+        // each client's stop (lane + % from the client table)
+        if d.walk.is_empty() {
+            for no in 1..=self.settings.max_instances.max(1) {
+                let cw = self
+                    .settings
+                    .client_walk
+                    .get(&no)
+                    .copied()
+                    .unwrap_or_default();
+                if cw == mapnav::ClientWalk::default() {
+                    continue;
+                }
+                let plan = mapnav::plan(&d, cw, self.settings.minimap_walk_pct, 0);
+                if let Some(e) = plan.points.last() {
+                    let c = at([e.0 as i32, e.1 as i32]);
+                    p.circle_stroke(c, 6.0, Stroke::new(2.0, Color32::from_rgb(255, 210, 80)));
+                    p.text(
+                        c + Vec2::new(8.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("C{no}"),
+                        egui::FontId::proportional(11.0),
+                        Color32::from_rgb(255, 210, 80),
+                    );
+                }
+            }
+        }
         // no points of yours: the part of the path it walks (dotted)
         if d.walk.is_empty() {
-            let auto = mapnav::walk_points_covering(&d, self.settings.minimap_walk_pct);
+            let auto = mapnav::walk_points(&d, self.settings.minimap_walk_pct);
             for q in &auto {
                 p.circle_filled(
                     at([q.0 as i32, q.1 as i32]),
@@ -254,6 +295,37 @@ impl App {
                 }
             }
         });
+        // per lane: its own %
+        let names = mapnav::lane_names(&d);
+        if names.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("lane %").color(MUTED));
+                for n in &names {
+                    let mut own = d.lane_pct.contains_key(n);
+                    if ui
+                        .checkbox(&mut own, n.as_str())
+                        .on_hover_text("this lane stops at its own % (a client's own % still wins)")
+                        .changed()
+                    {
+                        if own {
+                            let v = d.walk_pct.unwrap_or(self.settings.minimap_walk_pct);
+                            d.lane_pct.insert(n.clone(), v);
+                        } else {
+                            d.lane_pct.remove(n);
+                        }
+                        self.maps_ui.dirty = true;
+                    }
+                    if let Some(v) = d.lane_pct.get_mut(n) {
+                        if ui
+                            .add(egui::DragValue::new(v).range(5..=100).suffix(" %"))
+                            .changed()
+                        {
+                            self.maps_ui.dirty = true;
+                        }
+                    }
+                }
+            });
+        }
         ui.horizontal(|ui| {
             ui.label(RichText::new(&d.map).strong());
             if ui.button("Undo point").clicked() {
@@ -276,10 +348,63 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · violet = other lanes (stop covers all) · purple ring = where it stops")
+            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · violet = other lanes (stop covers all) · purple ring = where it stops (Auto) · yellow C1/C2 = each client's stop · % = of the enemies' walk from their spawn")
                 .size(11.0)
                 .color(MUTED),
         );
         self.maps_ui.data = Some(d);
+    }
+
+    /// Which lane each client walks and its own %.
+    fn client_walk_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("CLIENTS ON MULTI-LANE MAPS")
+                .size(11.0)
+                .color(MUTED),
+        );
+        let mut changed = false;
+        egui::Grid::new("client_walk").num_columns(3).show(ui, |ui| {
+            for no in 1..=self.settings.max_instances.max(1) {
+                let mut cw = self.settings.client_walk.get(&no).copied().unwrap_or_default();
+                ui.label(format!("Client {no}"));
+                egui::ComboBox::from_id_salt(("lane", no))
+                    .selected_text(cw.lane.label())
+                    .show_ui(ui, |ui| {
+                        for l in mapnav::LanePick::ALL {
+                            changed |= ui.selectable_value(&mut cw.lane, l, l.label()).changed();
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    let mut own = cw.pct.is_some();
+                    if ui
+                        .checkbox(&mut own, "own %")
+                        .on_hover_text("this client stops at its own % on every map (else the lane's / map's / Max Path Distance %)")
+                        .changed()
+                    {
+                        cw.pct = own.then_some(self.settings.minimap_walk_pct);
+                        changed = true;
+                    }
+                    if let Some(v) = cw.pct.as_mut() {
+                        changed |= ui
+                            .add(egui::DragValue::new(v).range(5..=100).suffix(" %"))
+                            .changed();
+                    }
+                });
+                ui.end_row();
+                if cw == mapnav::ClientWalk::default() {
+                    self.settings.client_walk.remove(&no);
+                } else {
+                    self.settings.client_walk.insert(no, cw);
+                }
+            }
+        });
+        ui.label(
+            RichText::new("Auto = the only lane / a spot covering both of 2 / the center of 3. A lane the map hasn't got = Auto. Sandstorm raises any stop under 25 % to 25 % (also mid-match, after the vote).")
+                .size(11.0)
+                .color(MUTED),
+        );
+        if changed {
+            self.dirty();
+        }
     }
 }

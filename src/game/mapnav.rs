@@ -58,8 +58,11 @@ pub struct MapData {
     /// Where to walk, in order. Empty = along the enemy path from the base
     /// towards the spawn, `walk_pct` of the way (the front line).
     pub walk: Vec<[i32; 2]>,
-    /// This map's share of the path to walk, % (None = Settings' value).
+    /// Where to stop on this map, % of the enemy path from their spawn
+    /// (None = Settings' value).
     pub walk_pct: Option<u8>,
+    /// Per lane ("left" / "center" / "right" / "lane 4"...): its own %.
+    pub lane_pct: BTreeMap<String, u8>,
     /// Camera settings the file was made with (free-form, for reference).
     pub camera: Option<serde_json::Value>,
     pub notes: String,
@@ -143,51 +146,213 @@ pub fn from_minimap(map: &str, m: &Frame) -> MapData {
             .collect(),
         walk: vec![],
         walk_pct: None,
+        lane_pct: Default::default(),
         camera: None,
         notes: String::new(),
     }
 }
 
-/// Where to walk on this map: your walk points if it has any, else the
-/// enemy path from the base end towards the spawn, stopping `pct` % of the
-/// way along it (this map's own % if set). Empty = nothing to walk.
-pub fn walk_points(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
-    if !d.walk.is_empty() {
-        return d.walk.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+/// Which lane a client walks on a map with more than one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LanePick {
+    /// 1 lane: it. 2 lanes: a spot covering both. 3+: the center one.
+    #[default]
+    Auto,
+    Left,
+    Center,
+    Right,
+}
+
+impl LanePick {
+    pub const ALL: [LanePick; 4] = [Self::Auto, Self::Left, Self::Center, Self::Right];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (center / cover all)",
+            Self::Left => "Left",
+            Self::Center => "Center",
+            Self::Right => "Right",
+        }
     }
-    if d.path.len() < 2 {
-        return vec![];
+}
+
+/// One client's walk: which lane, and its own % (None = the lane's /
+/// map's / Settings' value).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClientWalk {
+    pub lane: LanePick,
+    pub pct: Option<u8>,
+}
+
+/// Every lane, spawn first: the green one, then the others.
+pub fn lane_polys(d: &MapData) -> Vec<&[[i32; 2]]> {
+    std::iter::once(d.path.as_slice())
+        .chain(d.lanes.iter().map(|l| l.as_slice()))
+        .filter(|l| l.len() >= 2)
+        .collect()
+}
+
+/// Each lane's name, in `lane_polys` order: looking from the base out
+/// towards the spawns, left to right ("center" alone for 1 lane; past the
+/// 3rd, "lane N").
+pub fn lane_names(d: &MapData) -> Vec<String> {
+    let polys = lane_polys(d);
+    let base = d
+        .base
+        .map(|b| (b[0] as f32, b[1] as f32))
+        .or_else(|| {
+            polys
+                .first()
+                .and_then(|p| p.last())
+                .map(|b| (b[0] as f32, b[1] as f32))
+        })
+        .unwrap_or_default();
+    // direction to each spawn, and the average of them
+    let dirs: Vec<(f32, f32)> = polys
+        .iter()
+        .map(|p| {
+            let (dx, dy) = (p[0][0] as f32 - base.0, p[0][1] as f32 - base.1);
+            let l = dx.hypot(dy).max(1.0);
+            (dx / l, dy / l)
+        })
+        .collect();
+    let n = dirs.len().max(1) as f32;
+    let mean = (
+        dirs.iter().map(|d| d.0).sum::<f32>() / n,
+        dirs.iter().map(|d| d.1).sum::<f32>() / n,
+    );
+    // screen y points down: turning clockwise from the average = right
+    let side = |v: (f32, f32)| (mean.0 * v.1 - mean.1 * v.0).atan2(mean.0 * v.0 + mean.1 * v.1);
+    let mut order: Vec<usize> = (0..dirs.len()).collect();
+    order.sort_by(|a, b| side(dirs[*a]).total_cmp(&side(dirs[*b])));
+    let names: &[&str] = match dirs.len() {
+        1 => &["center"],
+        2 => &["left", "right"],
+        _ => &["left", "center", "right"],
+    };
+    let mut out = vec![String::new(); dirs.len()];
+    for (rank, i) in order.iter().enumerate() {
+        out[*i] = names
+            .get(rank)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("lane {}", rank + 1));
     }
-    let pct = d.walk_pct.unwrap_or(default_pct).clamp(1, 100) as f32 / 100.0;
-    // stored spawn -> base: walk it base -> spawn
-    let pts: Vec<(f32, f32)> = d
-        .path
+    out
+}
+
+/// From the base end along `poly` (stored spawn first) up to where an
+/// enemy has walked `pct` % of it from its spawn.
+fn cut(poly: &[[i32; 2]], pct: u8) -> Vec<(f32, f32)> {
+    let pts: Vec<(f32, f32)> = poly
         .iter()
         .rev()
         .map(|p| (p[0] as f32, p[1] as f32))
         .collect();
+    if pts.len() < 2 {
+        return pts;
+    }
     let total: f32 = pts
         .windows(2)
         .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
         .sum();
-    let stop = total * pct;
+    // pct from the spawn = (100 - pct) from the base
+    let stop = total * (100 - pct.min(100)) as f32 / 100.0;
     let mut out = vec![pts[0]];
     let mut done = 0.0;
     for w in pts.windows(2) {
         let seg = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
         if done + seg >= stop {
-            // the exact stop point on this stretch
             let t = if seg > 0.0 { (stop - done) / seg } else { 0.0 };
-            out.push((
+            let end = (
                 w[0].0 + (w[1].0 - w[0].0) * t,
                 w[0].1 + (w[1].1 - w[0].1) * t,
-            ));
+            );
+            if out.last() != Some(&end) {
+                out.push(end);
+            }
             return out;
         }
         done += seg;
         out.push(w[1]);
     }
     out
+}
+
+/// A client's walk on a map, worked out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Plan {
+    pub points: Vec<(f32, f32)>,
+    /// "left lane" / "the path" / "both lanes" / "your points".
+    pub lane: String,
+    /// % of the enemy path from their spawn (0 = your own points).
+    pub pct: u8,
+    /// Raised to the floor (Sandstorm).
+    pub raised: bool,
+}
+
+/// Where a client walks: your walk points if the map has any; else its
+/// lane (Auto: the only one / a spot covering both / the center one) up to
+/// `pct` % of the enemy path from their spawn - the client's own %, else
+/// the lane's, the map's, Settings'. Never under `floor` % (Sandstorm:
+/// enemies can't be hurt early in their walk).
+pub fn plan(d: &MapData, c: ClientWalk, default_pct: u8, floor: u8) -> Plan {
+    if !d.walk.is_empty() {
+        return Plan {
+            points: d.walk.iter().map(|p| (p[0] as f32, p[1] as f32)).collect(),
+            lane: "your points".into(),
+            ..Default::default()
+        };
+    }
+    let polys = lane_polys(d);
+    if polys.is_empty() {
+        return Plan::default();
+    }
+    let names = lane_names(d);
+    let want = match c.lane {
+        LanePick::Auto => None,
+        LanePick::Left => Some("left"),
+        LanePick::Center => Some("center"),
+        LanePick::Right => Some("right"),
+    };
+    // the lane: picked, else Auto's choice (None = cover both of 2)
+    let lane = want
+        .and_then(|w| names.iter().position(|n| n == w))
+        .or(match polys.len() {
+            1 => Some(0),
+            2 => None,
+            _ => names.iter().position(|n| n == "center"),
+        });
+    let base_pct = c
+        .pct
+        .or_else(|| lane.and_then(|i| d.lane_pct.get(&names[i]).copied()))
+        .or(d.walk_pct)
+        .unwrap_or(default_pct)
+        .clamp(1, 100);
+    let pct = base_pct.max(floor.min(100));
+    let raised = pct > base_pct;
+    match lane {
+        Some(i) => Plan {
+            points: cut(polys[i], pct),
+            lane: if polys.len() == 1 {
+                "the path".into()
+            } else {
+                format!("{} lane", names[i])
+            },
+            pct,
+            raised,
+        },
+        None => Plan {
+            points: covering(d, cut(polys[0], pct)),
+            lane: "both lanes".into(),
+            pct,
+            raised,
+        },
+    }
+}
+
+/// Where to walk with Settings' % and no lane picked.
+pub fn walk_points(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
+    plan(d, ClientWalk::default(), default_pct, 0).points
 }
 
 /// How far (minimap px) the stop may be from every lane on a 2- / 3-lane
@@ -234,12 +399,10 @@ fn densify(pts: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
     out
 }
 
-/// `walk_points`, and on a map with more than one lane: out along the main
-/// (green) lane only as far as a spot still within `COVER_PX` of every
-/// lane - units there cover all of them (never past the % either).
-pub fn walk_points_covering(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
-    let route = walk_points(d, default_pct);
-    if !d.walk.is_empty() || d.lanes.is_empty() || route.len() < 2 {
+/// `route` (out along the green lane), but only as far as a spot still
+/// within `COVER_PX` of every lane - units there cover all of them.
+fn covering(d: &MapData, route: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    if d.lanes.is_empty() || route.len() < 2 {
         return route;
     }
     let fine = densify(&route, 2.0);
@@ -872,7 +1035,7 @@ mod tests {
         let s = r.lane_spawns[0];
         assert!((s.0 - 47).abs() <= 8 && (s.1 - 136).abs() <= 8, "{s:?}");
         let d = from_minimap("Assassin Park", &load(6));
-        let end = *walk_points_covering(&d, 50).last().unwrap();
+        let end = *walk_points(&d, 50).last().unwrap();
         assert!(poly_dist(end, &d.path) <= COVER_PX);
         assert!(poly_dist(end, &d.lanes[0]) <= COVER_PX, "{end:?}");
         // and it did get away from the base
@@ -889,7 +1052,7 @@ mod tests {
             lanes: vec![vec![[30, 0], [30, 50], [0, 50]]],
             ..Default::default()
         };
-        let end = *walk_points_covering(&d, 50).last().unwrap();
+        let end = *walk_points(&d, 50).last().unwrap();
         // 50% = x 50, but past x 48 the 2nd lane is > 18 px away
         assert!((end.0 - 48.0).abs() <= 2.0 && end.1 == 50.0, "{end:?}");
         // one lane: the plain % walk
@@ -897,7 +1060,86 @@ mod tests {
             lanes: vec![],
             ..d.clone()
         };
-        assert_eq!(walk_points_covering(&one, 50), walk_points(&one, 50));
+        assert_eq!(walk_points(&one, 50).last(), Some(&(50.0, 50.0)));
+    }
+
+    /// A 3-lane map: base at the bottom, spawns up-left, up, up-right.
+    fn three_lanes() -> MapData {
+        let line = |sx: i32, sy: i32| -> Vec<[i32; 2]> {
+            (0..=10)
+                .map(|i| [sx + (70 - sx) * i / 10, sy + (130 - sy) * i / 10])
+                .collect()
+        };
+        MapData {
+            base: Some([70, 130]),
+            path: line(70, 10),
+            lanes: vec![line(130, 30), line(10, 30)],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lanes_by_name() {
+        let d = three_lanes();
+        assert_eq!(lane_names(&d), vec!["center", "right", "left"]);
+        // one lane: "center"; Assassin Park's two: one each side
+        assert_eq!(
+            lane_names(&MapData {
+                lanes: vec![],
+                ..d.clone()
+            }),
+            vec!["center"]
+        );
+        let ap = from_minimap("Assassin Park", &load(6));
+        let mut n = lane_names(&ap);
+        n.sort();
+        assert_eq!(n, vec!["left", "right"]);
+    }
+
+    #[test]
+    fn client_lane_and_percent() {
+        let d = three_lanes();
+        let walk = |lane, pct| ClientWalk { lane, pct };
+        // Auto on 3 lanes = center; 50 % = half way up
+        let p = plan(&d, walk(LanePick::Auto, None), 50, 0);
+        assert_eq!(p.lane, "center lane");
+        assert_eq!(p.points.last(), Some(&(70.0, 70.0)));
+        // left lane at 35 %: 35 % of the enemies' walk from (10,30)
+        let p = plan(&d, walk(LanePick::Left, Some(35)), 50, 0);
+        assert_eq!(p.lane, "left lane");
+        let e = *p.points.last().unwrap();
+        assert!(
+            (e.0 - 31.0).abs() < 1.0 && (e.1 - 65.0).abs() < 1.0,
+            "{e:?}"
+        );
+        // the lane's own % (Routes page) when the client has none
+        let mut d2 = d.clone();
+        d2.lane_pct.insert("right".into(), 80);
+        assert_eq!(plan(&d2, walk(LanePick::Right, None), 50, 0).pct, 80);
+        assert_eq!(plan(&d2, walk(LanePick::Right, Some(40)), 50, 0).pct, 40);
+        // a lane the map hasn't got: Auto's pick
+        let one = MapData {
+            lanes: vec![],
+            ..d.clone()
+        };
+        assert_eq!(
+            plan(&one, walk(LanePick::Left, None), 50, 0).lane,
+            "the path"
+        );
+    }
+
+    #[test]
+    fn sandstorm_floor() {
+        let d = three_lanes();
+        let c = ClientWalk {
+            lane: LanePick::Center,
+            pct: Some(10),
+        };
+        let p = plan(&d, c, 50, 25);
+        assert_eq!((p.pct, p.raised), (25, true));
+        // already past it: untouched
+        let p = plan(&d, ClientWalk { pct: Some(40), ..c }, 50, 25);
+        assert_eq!((p.pct, p.raised), (40, false));
     }
 
     /// The arrows on samples 1 and 4 point up (^).
@@ -935,9 +1177,10 @@ mod tests {
             walk_pct: Some(35),
             ..d.clone()
         };
+        // 35 % of the enemies' walk from their spawn = 65 px from the base
         assert_eq!(
             walk_points(&d35, 50).last(),
-            Some(&(35.0, 10.0)),
+            Some(&(65.0, 10.0)),
             "this map's own %"
         );
         // your own points win

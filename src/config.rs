@@ -110,6 +110,9 @@ pub struct Settings {
     /// route is the fallback); a map with no map file gets one from its
     /// minimap there and then.
     pub prefer_minimap: bool,
+    /// Per client number (1 = the first): which lane it walks and its own
+    /// % (Routes page).
+    pub client_walk: std::collections::BTreeMap<usize, crate::game::mapnav::ClientWalk>,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).
     pub resume_mode: ResumeMode,
@@ -548,6 +551,7 @@ impl Default for Settings {
             minimap_nav: true,
             minimap_walk_pct: 50,
             prefer_minimap: false,
+            client_walk: Default::default(),
             dungeon: Default::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
