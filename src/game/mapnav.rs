@@ -52,6 +52,9 @@ pub struct MapData {
     pub spawn: Option<[i32; 2]>,
     /// The enemies' path, spawn first, every few px.
     pub path: Vec<[i32; 2]>,
+    /// More lanes on 2- / 3-lane maps (purple, ...), each spawn first,
+    /// ending at the base like `path`.
+    pub lanes: Vec<Vec<[i32; 2]>>,
     /// Where to walk, in order. Empty = along the enemy path from the base
     /// towards the spawn, `walk_pct` of the way (the front line).
     pub walk: Vec<[i32; 2]>,
@@ -133,6 +136,11 @@ pub fn from_minimap(map: &str, m: &Frame) -> MapData {
         base: r.base.map(|p| [p.0 as i32, p.1 as i32]),
         spawn: r.spawn.map(|p| [p.0, p.1]),
         path: r.path.iter().map(|p| [p.0, p.1]).collect(),
+        lanes: r
+            .lanes
+            .iter()
+            .map(|l| l.iter().map(|p| [p.0, p.1]).collect())
+            .collect(),
         walk: vec![],
         walk_pct: None,
         camera: None,
@@ -178,6 +186,101 @@ pub fn walk_points(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
         }
         done += seg;
         out.push(w[1]);
+    }
+    out
+}
+
+/// How far (minimap px) the stop may be from every lane on a 2- / 3-lane
+/// map: about what units placed there still reach.
+pub const COVER_PX: f32 = 18.0;
+
+/// Shortest distance from `p` to the line through `poly`.
+fn poly_dist(p: (f32, f32), poly: &[[i32; 2]]) -> f32 {
+    let seg = |a: (f32, f32), b: (f32, f32)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+    };
+    let f = |q: &[i32; 2]| (q[0] as f32, q[1] as f32);
+    match poly {
+        [] => f32::MAX,
+        [one] => seg(f(one), f(one)),
+        _ => poly
+            .windows(2)
+            .map(|w| seg(f(&w[0]), f(&w[1])))
+            .fold(f32::MAX, f32::min),
+    }
+}
+
+/// `pts` with a point every `step` px along it.
+fn densify(pts: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
+    let mut out = pts.first().copied().into_iter().collect::<Vec<_>>();
+    for w in pts.windows(2) {
+        let len = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        let n = (len / step).ceil().max(1.0) as usize;
+        for i in 1..=n {
+            let t = i as f32 / n as f32;
+            out.push((
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            ));
+        }
+    }
+    out
+}
+
+/// `walk_points`, and on a map with more than one lane: out along the main
+/// (green) lane only as far as a spot still within `COVER_PX` of every
+/// lane - units there cover all of them (never past the % either).
+pub fn walk_points_covering(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
+    let route = walk_points(d, default_pct);
+    if !d.walk.is_empty() || d.lanes.is_empty() || route.len() < 2 {
+        return route;
+    }
+    let fine = densify(&route, 2.0);
+    let worst = |p: (f32, f32)| {
+        d.lanes
+            .iter()
+            .map(|l| poly_dist(p, l))
+            .fold(poly_dist(p, &d.path), f32::max)
+    };
+    let scores: Vec<f32> = fine.iter().map(|p| worst(*p)).collect();
+    let stop = match scores.iter().rposition(|s| *s <= COVER_PX) {
+        Some(i) => i,
+        // nowhere covers every lane: the closest spot to all of them
+        None => scores
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap_or(0),
+    };
+    // the route's own corners up to there, then the stop itself
+    let end = fine[stop];
+    let mut out: Vec<(f32, f32)> = vec![];
+    let mut gone = 0.0;
+    let reach: f32 = fine
+        .windows(2)
+        .take(stop)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    for (i, p) in route.iter().enumerate() {
+        if i > 0 {
+            let q = route[i - 1];
+            gone += (p.0 - q.0).hypot(p.1 - q.1);
+        }
+        if gone >= reach - 0.01 {
+            break;
+        }
+        out.push(*p);
+    }
+    if out.last() != Some(&end) {
+        out.push(end);
     }
     out
 }
@@ -248,6 +351,10 @@ pub struct MiniRead {
     pub spawn: Option<(i32, i32)>,
     /// Spawn to base, every few px.
     pub path: Vec<(i32, i32)>,
+    /// Other lanes (purple, ...), spawn to base like `path`.
+    pub lanes: Vec<Vec<(i32, i32)>>,
+    /// Each extra lane's spawn.
+    pub lane_spawns: Vec<(i32, i32)>,
 }
 
 fn white(r: u8, g: u8, b: u8) -> bool {
@@ -258,6 +365,66 @@ fn blue(r: u8, g: u8, b: u8) -> bool {
 }
 fn green(r: u8, g: u8, b: u8) -> bool {
     g > 150 && r < 160 && b < 110 && g as i32 - r as i32 > 50
+}
+/// The second lane's colour (Assassin Park's purple).
+fn purple(r: u8, g: u8, b: u8) -> bool {
+    r > 100 && b > 150 && g < 80 && b as i32 - g as i32 > 100
+}
+/// Lanes other than the green one, by colour.
+const EXTRA_LANES: [fn(u8, u8, u8) -> bool; 1] = [purple];
+
+/// Breadth-first over `on` from `start`: (steps, came-from) per pixel.
+fn trace(on: &[bool], w: i32, h: i32, start: (i32, i32)) -> (Vec<u32>, Vec<usize>) {
+    let mut dist = vec![u32::MAX; (w * h) as usize];
+    let mut prev = vec![usize::MAX; (w * h) as usize];
+    let mut q = VecDeque::new();
+    dist[(start.1 * w + start.0) as usize] = 0;
+    q.push_back(start);
+    while let Some((x, y)) = q.pop_front() {
+        let i = (y * w + x) as usize;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                    continue;
+                }
+                let j = (ny * w + nx) as usize;
+                if on[j] && dist[j] == u32::MAX {
+                    dist[j] = dist[i] + 1;
+                    prev[j] = i;
+                    q.push_back((nx, ny));
+                }
+            }
+        }
+    }
+    (dist, prev)
+}
+
+/// From `far` back to the start of `trace`, a point every 6 steps.
+fn back(prev: &[usize], w: i32, far: (i32, i32)) -> Vec<(i32, i32)> {
+    let mut out = vec![];
+    let mut i = (far.1 * w + far.0) as usize;
+    let mut n = 0;
+    loop {
+        if n % 6 == 0 || prev[i] == usize::MAX {
+            out.push(((i as i32) % w, (i as i32) / w));
+        }
+        if prev[i] == usize::MAX {
+            break;
+        }
+        i = prev[i];
+        n += 1;
+    }
+    out
+}
+
+/// The pixel of `pts` nearest `to`.
+fn nearest(pts: &[(i32, i32)], to: (f32, f32)) -> Option<(i32, i32)> {
+    pts.iter().copied().min_by(|a, b| {
+        let da = (a.0 as f32 - to.0).powi(2) + (a.1 as f32 - to.1).powi(2);
+        let db = (b.0 as f32 - to.0).powi(2) + (b.1 as f32 - to.1).powi(2);
+        da.total_cmp(&db)
+    })
 }
 
 /// 8-connected groups of the pixels where `mask` is true (inside the frame).
@@ -341,7 +508,17 @@ pub fn read(m: &Frame) -> MiniRead {
     if let Some(h) = whites.iter().find(|g| g.len() >= 30) {
         out.base = Some(centre(h));
     }
-    for g in whites.iter().filter(|g| (4..30).contains(&g.len())) {
+    // arrows are ~6x4; a unit's range ring breaks into 1 px wide arcs
+    let arrow_like = |g: &&Vec<(i32, i32)>| {
+        let (x0, x1) = (g.iter().map(|p| p.0).min(), g.iter().map(|p| p.0).max());
+        let (y0, y1) = (g.iter().map(|p| p.1).min(), g.iter().map(|p| p.1).max());
+        let (Some(x0), Some(x1), Some(y0), Some(y1)) = (x0, x1, y0, y1) else {
+            return false;
+        };
+        let (bw, bh) = (x1 - x0 + 1, y1 - y0 + 1);
+        (4..30).contains(&g.len()) && (3..=8).contains(&bw) && (3..=8).contains(&bh)
+    };
+    for g in whites.iter().filter(arrow_like) {
         let at = centre(g);
         // the blue mark behind the arrow, if there is one right by it
         let back = blues
@@ -361,8 +538,14 @@ pub fn read(m: &Frame) -> MiniRead {
         };
         out.players.push(Player { at, heading });
     }
-    // the path: walk the green from the end by the heart to the far end
+    // the paths: from the end by the heart out to each lane's far end
+    // (lanes share the stretch by the heart, so one walk over all of them)
     let greens: Vec<(i32, i32)> = groups(m, green).into_iter().flatten().collect();
+    let extras: Vec<Vec<(i32, i32)>> = EXTRA_LANES
+        .iter()
+        .map(|f| groups(m, f).into_iter().flatten().collect::<Vec<_>>())
+        .filter(|l| l.len() >= 20)
+        .collect();
     if greens.len() >= 20 {
         let (w, h) = (m.width as i32, m.height as i32);
         // the arrows sit on the path (it's where players stand): their
@@ -370,13 +553,17 @@ pub fn read(m: &Frame) -> MiniRead {
         // crosses the gaps they leave
         let arrows: Vec<(i32, i32)> = whites
             .iter()
-            .filter(|g| (4..30).contains(&g.len()))
+            .filter(arrow_like)
             .chain(blues.iter())
             .flatten()
             .copied()
             .collect();
         let mut on = vec![false; (w * h) as usize];
-        for p in greens.iter().chain(arrows.iter()) {
+        for p in greens
+            .iter()
+            .chain(extras.iter().flatten())
+            .chain(arrows.iter())
+        {
             for dy in -2..=2 {
                 for dx in -2..=2 {
                     let (x, y) = (p.0 + dx, p.1 + dy);
@@ -388,54 +575,43 @@ pub fn read(m: &Frame) -> MiniRead {
         }
         // start: the green nearest the heart (else any end of it)
         let from = out.base.unwrap_or((greens[0].0 as f32, greens[0].1 as f32));
-        let start = *greens
-            .iter()
-            .min_by(|a, b| {
-                let da = (a.0 as f32 - from.0).powi(2) + (a.1 as f32 - from.1).powi(2);
-                let db = (b.0 as f32 - from.0).powi(2) + (b.1 as f32 - from.1).powi(2);
-                da.total_cmp(&db)
-            })
-            .unwrap_or(&greens[0]);
-        let mut dist = vec![u32::MAX; (w * h) as usize];
-        let mut prev = vec![usize::MAX; (w * h) as usize];
-        let mut q = VecDeque::new();
-        let si = (start.1 * w + start.0) as usize;
-        dist[si] = 0;
-        q.push_back(start);
-        let mut far = start;
-        while let Some((x, y)) = q.pop_front() {
-            let i = (y * w + x) as usize;
-            if dist[i] > dist[(far.1 * w + far.0) as usize] {
-                far = (x, y);
-            }
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx < 0 || ny < 0 || nx >= w || ny >= h {
+        let start = nearest(&greens, from).unwrap_or(greens[0]);
+        let (dist, prev) = trace(&on, w, h, start);
+        let at = |p: &(i32, i32)| dist[(p.1 * w + p.0) as usize];
+        // a lane's spawn: its pixel farthest along from the heart
+        let far = |lane: &[(i32, i32)]| {
+            lane.iter()
+                .filter(|p| at(p) != u32::MAX)
+                .max_by_key(|p| at(p))
+                .copied()
+        };
+        let main = far(&greens).unwrap_or(start);
+        out.spawn = Some(main);
+        out.path = back(&prev, w, main);
+        for lane in &extras {
+            let path = match far(lane) {
+                Some(s) => (s, back(&prev, w, s)),
+                // a lane that never meets the green: its own walk
+                None => {
+                    let Some(s0) = nearest(lane, from) else {
                         continue;
-                    }
-                    let j = (ny * w + nx) as usize;
-                    if on[j] && dist[j] == u32::MAX {
-                        dist[j] = dist[i] + 1;
-                        prev[j] = i;
-                        q.push_back((nx, ny));
-                    }
+                    };
+                    let (d2, p2) = trace(&on, w, h, s0);
+                    let Some(s) = lane
+                        .iter()
+                        .filter(|p| d2[(p.1 * w + p.0) as usize] != u32::MAX)
+                        .max_by_key(|p| d2[(p.1 * w + p.0) as usize])
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    (s, back(&p2, w, s))
                 }
+            };
+            if path.1.len() >= 3 {
+                out.lane_spawns.push(path.0);
+                out.lanes.push(path.1);
             }
-        }
-        out.spawn = Some(far);
-        // spawn back to the heart, a point every 6 steps
-        let mut i = (far.1 * w + far.0) as usize;
-        let mut n = 0;
-        loop {
-            if n % 6 == 0 || prev[i] == usize::MAX {
-                out.path.push(((i as i32) % w, (i as i32) / w));
-            }
-            if prev[i] == usize::MAX {
-                break;
-            }
-            i = prev[i];
-            n += 1;
         }
     }
     out
@@ -664,6 +840,64 @@ mod tests {
         // the 5th: just that it's all there
         let r = read(&load(5));
         assert!(r.base.is_some() && !r.players.is_empty() && r.path.len() >= 10);
+        // the newer ones (6 = Assassin Park, 2 lanes; 11 = a unit's range
+        // ring and placed units over the path)
+        let more = [
+            (6, (110.0, 74.0), (81.5, 83.5), (49, 9)),
+            (7, (84.0, 12.0), (81.0, 71.5), (75, 136)),
+            (8, (51.0, 134.0), (79.5, 134.0), (88, 10)),
+            (9, (138.0, 84.5), (51.5, 79.5), (14, 45)),
+            (10, (17.0, 80.0), (13.0, 91.5), (140, 85)),
+            (11, (138.0, 76.5), (78.0, 68.5), (14, 80)),
+        ];
+        for (n, heart, arrow, spawn) in more {
+            let r = read(&load(n));
+            assert!(near(r.base.unwrap(), heart, 4.0), "{n}: heart {:?}", r.base);
+            assert_eq!(r.players.len(), 1, "{n}: one arrow, {:?}", r.players);
+            assert!(near(r.players[0].at, arrow, 4.0), "{n}: arrow");
+            let s = r.spawn.unwrap();
+            assert!(
+                (s.0 - spawn.0).abs() <= 12 && (s.1 - spawn.1).abs() <= 12,
+                "{n}: spawn {s:?}"
+            );
+            assert_eq!(r.lanes.len(), usize::from(n == 6), "{n}: lanes");
+        }
+    }
+
+    /// Assassin Park: the purple lane from the bottom spawn, and the stop
+    /// is somewhere both lanes are in reach.
+    #[test]
+    fn two_lanes_one_stop() {
+        let r = read(&load(6));
+        let s = r.lane_spawns[0];
+        assert!((s.0 - 47).abs() <= 8 && (s.1 - 136).abs() <= 8, "{s:?}");
+        let d = from_minimap("Assassin Park", &load(6));
+        let end = *walk_points_covering(&d, 50).last().unwrap();
+        assert!(poly_dist(end, &d.path) <= COVER_PX);
+        assert!(poly_dist(end, &d.lanes[0]) <= COVER_PX, "{end:?}");
+        // and it did get away from the base
+        let b = d.base.unwrap();
+        assert!((end.0 - b[0] as f32).hypot(end.1 - b[1] as f32) > 20.0);
+    }
+
+    #[test]
+    fn covering_walk_stops_where_lanes_part() {
+        // main lane: spawn (100,50) -> base (0,50); a 2nd lane joins it at
+        // x=30 from straight above
+        let d = MapData {
+            path: (0..=10).rev().map(|i| [i * 10, 50]).collect(),
+            lanes: vec![vec![[30, 0], [30, 50], [0, 50]]],
+            ..Default::default()
+        };
+        let end = *walk_points_covering(&d, 50).last().unwrap();
+        // 50% = x 50, but past x 48 the 2nd lane is > 18 px away
+        assert!((end.0 - 48.0).abs() <= 2.0 && end.1 == 50.0, "{end:?}");
+        // one lane: the plain % walk
+        let one = MapData {
+            lanes: vec![],
+            ..d.clone()
+        };
+        assert_eq!(walk_points_covering(&one, 50), walk_points(&one, 50));
     }
 
     /// The arrows on samples 1 and 4 point up (^).

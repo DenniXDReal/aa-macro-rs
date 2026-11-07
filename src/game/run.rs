@@ -1602,8 +1602,16 @@ impl RunCtx {
                     d.map,
                     if d.walk.is_empty() {
                         format!(
-                            "{}% along the enemy path",
-                            d.walk_pct.unwrap_or(s.minimap_walk_pct)
+                            "{}% along the enemy path{}",
+                            d.walk_pct.unwrap_or(s.minimap_walk_pct),
+                            if d.lanes.is_empty() {
+                                String::new()
+                            } else {
+                                format!(
+                                    ", stopping where it covers all {} lanes",
+                                    d.lanes.len() + 1
+                                )
+                            }
                         )
                     } else {
                         format!("{} point(s)", d.walk.len())
@@ -1711,7 +1719,7 @@ impl RunCtx {
             super::mapnav::bearing(dirs.w.0, dirs.w.1)
         ));
         let points = super::mapnav::from_nearest(
-            &super::mapnav::walk_points(d, self.settings.minimap_walk_pct),
+            &super::mapnav::walk_points_covering(d, self.settings.minimap_walk_pct),
             me,
         );
         let mut nav = Nav::new(dirs, points);

@@ -168,6 +168,18 @@ impl App {
                 Stroke::new(1.5, Color32::from_rgba_unmultiplied(80, 255, 80, 140)),
             );
         }
+        // other lanes (2- / 3-lane maps)
+        for lane in &d.lanes {
+            for w in lane.windows(2) {
+                p.line_segment(
+                    [at(w[0]), at(w[1])],
+                    Stroke::new(1.5, Color32::from_rgba_unmultiplied(220, 90, 255, 160)),
+                );
+            }
+            if let Some(s) = lane.first() {
+                p.circle_stroke(at(*s), 7.0, Stroke::new(2.0, BAD));
+            }
+        }
         if let Some(b) = d.base {
             p.circle_stroke(at(b), 7.0, Stroke::new(2.0, Color32::WHITE));
         }
@@ -176,7 +188,7 @@ impl App {
         }
         // no points of yours: the part of the path it walks (dotted)
         if d.walk.is_empty() {
-            let auto = mapnav::walk_points(&d, self.settings.minimap_walk_pct);
+            let auto = mapnav::walk_points_covering(&d, self.settings.minimap_walk_pct);
             for q in &auto {
                 p.circle_filled(
                     at([q.0 as i32, q.1 as i32]),
@@ -190,6 +202,14 @@ impl App {
                     8.0,
                     Stroke::new(2.0, PURPLE),
                 );
+                // more than one lane: the reach it has to keep to all of them
+                if !d.lanes.is_empty() {
+                    p.circle_stroke(
+                        at([end.0 as i32, end.1 as i32]),
+                        mapnav::COVER_PX * ZOOM,
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(190, 150, 255, 120)),
+                    );
+                }
             }
         }
         // the walk, numbered
@@ -256,7 +276,7 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · purple ring = where it stops")
+            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · violet = other lanes (stop covers all) · purple ring = where it stops")
                 .size(11.0)
                 .color(MUTED),
         );
