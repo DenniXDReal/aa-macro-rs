@@ -110,6 +110,9 @@ pub struct Settings {
     /// route is the fallback); a map with no map file gets one from its
     /// minimap there and then.
     pub prefer_minimap: bool,
+    /// OCR areas / the minimap crop you moved (Placement > OCR areas):
+    /// key -> [x, y, w, h].
+    pub ocr_areas: std::collections::BTreeMap<String, [i32; 4]>,
     /// Already on the path between these % (of the enemies' walk from
     /// their spawn) at the start = no walk (maps with no stop of your own).
     pub walk_ok_min: u8,
@@ -593,6 +596,7 @@ impl Default for Settings {
             minimap_nav: true,
             minimap_walk_pct: 50,
             prefer_minimap: false,
+            ocr_areas: Default::default(),
             walk_ok_min: 20,
             walk_ok_max: 50,
             verify_terrain: true,
@@ -698,6 +702,7 @@ impl Settings {
             serde_json::from_str(&txt).with_context(|| format!("parsing {}", path.display()))?;
         s.ensure(0);
         s.fix_teams();
+        crate::ocrareas::set_all(&s.ocr_areas);
         Ok(s)
     }
 

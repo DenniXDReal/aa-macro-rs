@@ -788,7 +788,10 @@ impl LiveScreen {
         let frame: &crate::capture::Frame = &fresh;
         // the upper 60% of the screen (the title sits in different places on
         // the VICTORY and DEFEAT screens)
-        let area = Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5);
+        let area = crate::ocrareas::get(
+            "end_title",
+            Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5),
+        );
         let t = self.platform.ocr(frame, area)?;
         end_text(&t)
     }

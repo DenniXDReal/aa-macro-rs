@@ -20,7 +20,7 @@ pub const HISTORY_KEEP: usize = 5000;
 /// run) sits, right of "+55 XP". Used when the pearl icon isn't found.
 pub const PEARL_RECT: Rect = Rect::new(330, 336, 84, 36);
 /// Where the pearl icon is looked for on the end panel.
-const PEARL_SEARCH: Rect = Rect::new(250, 315, 300, 80);
+pub const PEARL_SEARCH: Rect = Rect::new(250, 315, 300, 80);
 /// The top-left HUD's pearl counter ("+7291" with the flower, under the
 /// wave number) - shows the run's pearls on the end screen too.
 pub const PEARL_HUD: Rect = Rect::new(140, 90, 100, 30);
@@ -114,7 +114,7 @@ pub fn amount(drops: &[(String, u64)], name: &str) -> u64 {
 /// In the middle of the screen, where the reward popup shows.
 pub fn in_reward_area(r: Rect) -> bool {
     let c = r.center();
-    REWARD_AREA.contains(c)
+    crate::ocrareas::get("reward_area", REWARD_AREA).contains(c)
 }
 
 /// The pearls from OCR lines of the end panel: the "+7291" on the line
@@ -323,7 +323,7 @@ pub fn pearl_icon(f: &Frame) -> Option<Rect> {
         f.rgb(x, y)
             .is_some_and(|(r, g, b)| r > 180 && b > 170 && r as i32 - g as i32 > 25)
     };
-    let a = PEARL_SEARCH;
+    let a = crate::ocrareas::get("pearls_search", PEARL_SEARCH);
     let col: Vec<u32> = (a.x..a.right())
         .map(|x| (a.y..a.bottom()).filter(|y| pinkish(x, *y)).count() as u32)
         .collect();
@@ -366,7 +366,7 @@ pub fn pearl_amount_rect(icon: Option<Rect>) -> Rect {
             let cy = i.y + i.h / 2;
             Rect::new((i.x - 90).max(0), cy - 18, 88, 36)
         }
-        None => PEARL_RECT,
+        None => crate::ocrareas::get("pearls_box", PEARL_RECT),
     }
 }
 

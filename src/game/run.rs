@@ -1071,10 +1071,13 @@ impl RunCtx {
         f: &crate::capture::Frame,
     ) -> ([Option<String>; 3], [String; 3]) {
         let mut raw: [String; 3] = std::array::from_fn(|i| {
-            scr.ocr_rect(f, super::cards::title_box(i))
-                .unwrap_or_default()
-                .trim()
-                .to_string()
+            scr.ocr_rect(
+                f,
+                crate::ocrareas::get(&format!("card_{}", i + 1), super::cards::title_box(i)),
+            )
+            .unwrap_or_default()
+            .trim()
+            .to_string()
         });
         let mut names: [Option<String>; 3] =
             std::array::from_fn(|i| super::cards::card_name(&raw[i]));
@@ -1116,8 +1119,11 @@ impl RunCtx {
         f: &crate::capture::Frame,
     ) -> [Option<String>; 3] {
         let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
-            scr.ocr_rect(f, super::cards::title_box(i))
-                .and_then(|t| super::weather::card_name(&t))
+            scr.ocr_rect(
+                f,
+                crate::ocrareas::get(&format!("card_{}", i + 1), super::cards::title_box(i)),
+            )
+            .and_then(|t| super::weather::card_name(&t))
         });
         if names.iter().any(|n| n.is_none()) {
             if let Some(lines) = scr.ocr_lines(f) {
@@ -2438,19 +2444,23 @@ impl RunCtx {
                         let _seq = seq_lock(h, Duration::from_secs(10));
                         let free: Vec<Point> =
                             spots.into_iter().filter(|p| !used.contains(p)).collect();
-                        // BUFF units: turn Auto ability on while the panel is open
+                        // Auto ability: whenever its button (your auto_ability
+                        // picture of it switched OFF) shows on the open panel,
+                        // click it - BUFF units wait a moment longer for it
                         let buff = units[slot - 1].buff;
                         let auto = |_at: Point| {
-                            if !buff || !scr.has("auto_ability") {
+                            if !s.run.auto_ability || !scr.has("auto_ability") {
                                 return;
                             }
-                            match self.wait_any(h, &["auto_ability"], 1500) {
+                            let wait = if buff { 1500 } else { 400 };
+                            match self.wait_any(h, &["auto_ability"], wait) {
                                 Ok(Some((_, p))) => {
                                     let _ = self.click(h, p, "auto ability");
                                     self.log(format!("client {n}: slot {slot} auto ability on"));
                                 }
-                                _ => self
+                                _ if buff => self
                                     .log(format!("client {n}: slot {slot} auto ability not seen")),
+                                _ => {}
                             }
                         };
                         let set = if units[slot - 1].hill {
@@ -3071,6 +3081,14 @@ impl RunCtx {
                     self.sleep(PANEL_CLOSE_MS)?;
                     continue;
                 }
+                // its Auto ability is off (the picture shows): switch it on
+                if s.run.auto_ability && scr.has("auto_ability") {
+                    if let Some(p) = scr.find_picture_wide(&Self::names(&["auto_ability"])) {
+                        self.click(*h, p, "auto ability")?;
+                        self.log(format!("slot {slot}: auto ability on"));
+                        self.sleep(300)?;
+                    }
+                }
                 let mut waiting_cash = false;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
@@ -3622,7 +3640,9 @@ impl RunCtx {
                 }
                 // last: the top-left counter (it shows the run's pearls too)
                 if attempt >= 6 {
-                    let t = crate::platform::urgent_ocr(|| main.ocr_rect(&f, loot::PEARL_HUD));
+                    let t = crate::platform::urgent_ocr(|| {
+                        main.ocr_rect(&f, crate::ocrareas::area("pearls_hud"))
+                    });
                     if let Some(n) = t
                         .as_deref()
                         .filter(|t| t.contains('+'))
@@ -3685,7 +3705,7 @@ impl RunCtx {
             .then(|| main.find_wide(&pics))
             .flatten()
             // only in the reward popup (not the Equipped Charm corner)
-            .filter(|p| loot::REWARD_AREA.contains(*p))
+            .filter(|p| crate::ocrareas::area("reward_area").contains(*p))
             .map(|p| {
                 (
                     "item".to_string(),
@@ -4450,7 +4470,7 @@ impl RunCtx {
                 let items = shop_items(&lines);
                 let money = main
                     .frame()
-                    .and_then(|f| main.ocr_rect(&f, crate::geom::Rect::new(300, 470, 200, 30)))
+                    .and_then(|f| main.ocr_rect(&f, crate::ocrareas::area("dungeon_money")))
                     .and_then(|t| super::loot::parse_amount(&t))
                     .unwrap_or(0);
                 let buys = choose_buys(&items, &wanted, money, d.shop_keep);

@@ -8,6 +8,7 @@
 mod command;
 mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
 mod mapsui;
+mod ocrui;
 mod tools;
 
 use crate::accounts::{self, AccountRole, AccountSlot, Ram};
@@ -57,6 +58,7 @@ enum Page {
     Accounts,
     Movement,
     Placement,
+    OcrAreas,
     Patterns,
     Settings,
 }
@@ -147,6 +149,7 @@ pub struct App {
     place_slot: u8,
     /// Role of the spots clicked next (Placement page).
     place_role: crate::placement::SpotRole,
+    ocr_ui: ocrui::OcrUi,
     show_spiral: bool,
 
     // movement
@@ -322,6 +325,7 @@ impl App {
             new_map: String::new(),
             place_slot: 0,
             place_role: crate::placement::SpotRole::Any,
+            ocr_ui: Default::default(),
             show_spiral: true,
             route_text: String::new(),
             routes,
@@ -4584,6 +4588,7 @@ impl eframe::App for App {
                         Page::Accounts => self.page_accounts(ui),
                         Page::Movement => self.page_movement(ui),
                         Page::Placement => self.page_placement(ui),
+                        Page::OcrAreas => self.page_ocr_areas(ui),
                         Page::Patterns => self.page_patterns(ui),
                         Page::Settings => self.page_settings(ui),
                     });

@@ -25,6 +25,7 @@ pub mod keys;
 pub mod layout;
 pub mod movement;
 pub mod multi;
+pub mod ocrareas;
 pub mod placement;
 pub mod platform;
 pub mod rbx;

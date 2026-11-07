@@ -22,7 +22,7 @@ pub fn dir() -> PathBuf {
 
 /// The minimap cut out of a full client picture.
 pub fn crop(f: &Frame) -> Option<Frame> {
-    let a = MINIMAP;
+    let a = crate::ocrareas::get("minimap", MINIMAP);
     if (a.x + a.w) as u32 > f.width || (a.y + a.h) as u32 > f.height {
         return None;
     }

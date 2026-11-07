@@ -85,7 +85,7 @@ pub const FLOWS: &[Flow] = &[
             n("settings_close", "icon", "X that closes settings - optional, it clicks (583, 147) without it"),
             n("unit_placed", "text", "'UPG [0]' badge that shows on a unit you just placed"),
             n("upgrade_max", "text", "'MAX' on a unit's panel when it can't upgrade any more (for MAX units)"),
-            n("auto_ability", "text", "Auto ability button on a unit's panel (for BUFF units)"),
+            n("auto_ability", "text", "Auto ability button on a unit's panel while it's OFF - clicked whenever it shows (placing and upgrading)"),
         ],
     },
     Flow {

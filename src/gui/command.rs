@@ -589,10 +589,11 @@ pub(super) const NAV: [(Page, &str); 5] = [
     (Page::Settings, "⚙  Settings"),
     (Page::Logs, "📝  Logs"),
 ];
-pub(super) const NAV_SETUP: [(Page, &str); 3] = [
+pub(super) const NAV_SETUP: [(Page, &str); 4] = [
     (Page::Home, "▶  Run setup"),
     (Page::Accounts, "👤  Accounts"),
     (Page::Placement, "📍  Placement"),
+    (Page::OcrAreas, "🔤  OCR areas"),
 ];
 
 #[cfg(test)]
