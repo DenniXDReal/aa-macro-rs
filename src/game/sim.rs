@@ -355,13 +355,23 @@ mod tests {
             "fired once: {logs:?} {:?}",
             sim.raw_clicks.lock().unwrap()
         );
-        // gone (wave 11), then back: again
+        // gone (wave 11), then back: again. (A look right after input on the
+        // same unchanged picture is skipped as "frozen" - other sim tests
+        // click Hwnd(1) too - so give each phase a few looks.)
         show("Wave 11 / 50");
-        std::thread::sleep(std::time::Duration::from_millis(1050));
-        c.fire_events(When::Every(0)).unwrap();
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(1050));
+            c.fire_events(When::Every(0)).unwrap();
+        }
+        assert_eq!(ours(), 1, "not while wave 11 shows");
         show("Wave 10 / 50");
-        std::thread::sleep(std::time::Duration::from_millis(1050));
-        c.fire_events(When::Every(0)).unwrap();
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(1050));
+            c.fire_events(When::Every(0)).unwrap();
+            if ours() == 2 {
+                break;
+            }
+        }
         assert_eq!(ours(), 2, "fired again after it came back");
         // the Navy Bay rule never fired on Sand Village
         assert!(!sim
