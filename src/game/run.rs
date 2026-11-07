@@ -1293,6 +1293,11 @@ impl RunCtx {
         Ok(())
     }
 
+    /// `ms` at this run's speed (1.0 = real time; the simulator runs faster).
+    fn ms(&self, ms: u64) -> u64 {
+        ((ms as f64 * self.speed as f64) as u64).max(1)
+    }
+
     /// Client number (1 = the first) of `h`.
     fn client_no(&self, h: Hwnd) -> usize {
         self.clients
@@ -2415,9 +2420,9 @@ impl RunCtx {
                                         key: unit_key,
                                         hold_ms: 40,
                                     })
-                                    .wait(350)
+                                    .wait(self.ms(350))
                                     .move_to(p.x, p.y)
-                                    .wait(250);
+                                    .wait(self.ms(250));
                                 if self.arb.run(hover).is_err() {
                                     return Some(at);
                                 }

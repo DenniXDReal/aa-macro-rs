@@ -238,6 +238,21 @@ pub fn end_by_look(f: &crate::capture::Frame) -> Option<bool> {
         f.width as i32 * 3 / 5,
         f.height as i32 * 2 / 5,
     );
+    // quick look first: the button's bright green must be there at all
+    // (keeps this nearly free on every other screen)
+    let mut green = 0;
+    for y in (band.y..band.bottom()).step_by(4) {
+        for x in (band.x..band.right()).step_by(4) {
+            if f.rgb(x, y)
+                .is_some_and(|(r, g, b)| g > 170 && r < 140 && b < 80 && g as i32 - r as i32 > 60)
+            {
+                green += 1;
+            }
+        }
+    }
+    if green < 40 {
+        return None;
+    }
     let at = next.find_all(f, band, 40, 0.75).first()?.0;
     // the title: ~170-240 px above Next, +-150 px across
     let (mut red, mut gold) = (0u32, 0u32);
