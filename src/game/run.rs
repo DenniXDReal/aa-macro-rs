@@ -2125,9 +2125,11 @@ impl RunCtx {
                 .filter(|(_, u)| u.enabled && u.place > 0)
             {
                 let slot = i + 1;
+                // your spots for this unit: its slot's, its role's (Farm /
+                // DPS / Support / Hill), then the open ones
                 let mut spots: Vec<Point> = self
                     .placements
-                    .for_slot(&key, slot as u8)
+                    .for_unit(&key, slot as u8, u.spot_role())
                     .iter()
                     .map(|p| Point::new(p.x, p.y))
                     .collect();
@@ -2179,7 +2181,24 @@ impl RunCtx {
                         ));
                     }
                     let mut v = hs;
-                    v.extend(spots.into_iter());
+                    if s.verify_terrain && !u.hybrid {
+                        // a hill unit can't go on the ground: only your Hill /
+                        // its slot's spots after the glowing ones (the shape
+                        // and open spots would just be hovered and refused)
+                        let mine: Vec<Point> = self
+                            .placements
+                            .spots(&key)
+                            .iter()
+                            .filter(|p| {
+                                p.slot as usize == slot
+                                    || (p.slot == 0 && p.role == crate::placement::SpotRole::Hill)
+                            })
+                            .map(|p| Point::new(p.x, p.y))
+                            .collect();
+                        v.extend(mine);
+                    } else {
+                        v.extend(spots.into_iter());
+                    }
                     spots = v;
                 }
                 // skip spots that failed before on this map (spot memory)
@@ -2314,6 +2333,47 @@ impl RunCtx {
                             format!("{} hill", spots_key(&map, n))
                         } else {
                             spots_key(&map, n)
+                        };
+                        // the hover highlight before each click: Hill units
+                        // need green, Ground units no red; blocked = 10 px
+                        // over, up to 3 times
+                        let terrain = units[slot - 1].terrain();
+                        let unit_key = keys.units[slot.clamp(1, 6) - 1];
+                        let aim = |at: Point| -> Option<Point> {
+                            if !s.verify_terrain {
+                                return Some(at);
+                            }
+                            for (k, p) in super::placing::nudges(at).into_iter().enumerate() {
+                                let hover = Batch::new(h, "hover check")
+                                    .then(Action::KeyTap {
+                                        key: unit_key,
+                                        hold_ms: 40,
+                                    })
+                                    .wait(350)
+                                    .move_to(p.x, p.y)
+                                    .wait(250);
+                                if self.arb.run(hover).is_err() {
+                                    return Some(at);
+                                }
+                                let ok = scr
+                                    .frame()
+                                    .is_none_or(|f| super::placing::terrain_ok(&f, p, terrain));
+                                if ok {
+                                    if k > 0 {
+                                        self.log(format!(
+                                            "client {n}: slot {slot} - ({},{}) blocked, ({},{}) is fine",
+                                            at.x, at.y, p.x, p.y
+                                        ));
+                                    }
+                                    return Some(p);
+                                }
+                            }
+                            let _ = self.arb.run(super::placing::cancel_batch(h, &keys));
+                            self.log(format!(
+                                "client {n}: slot {slot} - ({},{}) blocked for a {:?} unit (and 3 nudges) - next spot",
+                                at.x, at.y, terrain
+                            ));
+                            None
                         };
                         let remember = s.spot_memory && badge.is_some();
                         let good = |p: Point| {
@@ -2504,6 +2564,7 @@ impl RunCtx {
                             delay,
                             &cards,
                             &claim,
+                            &aim,
                             &check,
                             &good,
                             &bad,

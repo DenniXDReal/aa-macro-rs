@@ -16,6 +16,43 @@ pub struct Spot {
     /// 0 = any unit, 1-6 = only that hotbar slot.
     #[serde(default)]
     pub slot: u8,
+    /// Which kind of unit this spot is for (Farm 1, DPS 2, Hill 1 ...).
+    #[serde(default)]
+    pub role: SpotRole,
+}
+
+/// The kind of unit a spot is meant for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpotRole {
+    #[default]
+    Any,
+    Farm,
+    Dps,
+    Support,
+    Hill,
+}
+
+impl SpotRole {
+    pub const ALL: [SpotRole; 5] = [Self::Any, Self::Farm, Self::Dps, Self::Support, Self::Hill];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Any => "any role",
+            Self::Farm => "Farm",
+            Self::Dps => "DPS",
+            Self::Support => "Support",
+            Self::Hill => "Hill",
+        }
+    }
+    /// One letter for the editor ("F1", "D2", "H1").
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Any => "",
+            Self::Farm => "F",
+            Self::Dps => "D",
+            Self::Support => "S",
+            Self::Hill => "H",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -51,11 +88,33 @@ impl Placements {
     }
 
     pub fn add(&mut self, map: &str, p: Point, slot: u8) {
+        self.add_role(map, p, slot, SpotRole::Any);
+    }
+
+    pub fn add_role(&mut self, map: &str, p: Point, slot: u8, role: SpotRole) {
         self.maps.entry(map.to_string()).or_default().push(Spot {
             x: p.x,
             y: p.y,
             slot,
+            role,
         });
+    }
+
+    /// Spots for a unit in `slot` with `role`: the ones reserved for its
+    /// slot, then its role's (in the order you clicked them), then the open
+    /// ones (any slot, any role). Spots of another role / slot are left out.
+    pub fn for_unit(&self, map: &str, slot: u8, role: SpotRole) -> Vec<Spot> {
+        let s = self.spots(map);
+        let open = |x: &&Spot| x.slot == 0 && x.role == SpotRole::Any;
+        s.iter()
+            .filter(|x| x.slot == slot)
+            .chain(
+                s.iter()
+                    .filter(|x| x.slot == 0 && x.role == role && role != SpotRole::Any),
+            )
+            .chain(s.iter().filter(open))
+            .copied()
+            .collect()
     }
 
     /// Remove the spot nearest to `p` within `radius` px. Returns true if one went.
@@ -118,7 +177,8 @@ mod tests {
             &[Spot {
                 x: 100,
                 y: 100,
-                slot: 0
+                slot: 0,
+                role: SpotRole::Any,
             }]
         );
         assert!(p.spots("Nope").is_empty());
@@ -132,6 +192,26 @@ mod tests {
         p.add("m", Point::new(3, 3), 1);
         let s: Vec<i32> = p.for_slot("m", 3).iter().map(|s| s.x).collect();
         assert_eq!(s, vec![2, 1]);
+    }
+
+    #[test]
+    fn spots_by_role() {
+        let mut p = Placements::default();
+        p.add_role("m", Point::new(1, 1), 0, SpotRole::Dps);
+        p.add_role("m", Point::new(2, 2), 0, SpotRole::Farm);
+        p.add("m", Point::new(3, 3), 0);
+        p.add_role("m", Point::new(4, 4), 0, SpotRole::Farm);
+        p.add("m", Point::new(5, 5), 2);
+        let xs = |v: Vec<Spot>| v.iter().map(|s| s.x).collect::<Vec<_>>();
+        // a farm unit in slot 2: its slot's spot, the farm spots, the open one
+        assert_eq!(xs(p.for_unit("m", 2, SpotRole::Farm)), vec![5, 2, 4, 3]);
+        // a DPS unit in slot 1: no farm spots
+        assert_eq!(xs(p.for_unit("m", 1, SpotRole::Dps)), vec![1, 3]);
+        // an untagged unit: only open spots
+        assert_eq!(xs(p.for_unit("m", 1, SpotRole::Any)), vec![3]);
+        // old files (no role) load as Any
+        let old: Spot = serde_json::from_str(r#"{"x":1,"y":2,"slot":0}"#).unwrap();
+        assert_eq!(old.role, SpotRole::Any);
     }
 
     #[test]

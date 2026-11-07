@@ -145,6 +145,8 @@ pub struct App {
     map: String,
     new_map: String,
     place_slot: u8,
+    /// Role of the spots clicked next (Placement page).
+    place_role: crate::placement::SpotRole,
     show_spiral: bool,
 
     // movement
@@ -319,6 +321,7 @@ impl App {
             map,
             new_map: String::new(),
             place_slot: 0,
+            place_role: crate::placement::SpotRole::Any,
             show_spiral: true,
             route_text: String::new(),
             routes,
@@ -2040,7 +2043,13 @@ impl App {
                                 ui,
                                 &mut u.hill,
                                 "H",
-                                "Hill: high ground first, ground if there's none",
+                                "Hill: high ground only - the hover must glow green (takes Hill spots)",
+                            );
+                            changed |= tag_tip(
+                                ui,
+                                &mut u.hybrid,
+                                "Y",
+                                "Hybrid: high ground or ground (green, or anything not red)",
                             );
                         });
                         changed |= ui

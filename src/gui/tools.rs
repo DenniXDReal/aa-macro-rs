@@ -586,6 +586,16 @@ impl App {
                         ui.selectable_value(&mut self.place_slot, s, format!("slot {s}"));
                     }
                 });
+            ComboBox::from_id_salt("prole")
+                .width(90.0)
+                .selected_text(self.place_role.label())
+                .show_ui(ui, |ui| {
+                    for r in crate::placement::SpotRole::ALL {
+                        ui.selectable_value(&mut self.place_role, r, r.label());
+                    }
+                })
+                .response
+                .on_hover_text("units take their role's spots first: Farm (F tag), Support (B), Hill (H), DPS (the rest)");
             if ui.button("Undo").clicked() {
                 self.placements.undo(&self.spot_key());
                 self.save_placements();
@@ -674,6 +684,16 @@ impl App {
         ui.horizontal(|ui| {
             if super::toggle(
                 ui,
+                &mut self.settings.verify_terrain,
+                "Check the ground before each click",
+            ) {
+                self.dirty();
+            }
+            ui.label(egui::RichText::new("hover first: Hill units need the green glow, Ground units no red; blocked = 10 px over, 3 tries, then the next spot").color(MUTED));
+        });
+        ui.horizontal(|ui| {
+            if super::toggle(
+                ui,
                 &mut self.settings.spot_memory,
                 "Remember spots that fail (skip them next time)",
             ) {
@@ -688,7 +708,7 @@ impl App {
             }
         });
         ui.small("A spot is skipped after a unit failed to go down there twice (needs unit_placed captured - one fail can just be no money). A success there clears it.");
-        ui.small("Left click = add spot. Right click = remove nearest. Each placing client has its own spots (pick it in the client box above the picture). Units fill spots in number order (reserved slot spots first), then the spiral.");
+        ui.small("Left click = add spot. Right click = remove nearest. Each placing client has its own spots (pick it in the client box above the picture). Units take their slot's spots, then their role's (F1, D2, H1...), then open spots, then the shape. A spot of another role is never used.");
         let spots = self.placements.spots(&self.spot_key()).to_vec();
         let n = spots.len();
         if let Some((resp, rect, scale)) = self.client_view(ui) {
@@ -710,11 +730,20 @@ impl App {
                     FontId::proportional(12.0),
                     Color32::WHITE,
                 );
-                if s.slot != 0 {
+                let tag = match (s.slot, s.role) {
+                    (0, crate::placement::SpotRole::Any) => String::new(),
+                    (0, r) => {
+                        // "F1", "D2": the role and which of its spots
+                        let k = spots[..=i].iter().filter(|x| x.role == r).count();
+                        format!("{}{k}", r.short())
+                    }
+                    (sl, _) => format!("s{sl}"),
+                };
+                if !tag.is_empty() {
                     painter.text(
                         c + Vec2::new(11.0, -11.0),
                         Align2::LEFT_BOTTOM,
-                        format!("s{}", s.slot),
+                        tag,
                         FontId::proportional(10.0),
                         col,
                     );
@@ -761,7 +790,8 @@ impl App {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let p = to_client(pos, rect, scale);
                 if resp.clicked() {
-                    self.placements.add(&self.spot_key(), p, self.place_slot);
+                    self.placements
+                        .add_role(&self.spot_key(), p, self.place_slot, self.place_role);
                     self.save_placements();
                 } else if resp.secondary_clicked() {
                     self.placements.remove_near(&self.spot_key(), p, 14);
@@ -1308,6 +1338,47 @@ impl App {
                 self.capture(&ctx);
             }
             ui.checkbox(&mut self.live, "live");
+            // a picture of the map to click spots on without the game open
+            let pic = map_picture_path(&self.map);
+            if ui
+                .button("Save as map picture")
+                .on_hover_text("keeps this capture as the map's picture (maps/placement/<map>.png)")
+                .clicked()
+            {
+                self.say(
+                    match self.frame.as_ref().map(|f| {
+                        std::fs::create_dir_all(pic.parent().unwrap_or(&pic))
+                            .map_err(anyhow::Error::from)
+                            .and_then(|_| f.save_png(&pic))
+                    }) {
+                        Some(Ok(())) => format!("saved {}", pic.display()),
+                        Some(Err(e)) => format!("not saved: {e:#}"),
+                        None => "capture the client first".into(),
+                    },
+                );
+            }
+            if ui
+                .add_enabled(pic.exists(), egui::Button::new("Load map picture"))
+                .on_hover_text("shows the map's saved picture to click spots on")
+                .clicked()
+            {
+                match Frame::load_png(&pic) {
+                    Ok(f) => {
+                        let img = ColorImage::from_rgba_unmultiplied(
+                            [f.width as usize, f.height as usize],
+                            &rgba(&f),
+                        );
+                        self.tex = Some(ui.ctx().load_texture(
+                            "client",
+                            img,
+                            TextureOptions::NEAREST,
+                        ));
+                        self.frame = Some(f);
+                        self.live = false;
+                    }
+                    Err(e) => self.say(format!("can't load {}: {e:#}", pic.display())),
+                }
+            }
         });
         let Some(tex) = &self.tex else {
             ui.colored_label(WARN, "Press Capture to see the client here.");
@@ -1335,6 +1406,24 @@ impl App {
         }
         Some((resp, rect, scale))
     }
+}
+
+/// Where a map's placement picture is kept.
+pub(super) fn map_picture_path(map: &str) -> std::path::PathBuf {
+    let name: String = map
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    crate::game::data_dir()
+        .join("maps")
+        .join("placement")
+        .join(format!("{}.png", name.trim()))
 }
 
 fn to_client(p: Pos2, rect: egui::Rect, scale: f32) -> Point {

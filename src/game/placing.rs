@@ -155,6 +155,66 @@ pub fn hill_spots(f: &crate::capture::Frame, max: usize) -> Vec<Point> {
     out
 }
 
+/// The ground a unit stands on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Terrain {
+    /// Ground units: anywhere that doesn't turn red (red = the path /
+    /// blocked).
+    Ground,
+    /// Hill units: only where the hover turns green (a hill spot).
+    Hill,
+    /// Hybrid: a green hill spot, or ground that isn't red.
+    Either,
+}
+
+/// What the hover highlight under the cursor says: share of green and red
+/// pixels in a 36 px square around `at`.
+pub fn highlight(f: &crate::capture::Frame, at: Point) -> (f32, f32) {
+    let (mut g, mut r, mut n) = (0u32, 0u32, 0u32);
+    for dy in (-18..=18).step_by(2) {
+        for dx in (-18..=18).step_by(2) {
+            let Some((pr, pg, pb)) = f.rgb(at.x + dx, at.y + dy) else {
+                continue;
+            };
+            let (pr, pg, pb) = (pr as i32, pg as i32, pb as i32);
+            n += 1;
+            if pg >= 140 && pg - pr >= 50 && pg - pb >= 50 {
+                g += 1;
+            } else if pr >= 170 && pr - pg >= 90 && pr - pb >= 90 {
+                r += 1;
+            }
+        }
+    }
+    let n = n.max(1) as f32;
+    (g as f32 / n, r as f32 / n)
+}
+
+/// This much of the square in one colour = that highlight is showing.
+pub const HIGHLIGHT_SHARE: f32 = 0.10;
+
+/// Can a unit of `t` go down at `at`, by the hover highlight?
+pub fn terrain_ok(f: &crate::capture::Frame, at: Point, t: Terrain) -> bool {
+    let (green, red) = highlight(f, at);
+    let green = green >= HIGHLIGHT_SHARE;
+    let red = red >= HIGHLIGHT_SHARE;
+    match t {
+        Terrain::Ground => !red,
+        Terrain::Hill => green,
+        Terrain::Either => green || !red,
+    }
+}
+
+/// Where to try when a spot is blocked: the spot, then 10 px right, down,
+/// left (3 retries).
+pub fn nudges(at: Point) -> [Point; 4] {
+    [
+        at,
+        Point::new(at.x + 10, at.y),
+        Point::new(at.x, at.y + 10),
+        Point::new(at.x - 10, at.y),
+    ]
+}
+
 /// AHK's centre of the play field (client px).
 pub const SHAPE_CENTRE: Point = Point::new(408, 320);
 /// Spots must stay off the hotbar / top UI.
@@ -504,6 +564,7 @@ pub fn place_slot(
         delay_ms,
         before_each,
         &|_| true,
+        &|p| Some(p),
         &|seen, _| if seen { Check::Placed } else { Check::Failed },
         on_placed,
         on_failed,
@@ -536,6 +597,7 @@ pub fn place_slot_checked(
     delay_ms: u64,
     before_each: &dyn Fn() -> bool,
     claim: &dyn Fn(Point) -> bool,
+    aim: &dyn Fn(Point) -> Option<Point>,
     check: &dyn Fn(bool, Point) -> Check,
     on_placed: &dyn Fn(Point),
     on_failed: &dyn Fn(Point),
@@ -594,6 +656,13 @@ pub fn place_slot_checked(
             }
         }
         last_fail = None;
+        // the ground there (hover highlight): the spot, or a nudge of it -
+        // or none of them, then the next spot
+        let Some(at) = aim(*at) else {
+            on_failed(*at);
+            continue;
+        };
+        let at = &at;
         // one input turn for key + click + badge check + close, so other
         // accounts can't cut in between (no extra window swaps)
         let seen = Arc::new(AtomicBool::new(false));
@@ -649,6 +718,36 @@ pub fn place_slot_checked(
 #[cfg(test)]
 mod shape_tests {
     use super::*;
+
+    fn paint(f: &mut crate::capture::Frame, x0: i32, x1: i32, rgb: [u8; 3]) {
+        for y in 280..320 {
+            for x in x0..x1 {
+                let i = ((y * 800 + x) * 4) as usize;
+                f.bgra[i..i + 3].copy_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_highlight_by_unit_kind() {
+        let mut f = crate::capture::Frame::solid(800, 599, 60, 70, 55);
+        paint(&mut f, 100, 140, [40, 235, 70]); // a hill spot glowing green
+        paint(&mut f, 400, 440, [230, 40, 40]); // the path, red
+        let hill = Point::new(120, 300);
+        let path = Point::new(420, 300);
+        let plain = Point::new(650, 300);
+        assert!(terrain_ok(&f, hill, Terrain::Hill));
+        assert!(
+            !terrain_ok(&f, plain, Terrain::Hill),
+            "no green = not a hill"
+        );
+        assert!(!terrain_ok(&f, path, Terrain::Ground), "red = blocked");
+        assert!(terrain_ok(&f, plain, Terrain::Ground));
+        assert!(terrain_ok(&f, hill, Terrain::Either));
+        assert!(terrain_ok(&f, plain, Terrain::Either));
+        assert!(!terrain_ok(&f, path, Terrain::Either));
+        assert_eq!(nudges(Point::new(5, 5))[1], Point::new(15, 5));
+    }
 
     #[test]
     fn hill_spots_on_green() {

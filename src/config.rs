@@ -110,6 +110,9 @@ pub struct Settings {
     /// route is the fallback); a map with no map file gets one from its
     /// minimap there and then.
     pub prefer_minimap: bool,
+    /// Before each placement click, hover and read the highlight (Hill:
+    /// green needed, Ground: no red); blocked = nudge 10 px, 3 times.
+    pub verify_terrain: bool,
     /// Per client number (1 = the first): which lane it walks and its own
     /// % (Routes page).
     pub client_walk: std::collections::BTreeMap<usize, crate::game::mapnav::ClientWalk>,
@@ -479,8 +482,38 @@ pub struct UnitSlot {
     /// Hill unit: only goes on high ground - its good / bad spots are
     /// remembered separately from ground units.
     pub hill: bool,
+    /// Hybrid unit: goes on high ground or the ground.
+    pub hybrid: bool,
     /// Alternate this slot's upgrades with placement instead of waiting.
     pub upg_immediately: bool,
+}
+
+impl UnitSlot {
+    /// Which spots it takes (Placement page roles).
+    pub fn spot_role(&self) -> crate::placement::SpotRole {
+        use crate::placement::SpotRole;
+        if self.hill {
+            SpotRole::Hill
+        } else if self.farm {
+            SpotRole::Farm
+        } else if self.buff {
+            SpotRole::Support
+        } else {
+            SpotRole::Dps
+        }
+    }
+
+    /// What ground it can stand on.
+    pub fn terrain(&self) -> crate::game::placing::Terrain {
+        use crate::game::placing::Terrain;
+        if self.hybrid {
+            Terrain::Either
+        } else if self.hill {
+            Terrain::Hill
+        } else {
+            Terrain::Ground
+        }
+    }
 }
 
 impl Default for UnitSlot {
@@ -494,6 +527,7 @@ impl Default for UnitSlot {
             buff: false,
             farm: false,
             hill: false,
+            hybrid: false,
             upg_immediately: false,
         }
     }
@@ -551,6 +585,7 @@ impl Default for Settings {
             minimap_nav: true,
             minimap_walk_pct: 50,
             prefer_minimap: false,
+            verify_terrain: true,
             client_walk: Default::default(),
             dungeon: Default::default(),
             schedule: Schedule::default(),
