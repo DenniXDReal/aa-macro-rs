@@ -54,6 +54,7 @@ impl Key {
             "o" => Key::new(0x18),
             "p" => Key::new(0x19),
             "enter" | "return" => Key::new(0x1C),
+            "/" | "slash" => Key::new(0x35),
             "ctrl" | "lctrl" | "control" => Key::new(0x1D),
             "a" => Key::new(0x1E),
             "s" => Key::new(0x1F),

@@ -17,6 +17,7 @@ pub enum Call {
     Button(MouseButton, bool),
     Wheel(i32),
     MoveResize(Hwnd, Rect),
+    Char(char, bool),
 }
 
 #[derive(Default)]
@@ -107,6 +108,10 @@ impl Platform for MockPlatform {
     }
     fn key(&self, key: Key, down: bool) -> Result<()> {
         self.log(Call::Key(key, down));
+        Ok(())
+    }
+    fn type_char(&self, c: char, down: bool) -> Result<()> {
+        self.log(Call::Char(c, down));
         Ok(())
     }
     fn mouse_move_abs(&self, x: i32, y: i32) -> Result<()> {

@@ -83,6 +83,12 @@ pub enum Action {
     },
     KeyDown(Key),
     KeyUp(Key),
+    /// Type `text` a character at a time, `gap_ms` between them ("\n" =
+    /// Enter).
+    TypeText {
+        text: String,
+        gap_ms: u64,
+    },
     /// Cursor to a client point (with the hover wiggle).
     MoveTo(Point),
     /// Move, wiggle, settle, press, hold, release.
@@ -592,6 +598,22 @@ impl Runner<'_> {
                 self.sleep(*hold_ms, w)?;
                 self.key(*key, false)?;
             }
+            Action::TypeText { text, gap_ms } => {
+                for c in text.chars() {
+                    if c == '\n' {
+                        if let Some(k) = Key::parse("enter") {
+                            self.key(k, true)?;
+                            self.sleep(30, w)?;
+                            self.key(k, false)?;
+                        }
+                    } else {
+                        self.p.type_char(c, true).map_err(perr)?;
+                        self.sleep(15, w)?;
+                        self.p.type_char(c, false).map_err(perr)?;
+                    }
+                    self.sleep(*gap_ms, w)?;
+                }
+            }
             Action::KeyDown(k) => self.key(*k, true)?,
             Action::KeyUp(k) => self.key(*k, false)?,
             Action::MoveTo(p) => self.hover(geo, *p)?,
@@ -815,6 +837,36 @@ mod tests {
                 .unwrap();
             assert_eq!(downs(mock.take_calls()), want, "{mode:?} stays={stays}");
         }
+    }
+
+    /// Typing: each character down / up as text (capitals and symbols need
+    /// no Shift), "\n" as Enter.
+    #[test]
+    fn types_text() {
+        let (mock, _c, arb) = setup(1);
+        let b = Batch::new(Hwnd(100), "t").then(Action::TypeText {
+            text: "Hi /e!\n".into(),
+            gap_ms: 1,
+        });
+        arb.run(b).unwrap();
+        let calls = mock.take_calls();
+        let typed: String = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Char(ch, true) => Some(*ch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, "Hi /e!");
+        let ups = calls
+            .iter()
+            .filter(|c| matches!(c, Call::Char(_, false)))
+            .count();
+        assert_eq!(ups, 6, "every key let go");
+        let enter = Key::parse("enter").unwrap();
+        assert!(
+            calls.contains(&Call::Key(enter, true)) && calls.contains(&Call::Key(enter, false))
+        );
     }
 
     #[test]

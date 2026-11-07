@@ -8,6 +8,7 @@ pub mod challenge;
 pub mod drops;
 pub mod dump;
 pub mod dungeon;
+pub mod events;
 pub mod hotbar;
 pub mod icons;
 pub mod loot;

@@ -18,6 +18,7 @@ dependencies = [
  "log",
  "notify",
  "raw-window-handle",
+ "regex",
  "serde",
  "serde_json",
  "ureq",

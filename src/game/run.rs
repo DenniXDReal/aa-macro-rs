@@ -405,6 +405,19 @@ pub(crate) fn placed_json(
 /// uses the weather order (buffs first).
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
+/// The map being played (for custom events' "only on these maps").
+pub(crate) static CURRENT_MAP: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Custom events: the rules (reloaded when the file changes) and their
+/// fire-once / every-N-s state.
+struct EventState {
+    rules: super::events::Rules,
+    stamp: Option<std::time::SystemTime>,
+    latch: super::events::Latch,
+    due: super::events::Due,
+}
+static EVENTS: std::sync::Mutex<Option<EventState>> = std::sync::Mutex::new(None);
+
 /// The weather now (Sandstorm, ...), as last seen this match.
 static WEATHER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 /// The weather turned to Sandstorm: clients that stopped too close to the
@@ -1302,6 +1315,163 @@ impl RunCtx {
     /// `ms` at this run's speed (1.0 = real time; the simulator runs faster).
     fn ms(&self, ms: u64) -> u64 {
         ((ms as f64 * self.speed as f64) as u64).max(1)
+    }
+
+    /// Your custom events for `when` (Every(_) = every "every N s" rule that's
+    /// due): look at each rule's area, and when its text is there, do its
+    /// action - once, until the text has gone.
+    pub(crate) fn fire_events(&self, when: super::events::When) -> R<()> {
+        use super::events::{Do, When};
+        let now = Instant::now();
+        // the rules, fresh from the file when it changed
+        let todo: Vec<(usize, super::events::Rule, u64)> = {
+            let mut g = EVENTS.lock().unwrap_or_else(|e| e.into_inner());
+            let stamp = std::fs::metadata(super::events::path())
+                .and_then(|m| m.modified())
+                .ok();
+            let st = g.get_or_insert_with(|| EventState {
+                rules: super::events::load(),
+                stamp,
+                latch: Default::default(),
+                due: Default::default(),
+            });
+            if st.stamp != stamp {
+                st.rules = super::events::load();
+                st.stamp = stamp;
+            }
+            let map = CURRENT_MAP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let mode = self.settings.run.mode.label();
+            let gap = st.rules.type_gap_ms;
+            let picked: Vec<(usize, super::events::Rule)> = st
+                .rules
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| super::events::applies(r, &map, mode))
+                .filter(|(_, r)| match (r.when, when) {
+                    (When::Every(_), When::Every(_)) => true,
+                    (a, b) => a == b,
+                })
+                .map(|(i, r)| (i, r.clone()))
+                .collect();
+            picked
+                .into_iter()
+                .filter(|(i, r)| match r.when {
+                    When::Every(n) => st.due.due(*i, n, now),
+                    _ => true,
+                })
+                .map(|(i, r)| (i, r, gap))
+                .collect()
+        };
+        for (i, rule, gap) in todo {
+            let clients: Vec<Hwnd> = if rule.all_clients {
+                self.clients.iter().map(|c| c.0).collect()
+            } else {
+                vec![self.main]
+            };
+            for h in clients {
+                let scr = self.screen(h);
+                let read = if rule.text.trim().is_empty() {
+                    String::new()
+                } else {
+                    // no picture this time (frozen / failed capture): no
+                    // look - it mustn't count as "the text went away"
+                    let Some(f) = scr.frame() else {
+                        continue;
+                    };
+                    let a = rule.area;
+                    scr.ocr_rect(&f, crate::geom::Rect::new(a[0], a[1], a[2], a[3]))
+                        .unwrap_or_default()
+                };
+                let seen = super::events::matches(&rule, &read);
+                let fire = {
+                    let mut g = EVENTS.lock().unwrap_or_else(|e| e.into_inner());
+                    g.as_mut()
+                        .map(|st| st.latch.fire(i, h.0 as isize, seen, now))
+                        .unwrap_or(false)
+                };
+                if !fire {
+                    continue;
+                }
+                self.log(format!(
+                    "custom event '{}' on client {}{}",
+                    rule.name,
+                    self.client_no(h),
+                    if read.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (read \"{}\")", read.trim())
+                    }
+                ));
+                let mut b = Batch::new(h, "custom event");
+                b.long = true; // typing can take a while
+                let b = match &rule.action {
+                    Do::TypeText { text, chat } => {
+                        let mut b = b;
+                        if *chat {
+                            if let Some(k) = crate::keys::Key::parse("/") {
+                                b = b
+                                    .then(Action::KeyTap {
+                                        key: k,
+                                        hold_ms: 40,
+                                    })
+                                    .wait(300);
+                            }
+                        }
+                        b = b.then(Action::TypeText {
+                            text: text.clone(),
+                            gap_ms: gap,
+                        });
+                        if *chat {
+                            if let Some(k) = crate::keys::Key::parse("enter") {
+                                b = b.wait(150).then(Action::KeyTap {
+                                    key: k,
+                                    hold_ms: 40,
+                                });
+                            }
+                        }
+                        Some(b)
+                    }
+                    Do::PressKey { key } => match crate::keys::Key::parse(key) {
+                        Some(k) => Some(b.then(Action::KeyTap {
+                            key: k,
+                            hold_ms: 60,
+                        })),
+                        None => {
+                            self.log(format!("custom event '{}': unknown key '{key}'", rule.name));
+                            None
+                        }
+                    },
+                    Do::Click { x, y } => Some(b.click(*x, *y)),
+                    Do::ChangeStep { step } => {
+                        match super::events::step_named(step) {
+                            Some(s) => {
+                                super::events::request_jump(s);
+                                self.log(format!(
+                                    "custom event '{}': jumping to the {} step",
+                                    rule.name,
+                                    s.name()
+                                ));
+                            }
+                            None => self.log(format!(
+                                "custom event '{}': no step called '{step}'",
+                                rule.name
+                            )),
+                        }
+                        None
+                    }
+                };
+                if let Some(b) = b {
+                    self.arb
+                        .run(b)
+                        .map_err(|e| format!("custom event '{}': {e}", rule.name))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Client number (1 = the first) of `h`.
@@ -2228,6 +2398,10 @@ impl RunCtx {
     /// Place on every placing client at once. Returns placed (client, slot, spot).
     pub fn place_all(&self, map: &str) -> R<Vec<(Hwnd, usize, Point)>> {
         let s = &self.settings;
+        if !map.is_empty() {
+            *CURRENT_MAP.lock().unwrap_or_else(|e| e.into_inner()) = map.to_string();
+        }
+        self.fire_events(super::events::When::BeforePlace)?;
         super::placing::PLACE_SETTLE_MS.store(
             s.place_settle_ms.clamp(100, 5000),
             std::sync::atomic::Ordering::Relaxed,
@@ -2926,6 +3100,9 @@ impl RunCtx {
                 if let Err(e) = self.cards_all() {
                     break Err(e);
                 }
+                if let Err(e) = self.fire_events(super::events::When::Every(0)) {
+                    break Err(e);
+                }
                 if dl.expired() {
                     break Err("no end screen after 40 min".into());
                 }
@@ -3163,6 +3340,7 @@ impl RunCtx {
                                     "slot {slot} at {},{} upgraded to {a}",
                                     at.x, at.y
                                 ));
+                                self.fire_events(super::events::When::AfterUpgrade)?;
                                 if let Upgrade::Level(n) = want {
                                     if a >= n as u32 {
                                         self.log(format!(
@@ -4011,6 +4189,9 @@ impl RunCtx {
     pub(crate) fn end_round(&self, won: bool, map: &str, last: bool, once: &EndOnce) -> R<bool> {
         use std::sync::atomic::Ordering;
         let first = !once.reported.load(Ordering::Relaxed);
+        if first {
+            self.fire_events(super::events::When::BeforeEnd)?;
+        }
         let (end_drops, pearls) = if first {
             // rewards on the end screen (Gems, Summer Coins, Remnants, ...)
             let end_drops = {
@@ -4070,6 +4251,8 @@ impl RunCtx {
     pub fn run(&self) {
         crate::debugbus::set_clients(&self.clients.iter().map(|c| c.0).collect::<Vec<_>>());
         super::resume::install();
+        crate::ocrareas::set_all(&self.settings.ocr_areas);
+        let _ = self.fire_events(super::events::When::MacroStart);
         let finished = std::sync::atomic::AtomicBool::new(false);
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes

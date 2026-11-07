@@ -7,6 +7,7 @@
 
 mod command;
 mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
+mod eventsui;
 mod mapsui;
 mod ocrui;
 mod tools;
@@ -72,6 +73,7 @@ enum SettingsTab {
     Weather,
     Recovery,
     Dungeon,
+    CustomEvents,
     Updates,
 }
 
@@ -150,6 +152,8 @@ pub struct App {
     /// Role of the spots clicked next (Placement page).
     place_role: crate::placement::SpotRole,
     ocr_ui: ocrui::OcrUi,
+    /// Custom event rules (Settings > Custom Events), loaded when first shown.
+    event_rules: Option<crate::game::events::Rules>,
     show_spiral: bool,
 
     // movement
@@ -326,6 +330,7 @@ impl App {
             place_slot: 0,
             place_role: crate::placement::SpotRole::Any,
             ocr_ui: Default::default(),
+            event_rules: None,
             show_spiral: true,
             route_text: String::new(),
             routes,
@@ -3508,6 +3513,7 @@ impl App {
                 (SettingsTab::Weather, "Weather"),
                 (SettingsTab::Recovery, "Recovery"),
                 (SettingsTab::Dungeon, "Dungeon"),
+                (SettingsTab::CustomEvents, "Custom Events"),
                 (SettingsTab::Updates, "Updates"),
             ],
         );
@@ -3640,6 +3646,9 @@ impl App {
         }
         if tab == SettingsTab::Dungeon {
             changed |= self.dungeon_ui(ui);
+        }
+        if tab == SettingsTab::CustomEvents {
+            self.events_ui(ui);
         }
         if tab == SettingsTab::Game {
             self.card_priority_ui(ui);

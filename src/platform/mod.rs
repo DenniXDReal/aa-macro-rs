@@ -136,6 +136,10 @@ pub trait Platform: Send + Sync {
 
     // ---- input (arbiter only) ----
     fn key(&self, key: Key, down: bool) -> Result<()>;
+    /// Type one character (any letter / symbol, no Shift needed) - down or up.
+    fn type_char(&self, _c: char, _down: bool) -> Result<()> {
+        Ok(())
+    }
     /// Absolute cursor move to screen (x, y): real move event + exact position.
     fn mouse_move_abs(&self, x: i32, y: i32) -> Result<()>;
     /// Relative motion (first-person camera reads this).

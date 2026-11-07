@@ -30,6 +30,7 @@ base64 = "0.23.1"
 raw-window-handle = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 arc-swap = "1"
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
 notify = "8"
 
 [target.'cfg(windows)'.dependencies]

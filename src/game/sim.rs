@@ -275,6 +275,110 @@ mod tests {
         (c, rx, arb)
     }
 
+    /// Custom events end to end: a rule file on disk, the OCR area reading
+    /// "Wave 10 / 50" (random waves before it), the rule's click fires once
+    /// at wave 10 - not again while it stays on screen, again when it comes
+    /// back; a rule for another map never fires; a jump request is queued.
+    #[test]
+    fn custom_events_fire_on_their_text() {
+        use super::super::events::{Do, Match, Rule, Rules, When};
+        let sim = Arc::new(Sim::new(vec![scr(vec![])]));
+        let (c, rx, _arb) = ctx(sim.clone(), Settings::default());
+        let rules = Rules {
+            rules: vec![
+                Rule {
+                    name: "wave 10".into(),
+                    when: When::Every(1),
+                    area: [10, 10, 200, 30],
+                    text: r"Wave 10\b".into(),
+                    matching: Match::Regex,
+                    action: Do::Click { x: 321, y: 123 },
+                    ..Default::default()
+                },
+                Rule {
+                    name: "other map".into(),
+                    when: When::Every(1),
+                    maps: vec!["Navy Bay".into()],
+                    action: Do::Click { x: 1, y: 1 },
+                    ..Default::default()
+                },
+                Rule {
+                    name: "jump".into(),
+                    when: When::BeforeEnd,
+                    action: Do::ChangeStep {
+                        step: "upgrade".into(),
+                    },
+                    ..Default::default()
+                },
+            ],
+            type_gap_ms: 1,
+        };
+        super::super::events::save(&rules).unwrap();
+        *crate::game::run::CURRENT_MAP.lock().unwrap() = "Sand Village".into();
+        let show = |t: &str| {
+            *sim.ocr_texts.lock().unwrap() = vec![(Rect::new(0, 0, 300, 60), t.to_string())];
+        };
+        let ours = || {
+            sim.raw_clicks
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|k| (k.1, k.2) == (321, 123))
+                .count()
+        };
+        // "random" waves before 10: nothing
+        let mut seed = 7u32;
+        for _ in 0..6 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let w = 1 + (seed >> 16) % 9; // 1..=9
+            show(&format!("Wave {w} / 50"));
+            std::thread::sleep(std::time::Duration::from_millis(1050));
+            c.fire_events(When::Every(0)).unwrap();
+        }
+        assert_eq!(ours(), 0, "no wave 10 yet");
+        // wave 10: once, and not again while it stays up
+        show("Wave 10 / 50");
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(1050));
+            c.fire_events(When::Every(0)).unwrap();
+        }
+        let logs: Vec<String> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Event::Log(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ours(),
+            1,
+            "fired once: {logs:?} {:?}",
+            sim.raw_clicks.lock().unwrap()
+        );
+        // gone (wave 11), then back: again
+        show("Wave 11 / 50");
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        c.fire_events(When::Every(0)).unwrap();
+        show("Wave 10 / 50");
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        c.fire_events(When::Every(0)).unwrap();
+        assert_eq!(ours(), 2, "fired again after it came back");
+        // the Navy Bay rule never fired on Sand Village
+        assert!(!sim
+            .raw_clicks
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|k| (k.1, k.2) == (1, 1)));
+        // Before End: the step jump is queued
+        c.fire_events(When::BeforeEnd).unwrap();
+        assert_eq!(
+            super::super::events::take_jump(),
+            Some(super::super::steps::Step::Upgrade)
+        );
+        let _ = std::fs::remove_file(super::super::events::path());
+    }
+
     /// Summer Event, Play Here, solo: lobby -> walk -> Join Matchmaking ->
     /// Open Portal -> Start -> loading (map spotted) -> Vote Start shows ->
     /// Settings > Teleport to Spawn > close -> Vote Start -> stage ->

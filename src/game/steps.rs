@@ -430,11 +430,25 @@ pub fn run_steps<'s, C>(
     hooks: &dyn Hooks,
     tick: Duration,
 ) -> Result<(), (Step, FailureReason)> {
-    for i in 0..steps.len() {
+    let mut i = 0;
+    let mut jumps = 0;
+    while i < steps.len() {
         let step = steps[i].step();
         match run_step(steps[i].as_mut(), ctx, hooks, tick) {
             Outcome::Advanced => {
-                if let Some(next) = steps.get(i + 1) {
+                // a custom event asked for another step: go there (in this
+                // round's steps; at most 20 jumps a round)
+                let jump = super::events::take_jump()
+                    .and_then(|to| steps.iter().position(|s| s.step() == to))
+                    .filter(|_| jumps < 20);
+                i = match jump {
+                    Some(j) => {
+                        jumps += 1;
+                        j
+                    }
+                    None => i + 1,
+                };
+                if let Some(next) = steps.get(i) {
                     hooks.save_state(next.step(), next.sub());
                 }
             }
