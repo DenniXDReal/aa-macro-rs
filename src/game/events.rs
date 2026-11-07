@@ -23,15 +23,24 @@ pub enum When {
     BeforeEnd,
     /// Every this many seconds while a stage runs.
     Every(u32),
+    /// The portal is about to be opened to everyone (Play Here > Open).
+    OpenLobby,
+    /// The portal is about to be opened to friends only.
+    FriendLobby,
+    /// Find Match was pressed (public matchmaking).
+    Matchmaking,
 }
 
 impl When {
-    pub const KINDS: [&'static str; 5] = [
+    pub const KINDS: [&'static str; 8] = [
         "On Macro Start",
         "Before Place",
         "After Upgrade",
         "Before End",
         "Every X seconds",
+        "Open Lobby",
+        "Friend Lobby",
+        "Matchmaking",
     ];
     pub fn kind(self) -> usize {
         match self {
@@ -40,6 +49,9 @@ impl When {
             When::AfterUpgrade => 2,
             When::BeforeEnd => 3,
             When::Every(_) => 4,
+            When::OpenLobby => 5,
+            When::FriendLobby => 6,
+            When::Matchmaking => 7,
         }
     }
     pub fn from_kind(k: usize, secs: u32) -> When {
@@ -48,6 +60,9 @@ impl When {
             1 => When::BeforePlace,
             2 => When::AfterUpgrade,
             3 => When::BeforeEnd,
+            5 => When::OpenLobby,
+            6 => When::FriendLobby,
+            7 => When::Matchmaking,
             _ => When::Every(secs.max(1)),
         }
     }
@@ -389,5 +404,8 @@ mod tests {
             Some(super::super::steps::Step::Upgrade)
         );
         assert_eq!(step_named("nope"), None);
+        for k in 0..When::KINDS.len() {
+            assert_eq!(When::from_kind(k, 3).kind(), k);
+        }
     }
 }

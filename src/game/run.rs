@@ -741,6 +741,7 @@ impl RunCtx {
             PlayChoice::FindMatch => {
                 self.click_when(self.main, "find_match", 6000)?;
                 self.sleep(1500)?;
+                self.fire_events(super::events::When::Matchmaking)?;
                 if self.captcha_up() {
                     let _ = self.tx.send(Event::Attention(
                         "Captcha - type it in Roblox, the macro waits".into(),
@@ -765,6 +766,11 @@ impl RunCtx {
                 "open_button"
             };
             if self.wait_any(self.main, &["open_portal"], 5000)?.is_some() {
+                self.fire_events(if s.run.own_team {
+                    super::events::When::FriendLobby
+                } else {
+                    super::events::When::OpenLobby
+                })?;
                 self.click_when(self.main, open, 4000)?;
             }
             // in a party the alts come along by themselves - they don't move
