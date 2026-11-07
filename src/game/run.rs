@@ -3042,7 +3042,12 @@ impl RunCtx {
                 .iter()
                 .map(|(h, slot, _)| {
                     let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
-                    format!("c{n} slot {slot} (prio {})", unit(h, *slot).priority)
+                    let u = unit(h, *slot);
+                    let to = match u.upgrade {
+                        Upgrade::Level(l) => format!("to Lv {l}"),
+                        _ => "to MAX".into(),
+                    };
+                    format!("c{n} slot {slot} (prio {}, {to})", u.priority)
                 })
                 .collect();
             self.log(format!("upgrade order: {}", list.join(" > ")));
@@ -3370,8 +3375,10 @@ impl RunCtx {
                                 cash_since[k] = None;
                                 done[k] = a;
                                 self.log(format!(
-                                    "slot {slot} at {},{} upgraded to {a}",
-                                    at.x, at.y
+                                    "slot {slot} at {},{} upgraded to {a} (target {})",
+                                    at.x,
+                                    at.y,
+                                    target(want)
                                 ));
                                 self.fire_events(super::events::When::AfterUpgrade)?;
                                 if let Upgrade::Level(n) = want {
