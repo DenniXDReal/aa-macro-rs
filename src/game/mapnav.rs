@@ -37,6 +37,13 @@ pub const BACKUP_MS: u64 = 300;
 pub const STRAFE_MS: u64 = 400;
 /// Give up after this many stuck episodes on one waypoint.
 pub const MAX_STUCK: u32 = 8;
+/// Not on the green path this long into a walk = this map's minimap walk
+/// doesn't work (blocked spawn, odd map): use the recorded route.
+pub const ON_PATH_MS: u64 = 10_000;
+/// Within this many minimap px of the path = on it.
+pub const ON_PATH_PX: f32 = 8.0;
+/// Error text a minimap walk gives when it never got onto the path.
+pub const OFF_PATH: &str = "never got onto the green path";
 
 // ---------------- map data ----------------
 

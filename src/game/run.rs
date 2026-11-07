@@ -360,12 +360,20 @@ fn ocr_due(h: Hwnd) -> bool {
     ocr_due_for(h, 0)
 }
 
+/// VICTORY / DEFEAT read by OCR at most this often per client (ms).
+const END_OCR_MS: u64 = 700;
+/// The upgrade-phase watch loop: one look for the end screen / cards
+/// every this many ms.
+const END_POLL_MS: u64 = 350;
+
 /// Same, per purpose (0 = cards / weather, 1 = VICTORY / DEFEAT).
 fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     static LAST: std::sync::Mutex<Vec<(Hwnd, u8, Instant)>> = std::sync::Mutex::new(Vec::new());
     let mut v = LAST.lock().unwrap();
     match v.iter_mut().find(|e| e.0 == h && e.1 == what) {
-        Some(e) if e.2.elapsed() < Duration::from_millis(if what == 0 { 1000 } else { 2000 }) => {
+        Some(e)
+            if e.2.elapsed() < Duration::from_millis(if what == 0 { 1000 } else { END_OCR_MS }) =>
+        {
             false
         }
         Some(e) => {
@@ -402,6 +410,10 @@ static WEATHER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(N
 /// The weather turned to Sandstorm: clients that stopped too close to the
 /// enemy spawn walk back up once the vote is done.
 static SANDSTORM_REWALK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Maps whose minimap walk never reached the path this session: they use
+/// the recorded route from the next round on.
+static MINIMAP_FAILED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// This match's minimap walks: (client, map file, its lane / %).
 static WALKED: std::sync::Mutex<
     Vec<(Hwnd, super::mapnav::MapData, super::mapnav::ClientWalk, u8)>,
@@ -1689,11 +1701,22 @@ impl RunCtx {
                     .flatten()
             })
             .filter(|d| !super::mapnav::walk_points(d, s.minimap_walk_pct).is_empty());
+        let failed = MINIMAP_FAILED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&super::mapnav::key(map));
         let use_mini = match (&route, &mini) {
+            // its minimap walk failed earlier: the recorded route this time
+            (Some(_), Some(_)) if failed => false,
             (_, Some(_)) if s.prefer_minimap => true,
             (None, Some(_)) => true,
             _ => false,
         };
+        if failed && route.is_some() && mini.is_some() {
+            self.log(format!(
+                "minimap walk failed on {map} earlier - using the recorded route"
+            ));
+        }
         if let (true, Some(d)) = (use_mini, mini) {
             self.stage_weather(map);
             let floor = walk_floor();
@@ -1731,6 +1754,23 @@ impl RunCtx {
                 match self.minimap_walk(h, &plan.points) {
                     Ok(()) => self.log("minimap walk: there"),
                     Err(e) if e == "stopped" || e.starts_with(DISCONNECTED) => return Err(e),
+                    Err(e) if e.starts_with(super::mapnav::OFF_PATH) => {
+                        // this round plays out from here; the next one on
+                        // this map walks the recorded route
+                        MINIMAP_FAILED
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(super::mapnav::key(map));
+                        self.log(format!(
+                            "WARN minimap walk: {e} - placing from here; {}",
+                            if route.is_some() {
+                                "next round on this map uses the recorded route"
+                            } else {
+                                "no recorded route for this map either"
+                            }
+                        ));
+                        break;
+                    }
                     Err(e) => self.log(format!("minimap walk: {e} - placing from here")),
                 }
             }
@@ -1908,10 +1948,23 @@ impl RunCtx {
         let started = Instant::now();
         let mut dl = self.control.deadline(self.secs(90.0));
         let mut lost = 0;
+        let near_path = |p: (f32, f32)| {
+            targets
+                .iter()
+                .any(|t| (t.0 - p.0).hypot(t.1 - p.1) <= super::mapnav::ON_PATH_PX)
+        };
+        let mut on_path = near_path(me);
         loop {
             self.check()?;
             if dl.expired() {
                 return Err(format!("not there after 90 s (waypoint {})", nav.next + 1));
+            }
+            if !on_path && started.elapsed().as_millis() as u64 > super::mapnav::ON_PATH_MS {
+                return Err(format!(
+                    "{} in {} s",
+                    super::mapnav::OFF_PATH,
+                    super::mapnav::ON_PATH_MS / 1000
+                ));
             }
             let Some(pos) = self.arrow_at(h, Some(me)) else {
                 lost += 1;
@@ -1923,6 +1976,7 @@ impl RunCtx {
             };
             lost = 0;
             me = pos;
+            on_path |= near_path(pos);
             match nav.step(started.elapsed().as_millis() as u64, pos) {
                 Cmd::Arrived => return Ok(()),
                 Cmd::GiveUp(why) => return Err(why),
@@ -2642,7 +2696,7 @@ impl RunCtx {
                 if UPGRADING.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                     let _ = self.idle_click(&mut last_idle, keys_ref(&keys));
                 }
-                if self.sleep(700).is_err() {
+                if self.sleep(END_POLL_MS).is_err() {
                     break Err("stopped".into());
                 }
             };
