@@ -17,6 +17,8 @@ pub struct MapsUi {
     tex: Option<(String, TextureHandle)>,
     msg: String,
     dirty: bool,
+    /// A click adds a walk point (else: sets where it stops on the path).
+    click_walk: bool,
 }
 
 impl App {
@@ -267,13 +269,103 @@ impl App {
                 Color32::WHITE,
             );
         }
+        // each lane's own stop (multi-lane maps), with its %
+        let polys_n = mapnav::lane_polys(&d).len();
+        if d.walk.is_empty() && polys_n > 1 {
+            for (name, pct) in d.lane_pct.clone() {
+                let pick = match name.as_str() {
+                    "left" => mapnav::LanePick::Left,
+                    "right" => mapnav::LanePick::Right,
+                    "center" => mapnav::LanePick::Center,
+                    _ => continue,
+                };
+                let plan = mapnav::plan(
+                    &d,
+                    mapnav::ClientWalk {
+                        lane: pick,
+                        pct: None,
+                    },
+                    self.settings.minimap_walk_pct,
+                    0,
+                );
+                if let Some(e) = plan.points.last() {
+                    let c = at([e.0 as i32, e.1 as i32]);
+                    p.circle_stroke(c, 8.0, Stroke::new(2.0, PURPLE));
+                    p.text(
+                        c + Vec2::new(10.0, -10.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("{name} {pct}%"),
+                        egui::FontId::proportional(11.0),
+                        Color32::WHITE,
+                    );
+                }
+            }
+        }
+        // hovering the path: where it would stop, and its %
+        if !self.maps_ui.click_walk {
+            if let Some(h) = resp.hover_pos() {
+                let q = (h - rect.min) / ZOOM;
+                if let Some((_, pct, spot)) = mapnav::stop_from_click(&d, (q.x, q.y), 10.0) {
+                    let c = at([spot.0.round() as i32, spot.1.round() as i32]);
+                    p.circle_stroke(c, 8.0, Stroke::new(1.0, Color32::from_white_alpha(180)));
+                    p.text(
+                        c + Vec2::new(10.0, 10.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{pct}%"),
+                        egui::FontId::proportional(12.0),
+                        Color32::WHITE,
+                    );
+                }
+            }
+        }
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let q = (pos - rect.min) / ZOOM;
-                d.walk.push([q.x.round() as i32, q.y.round() as i32]);
-                self.maps_ui.dirty = true;
+                if self.maps_ui.click_walk {
+                    d.walk.push([q.x.round() as i32, q.y.round() as i32]);
+                    self.maps_ui.dirty = true;
+                } else {
+                    // a click on a path: that's where it stops (saved at once)
+                    match mapnav::stop_from_click(&d, (q.x, q.y), 10.0) {
+                        Some((lane, pct, _)) => {
+                            mapnav::set_stop(&mut d, lane, pct);
+                            let which = if polys_n > 1 {
+                                format!("{} lane", mapnav::lane_names(&d)[lane])
+                            } else {
+                                "the path".into()
+                            };
+                            self.maps_ui.msg = match mapnav::save(&d) {
+                                Ok(_) => {
+                                    self.maps_ui.dirty = false;
+                                    format!(
+                                        "{}: stops at {pct}% of {which} (of the enemies' walk from their spawn) - saved{}",
+                                        d.map,
+                                        if d.walk.is_empty() {
+                                            ""
+                                        } else {
+                                            " (your walk points still win - Clear them to use it)"
+                                        }
+                                    )
+                                }
+                                Err(e) => format!("not saved: {e}"),
+                            };
+                        }
+                        None => {
+                            self.maps_ui.msg =
+                                "click on a path (the green / violet line) to set where it stops"
+                                    .into();
+                        }
+                    }
+                }
             }
         }
+        ui.horizontal(|ui| {
+            ui.label("click =");
+            ui.radio_value(&mut self.maps_ui.click_walk, false, "set the stop point")
+                .on_hover_text("click on the path: it stops there (the % is worked out and saved)");
+            ui.radio_value(&mut self.maps_ui.click_walk, true, "add a walk point")
+                .on_hover_text("your own points, walked in order (they win over the %)");
+        });
         ui.horizontal(|ui| {
             let mut own = d.walk_pct.is_some();
             if ui
@@ -348,7 +440,7 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("click = add a point (walked in order; none = the dotted part of the path) · white ring = base · red ring = enemy spawn · green = enemy path · violet = other lanes (stop covers all) · purple ring = where it stops (Auto) · yellow C1/C2 = each client's stop · % = of the enemies' walk from their spawn")
+            RichText::new("click on a path = it stops there (or add walk points, see above) · white ring = base · red ring = enemy spawn · green = enemy path · violet = other lanes (stop covers all) · purple ring = where it stops (Auto) · yellow C1/C2 = each client's stop · % = of the enemies' walk from their spawn")
                 .size(11.0)
                 .color(MUTED),
         );

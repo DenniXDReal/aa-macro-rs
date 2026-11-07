@@ -895,7 +895,8 @@ mod tests {
         // wait for what's checked (3 visits + the cash-wait line) instead of
         // a fixed 6 s - under a busy test run the first visit can be late;
         // 60 s at most
-        let want = "Upgrade: slot 1 at 400,300 (Level 3) - waiting for cash to reach Target Level 5...";
+        let want =
+            "Upgrade: slot 1 at 400,300 (Level 3) - waiting for cash to reach Target Level 5...";
         let mut logs: Vec<String> = vec![];
         let started = std::time::Instant::now();
         loop {
@@ -917,10 +918,7 @@ mod tests {
             Event::Log(l) => Some(l),
             _ => None,
         }));
-        assert!(
-            logs.iter().any(|l| l.contains(want)),
-            "{logs:#?}"
-        );
+        assert!(logs.iter().any(|l| l.contains(want)), "{logs:#?}");
         assert!(
             !logs.iter().any(|l| l.contains("back in a minute")),
             "never rested: {logs:#?}"

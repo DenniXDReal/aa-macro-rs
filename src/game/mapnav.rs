@@ -357,6 +357,70 @@ pub fn plan(d: &MapData, c: ClientWalk, default_pct: u8, floor: u8) -> Plan {
     }
 }
 
+/// A click on the editor's map: the nearest point on `poly` (stored
+/// spawn first) and how far along the enemies' walk it is, % from their
+/// spawn, with the click's distance to the line. None = an empty line.
+pub fn pct_at(poly: &[[i32; 2]], click: (f32, f32)) -> Option<(u8, (f32, f32), f32)> {
+    let pts: Vec<(f32, f32)> = poly.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+    if pts.len() < 2 {
+        return None;
+    }
+    let total: f32 = pts
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut best: Option<(f32, f32, (f32, f32))> = None; // (dist, along, point)
+    let mut done = 0.0;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = dx.hypot(dy);
+        let t = if len > 0.0 {
+            (((click.0 - a.0) * dx + (click.1 - a.1) * dy) / (len * len)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let p = (a.0 + dx * t, a.1 + dy * t);
+        let d = (click.0 - p.0).hypot(click.1 - p.1);
+        if best.is_none_or(|(bd, ..)| d < bd) {
+            best = Some((d, done + len * t, p));
+        }
+        done += len;
+    }
+    let (d, along, p) = best?;
+    let pct = (along / total * 100.0).round().clamp(1.0, 100.0) as u8;
+    Some((pct, p, d))
+}
+
+/// The editor click that sets where a map stops: the lane clicked (within
+/// `max_px` of it) - (lane index, %, the spot on it).
+pub fn stop_from_click(
+    d: &MapData,
+    click: (f32, f32),
+    max_px: f32,
+) -> Option<(usize, u8, (f32, f32))> {
+    lane_polys(d)
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| pct_at(l, click).map(|(pct, p, dist)| (i, pct, p, dist)))
+        .filter(|x| x.3 <= max_px)
+        .min_by(|a, b| a.3.total_cmp(&b.3))
+        .map(|(i, pct, p, _)| (i, pct, p))
+}
+
+/// Put a stop clicked on the editor's map into the map file: the map's own
+/// % on a 1-lane map, the lane's on a map with more.
+pub fn set_stop(d: &mut MapData, lane: usize, pct: u8) {
+    if lane_polys(d).len() <= 1 {
+        d.walk_pct = Some(pct);
+    } else if let Some(name) = lane_names(d).get(lane) {
+        d.lane_pct.insert(name.clone(), pct);
+    }
+}
+
 /// Where to walk with Settings' % and no lane picked.
 pub fn walk_points(d: &MapData, default_pct: u8) -> Vec<(f32, f32)> {
     plan(d, ClientWalk::default(), default_pct, 0).points
@@ -1268,5 +1332,34 @@ mod tests {
             t += 200;
         }
         assert!(matches!(last, Cmd::GiveUp(_)), "{last:?}");
+    }
+
+    #[test]
+    fn click_sets_the_stop() {
+        // spawn (100,10) -> base (0,10): 100 px
+        let mut d = MapData {
+            path: (0..=10).rev().map(|i| [i * 10, 10]).collect(),
+            ..Default::default()
+        };
+        // a click by x=80: 20 % of the enemies' walk from the spawn
+        let (lane, pct, at) = stop_from_click(&d, (80.0, 14.0), 10.0).unwrap();
+        assert_eq!((lane, pct), (0, 20));
+        assert_eq!(at, (80.0, 10.0));
+        set_stop(&mut d, lane, pct);
+        assert_eq!(d.walk_pct, Some(20));
+        // and the walk now stops right there
+        assert_eq!(walk_points(&d, 50).last(), Some(&(80.0, 10.0)));
+        // closer to the base: 65 %
+        let (_, pct, _) = stop_from_click(&d, (35.0, 8.0), 10.0).unwrap();
+        assert_eq!(pct, 65);
+        // too far from the path: nothing
+        assert!(stop_from_click(&d, (50.0, 60.0), 10.0).is_none());
+        // a 3-lane map: the clicked lane gets its own %
+        let mut t = three_lanes();
+        let (lane, pct, _) = stop_from_click(&t, (40.0, 80.0), 10.0).unwrap();
+        assert_eq!(lane_names(&t)[lane], "left");
+        set_stop(&mut t, lane, pct);
+        assert_eq!(t.lane_pct.get("left"), Some(&pct));
+        assert_eq!(t.walk_pct, None);
     }
 }
