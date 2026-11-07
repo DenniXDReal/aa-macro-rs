@@ -401,6 +401,10 @@ pub(crate) fn placed_json(
 /// uses the weather order (buffs first).
 static LAST_SHIFT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
+/// Units whose Auto ability was tried this match (client, spot) - once each.
+static AUTO_TRIED: std::sync::Mutex<std::collections::BTreeSet<(isize, i32, i32)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 /// The map being played (for custom events' "only on these maps").
 pub(crate) static CURRENT_MAP: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
@@ -2412,6 +2416,7 @@ impl RunCtx {
         if !map.is_empty() {
             *CURRENT_MAP.lock().unwrap_or_else(|e| e.into_inner()) = map.to_string();
         }
+        AUTO_TRIED.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.fire_events(super::events::When::BeforePlace)?;
         super::placing::PLACE_SETTLE_MS.store(
             s.place_settle_ms.clamp(100, 5000),
@@ -2634,10 +2639,12 @@ impl RunCtx {
                         // click it - BUFF units wait a moment longer for it
                         let buff = units[slot - 1].buff;
                         let auto = |_at: Point| {
-                            if !s.run.auto_ability || !scr.has("auto_ability") {
+                            // while placing: BUFF units only (the others get
+                            // one checked try on their first upgrade)
+                            if !buff || !s.run.auto_ability || !scr.has("auto_ability") {
                                 return;
                             }
-                            let wait = if buff { 1500 } else { 400 };
+                            let wait = 1500;
                             match self.wait_any(h, &["auto_ability"], wait) {
                                 Ok(Some((_, p))) => {
                                     let _ = self.click(h, p, "auto ability");
@@ -3269,12 +3276,27 @@ impl RunCtx {
                     self.sleep(PANEL_CLOSE_MS)?;
                     continue;
                 }
-                // its Auto ability is off (the picture shows): switch it on
+                // its Auto ability is off (your picture shows where you
+                // captured it): switch it on - one try per unit a match, and
+                // if that click closed the panel it wasn't the button
                 if s.run.auto_ability && scr.has("auto_ability") {
-                    if let Some(p) = scr.find_picture_wide(&Self::names(&["auto_ability"])) {
-                        self.click(*h, p, "auto ability")?;
-                        self.log(format!("slot {slot}: auto ability on"));
-                        self.sleep(300)?;
+                    let unit = (h.0, at.x, at.y);
+                    let first = AUTO_TRIED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(unit);
+                    if first {
+                        if let Some(p) = scr.find(&Self::names(&["auto_ability"]), None) {
+                            self.click(*h, p, "auto ability")?;
+                            self.sleep(400)?;
+                            if self.panel_open(scr, 600)? {
+                                self.log(format!("slot {slot}: auto ability on"));
+                            } else {
+                                self.log(format!(
+                                    "slot {slot}: the auto ability picture matched but the click closed the panel - not tried on this unit again (recapture auto_ability?)"
+                                ));
+                            }
+                        }
                     }
                 }
                 let mut waiting_cash = false;
