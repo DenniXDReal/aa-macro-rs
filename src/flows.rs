@@ -63,7 +63,7 @@ pub const FLOWS: &[Flow] = &[
             n("waiting_for_players", "text", "Portal lobby: 'Waiting for players...'"),
             n("start_button", "text", "Portal lobby: green 'Start'"),
             n("portal_join_e", "text", "Follower: the 'Join' prompt with the E key at the portal"),
-            n("captcha", "text", "Captcha dialog title - the macro pauses and pings you, it never solves it"),
+            n("captcha", "text", "Captcha dialog: capture its fixed frame / title (\"Verify\"), never the random code - the macro pauses and pings you, it never solves it"),
             n("choose_card", "text", "Card pick pop-up title ('Choose a card...') - the macro takes the green card, else the middle one"),
             n("unit_close", "icon", "The X that closes a unit's panel - clicked before the card screenshot if a panel is open"),
             n("card_confirm", "text", "'Confirm' under the cards after picking one"),

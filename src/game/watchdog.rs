@@ -49,7 +49,11 @@ pub struct Incident {
 /// Captcha by its words (when you haven't captured a `captcha` picture).
 pub fn captcha_text(t: &str) -> bool {
     let t = t.to_lowercase();
-    t.contains("captcha") || t.contains("verify you are human") || t.contains("are you a robot")
+    // the code itself is random: only the dialog's fixed words count
+    t.contains("captcha")
+        || t.contains("verify")
+        || t.contains("verification")
+        || t.contains("are you a robot")
 }
 
 /// What one look at a client found: the disconnect box beats a captcha.
@@ -169,6 +173,11 @@ mod tests {
             classify(false, false, Some("Please complete the captcha")),
             Some(Kind::Captcha)
         );
+        assert_eq!(
+            classify(false, false, Some("Verify  X7kQ2  Submit")),
+            Some(Kind::Captcha)
+        );
+        assert_eq!(classify(false, false, Some("VICTORY  +7291")), None);
         assert_eq!(classify(false, false, Some("Wave 17 Navy Bay")), None);
         assert_eq!(classify(false, false, None), None);
     }

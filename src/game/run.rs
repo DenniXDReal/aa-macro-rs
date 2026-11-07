@@ -687,17 +687,14 @@ impl RunCtx {
             PlayChoice::PlayHere => self.click_when(self.main, "play_here", 6000)?,
             PlayChoice::FindMatch => {
                 self.click_when(self.main, "find_match", 6000)?;
-                if self.wait_any(self.main, &["captcha"], 3000)?.is_some() {
+                self.sleep(1500)?;
+                if self.captcha_up() {
                     let _ = self.tx.send(Event::Attention(
                         "Captcha - type it in Roblox, the macro waits".into(),
                     ));
                     // wait until the captcha is gone (typed) - up to 2 min
                     let mut dl = self.control.deadline(self.secs(120.0));
-                    while self
-                        .screen(self.main)
-                        .find(&Self::names(&["captcha"]), None)
-                        .is_some()
-                    {
+                    while self.captcha_up() {
                         if dl.expired() {
                             return Err("captcha not typed in time".into());
                         }
@@ -1577,28 +1574,31 @@ impl RunCtx {
     /// placing goes on from wherever they stand.
     pub fn stage_walk(&self, map: &str) -> R<()> {
         let s = &self.settings;
-        if let Some(r) = (!map.is_empty())
-            .then(|| self.routes.get().find_map(map).cloned())
-            .flatten()
-        {
-            for h in self.main_last(self.movers()) {
-                self.log(format!("map walk: {}", r.map));
-                let b = r
-                    .to_batch(h, self.screen(h), &vars(s))
-                    .map_err(|e| e.to_string())?;
-                if let Err(e) = self.arb.run(b) {
-                    self.log(format!("map walk: {e} - placing from here"));
-                }
-            }
-        } else if let Some(d) = (!map.is_empty() && s.minimap_nav)
+        if map.is_empty() {
+            return Ok(());
+        }
+        let route = self.routes.get().find_map(map).cloned();
+        // the minimap's map file, if walking by it is on (preferred: made
+        // from the live minimap when there's none yet)
+        let mini = s
+            .minimap_nav
             .then(|| super::mapnav::find(map))
             .flatten()
-            .filter(|d| !super::mapnav::walk_points(d, s.minimap_walk_pct).is_empty())
-        {
-            // no recorded route: walk by the minimap to the map file's points
+            .or_else(|| {
+                (s.prefer_minimap && s.minimap_nav)
+                    .then(|| self.map_file_now(map))
+                    .flatten()
+            })
+            .filter(|d| !super::mapnav::walk_points(d, s.minimap_walk_pct).is_empty());
+        let use_mini = match (&route, &mini) {
+            (_, Some(_)) if s.prefer_minimap => true,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if let (true, Some(d)) = (use_mini, mini) {
             for h in self.main_last(self.movers()) {
                 self.log(format!(
-                    "minimap walk: {} ({})",
+                    "minimap walk: {} ({}){}",
                     d.map,
                     if d.walk.is_empty() {
                         format!(
@@ -1615,6 +1615,11 @@ impl RunCtx {
                         )
                     } else {
                         format!("{} point(s)", d.walk.len())
+                    },
+                    if route.is_some() {
+                        " - preferred over the recorded route"
+                    } else {
+                        ""
                     }
                 ));
                 match self.minimap_walk(h, &d) {
@@ -1623,8 +1628,62 @@ impl RunCtx {
                     Err(e) => self.log(format!("minimap walk: {e} - placing from here")),
                 }
             }
+        } else if let Some(r) = route {
+            if s.prefer_minimap {
+                self.log(format!(
+                    "minimap walk: no usable minimap path for {map} - using the recorded route"
+                ));
+            }
+            for h in self.main_last(self.movers()) {
+                self.log(format!("map walk: {}", r.map));
+                let b = r
+                    .to_batch(h, self.screen(h), &vars(s))
+                    .map_err(|e| e.to_string())?;
+                if let Err(e) = self.arb.run(b) {
+                    self.log(format!("map walk: {e} - placing from here"));
+                }
+            }
+        } else if s.prefer_minimap {
+            self.log(format!(
+                "ERROR minimap walk: no minimap path and no recorded route for {map} - placing from here"
+            ));
         }
         Ok(())
+    }
+
+    /// A captcha on the main client: your `captcha` picture (its fixed
+    /// frame), else its fixed words ("Verify", "Captcha") - never the code.
+    fn captcha_up(&self) -> bool {
+        let scr = self.screen(self.main);
+        if scr.has("captcha") && scr.find(&Self::names(&["captcha"]), None).is_some() {
+            return true;
+        }
+        scr.frame()
+            .and_then(|f| scr.ocr_all(&f))
+            .is_some_and(|t| super::watchdog::captcha_text(&t))
+    }
+
+    /// A map file for `map` from the minimap on screen right now (saved for
+    /// next time), if the reader finds a path on it.
+    fn map_file_now(&self, map: &str) -> Option<super::mapnav::MapData> {
+        let f = self.screen(self.main).frame()?;
+        let m = super::minimap::crop(&f)?;
+        let d = super::mapnav::from_minimap(map, &m);
+        if d.path.len() < 2 {
+            self.log(format!(
+                "minimap walk: no green path found on {map}'s minimap"
+            ));
+            return None;
+        }
+        let _ = super::minimap::save_named_if_missing(&f, &super::minimap::dir(), map);
+        match super::mapnav::save(&d) {
+            Ok(_) => self.log(format!(
+                "minimap walk: made {map}'s map file from its minimap ({} lane(s))",
+                d.lanes.len() + 1
+            )),
+            Err(e) => self.log(format!("minimap walk: map file not saved: {e}")),
+        }
+        Some(d)
     }
 
     /// Where this client's arrow is on its minimap (the one nearest

@@ -3465,6 +3465,27 @@ impl App {
         }
         if tab == SettingsTab::General {
             card(ui, |ui| {
+                ui.label(RichText::new("MOVEMENT").size(11.0).color(MUTED));
+                changed |= toggle(
+                    ui,
+                    &mut self.settings.prefer_minimap,
+                    "Prefer Minimap Navigation over Recorded Routes",
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "On: every map walks by its minimap ({}% along the green path, or your walk points) - a map with no map file gets one from its minimap on arrival. Recorded routes are only the fallback.",
+                        self.settings.minimap_walk_pct
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                if self.settings.prefer_minimap && !self.settings.minimap_nav {
+                    self.settings.minimap_nav = true;
+                    changed = true;
+                }
+            });
+            ui.add_space(8.0);
+            card(ui, |ui| {
                 ui.label(
                     RichText::new("MULTI-ROBLOX & DOCKING")
                         .size(11.0)

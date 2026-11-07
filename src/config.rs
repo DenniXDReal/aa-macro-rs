@@ -106,6 +106,10 @@ pub struct Settings {
     pub minimap_nav: bool,
     /// Minimap walk along the enemy path: how far, % of it (base end first).
     pub minimap_walk_pct: u8,
+    /// Walk by the minimap even when the map has a recorded route (the
+    /// route is the fallback); a map with no map file gets one from its
+    /// minimap there and then.
+    pub prefer_minimap: bool,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).
     pub resume_mode: ResumeMode,
@@ -543,6 +547,7 @@ impl Default for Settings {
             recovery: RecoverySettings::default(),
             minimap_nav: true,
             minimap_walk_pct: 50,
+            prefer_minimap: false,
             dungeon: Default::default(),
             schedule: Schedule::default(),
             dump_on_miss: false,
