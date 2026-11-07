@@ -370,6 +370,31 @@ pub fn pearl_amount_rect(icon: Option<Rect>) -> Rect {
     }
 }
 
+/// `area` cut out, 3x bigger, as black text on white - the pink-white
+/// "+7291" on the dark panel is easy for OCR this way. (Fresh picture: its
+/// own size, so OCR never swaps it for a new capture.)
+pub fn clean_for_ocr(f: &Frame, area: Rect) -> Frame {
+    const K: i32 = 3;
+    let (w, h) = (area.w.max(1), area.h.max(1));
+    let mut px = vec![255u8; (w * K * h * K * 4) as usize];
+    for y in 0..h * K {
+        for x in 0..w * K {
+            let ink = f
+                .rgb(area.x + x / K, area.y + y / K)
+                .is_some_and(|(r, g, b)| {
+                    let lo = r.min(g).min(b);
+                    // white / pink-white text, not the dark panel
+                    lo > 150 || (r > 200 && b > 180 && g > 110)
+                });
+            if ink {
+                let i = ((y * w * K + x) * 4) as usize;
+                px[i..i + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    Frame::new((w * K) as u32, (h * K) as u32, px)
+}
+
 /// "+7291", "+ 7,291", "+7291 &" (the icon read as a letter) -> 7291.
 /// The longest digit group wins; a stray O read for 0 is fixed.
 pub fn parse_amount(text: &str) -> Option<u64> {
@@ -648,5 +673,21 @@ mod tests {
             .fields
             .iter()
             .any(|x| x.0 == "Other drops" && x.1.contains("Trait Crystal")));
+    }
+
+    #[test]
+    fn pearls_cleaned_for_ocr() {
+        let f = Frame::load_png(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/end_defeat_pearls.png"),
+        )
+        .unwrap();
+        let area = pearl_amount_rect(pearl_icon(&f));
+        let c = clean_for_ocr(&f, area);
+        assert_eq!((c.width, c.height), (area.w as u32 * 3, area.h as u32 * 3));
+        // "+7291" is ink: a good share of the box, but not all of it
+        let ink = c.bgra.chunks_exact(4).filter(|p| p[0] == 0).count();
+        let all = (c.width * c.height) as usize;
+        assert!(ink > all / 20 && ink < all / 2, "{ink} of {all}");
     }
 }

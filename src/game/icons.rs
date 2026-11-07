@@ -120,6 +120,7 @@ pub fn get(name: &str) -> Option<&'static Icon> {
             icon!("button_dungeon"),
             icon!("button_enter_dungeon"),
             icon!("captcha_title"),
+            icon!("button_next"),
         ]
         .into_iter()
         .flatten()

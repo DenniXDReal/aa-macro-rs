@@ -3353,6 +3353,10 @@ impl RunCtx {
                     return Ok(Some(n == "victory"));
                 }
             }
+            // by its look (Next button + title colour): no OCR, every pass
+            if let Some(won) = scr.frame().and_then(|f| super::end_by_look(&f)) {
+                return Ok(Some(won));
+            }
             // OCR reads VICTORY / DEFEAT too (no capture needed)
             if ocr_due_for(h, 1) {
                 if let Some(r) = scr.frame().and_then(|f| scr.ocr_end(&f)) {
@@ -3512,6 +3516,7 @@ impl RunCtx {
             return Ok(None);
         }
         // the panel slides / counts up: several looks over ~5 s
+        let mut tried: Vec<String> = vec![];
         for attempt in 0..10 {
             if let Some(f) = main.frame() {
                 let icon = main
@@ -3526,7 +3531,16 @@ impl RunCtx {
                     .map(|p| crate::geom::Rect::new(p.x - 12, p.y - 12, 24, 24))
                     .or_else(|| loot::pearl_icon(&f));
                 let area = loot::pearl_amount_rect(icon);
-                let text = crate::platform::urgent_ocr(|| main.ocr_rect(&f, area));
+                // black-on-white and 3x first (OCR reads it far better),
+                // then the picture as it is
+                let clean = loot::clean_for_ocr(&f, area);
+                let whole = crate::geom::Rect::new(0, 0, clean.width as i32, clean.height as i32);
+                let text = crate::platform::urgent_ocr(|| main.ocr_rect(&clean, whole))
+                    .filter(|t| loot::parse_amount(t).is_some())
+                    .or_else(|| crate::platform::urgent_ocr(|| main.ocr_rect(&f, area)));
+                if attempt == 0 || attempt == 9 {
+                    tried.push(text.clone().unwrap_or_default().trim().to_string());
+                }
                 if let Some(n) = text.as_deref().and_then(loot::parse_amount) {
                     self.log(format!(
                         "pearls this run: {n} (read '{}' {})",
@@ -3563,7 +3577,10 @@ impl RunCtx {
             }
             self.sleep(500)?;
         }
-        self.log("WARN pearls not read on the end panel (icon box, +XP line or top-left counter)");
+        self.log(format!(
+            "WARN pearls not read on the end panel (icon box, +XP line or top-left counter) - the box read {:?}",
+            tried
+        ));
         Ok(None)
     }
 
