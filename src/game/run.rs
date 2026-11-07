@@ -4185,6 +4185,10 @@ impl RunCtx {
         let end = Self::names(&["victory", "defeat"]);
         let main = self.screen(self.main);
         let mut told = false;
+        let mut boss = false;
+        let mut saving_told = false;
+        let mut last_pick: Option<Point> = None;
+        let mut tried: Vec<Point> = vec![];
         loop {
             self.check()?;
             if let Some(won) = self.end_screen(&end)? {
@@ -4205,6 +4209,25 @@ impl RunCtx {
                 .flat_map(|l| l.iter().map(|(w, _)| w.to_lowercase()))
                 .collect::<Vec<_>>()
                 .join(" ");
+            // where we are: "Dungeon Depth 7/20" (20/20 = the boss room)
+            if let Some((at, Some(total))) = super::dungeon::depth(&text) {
+                boss = total > 0 && at >= total;
+            }
+            // the chest panel ("Open Chests", "Luck:"): open them now, or keep
+            // them for the boss room
+            if text.contains("open chests") || text.contains("luck:") {
+                if d.save_chests_for_boss && !boss {
+                    if !saving_told {
+                        saving_told = true;
+                        self.log("dungeon: saving chests for the boss room");
+                    }
+                    self.click_word(self.main, &["continue", "close", "back", "later", "leave"])?;
+                } else {
+                    self.open_dungeon_chests()?;
+                }
+                self.sleep(800)?;
+                continue;
+            }
             // the shop: your list, best first, while the money lasts; the
             // "Would you like to buy" box is confirmed
             if text.contains("would you like to buy") {
@@ -4215,7 +4238,10 @@ impl RunCtx {
             if d.shop_enabled && text.contains("shop") {
                 // an empty list = the built-in one (loot items, cost cutters)
                 let wanted: Vec<String> = if d.shop_priority.is_empty() {
-                    super::dungeon::SHOP_DEFAULT.iter().map(|s| s.to_string()).collect()
+                    super::dungeon::SHOP_DEFAULT
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect()
                 } else {
                     d.shop_priority.clone()
                 };
@@ -4261,7 +4287,36 @@ impl RunCtx {
             }
             // the path picker: room tiles by their icons (built in, plus
             // your room_* pictures), the one highest on your room order
-            let rooms = self.dungeon_rooms(self.main);
+            let all_rooms = self.dungeon_rooms(self.main);
+            // a room whose click + Enter changed nothing isn't clicked again
+            if let Some(p) = last_pick.take() {
+                if all_rooms
+                    .iter()
+                    .any(|r| (r.at.x - p.x).abs() <= 10 && (r.at.y - p.y).abs() <= 10)
+                {
+                    tried.push(p);
+                }
+            }
+            if all_rooms.is_empty() {
+                tried.clear();
+            }
+            // rows ahead are only shown: pick from the row you can enter
+            let (now_i, ahead_i) = super::dungeon::rows(&all_rooms);
+            let future = d
+                .future_rare_chest_path
+                .then(|| super::dungeon::future_rare_room(&all_rooms))
+                .flatten()
+                .map(|j| all_rooms[j].at);
+            let mut rooms: Vec<super::dungeon::Room> = if !ahead_i.is_empty() && now_i.len() >= 2 {
+                now_i.iter().map(|i| all_rooms[*i].clone()).collect()
+            } else {
+                all_rooms.clone()
+            };
+            rooms.retain(|r| {
+                !tried
+                    .iter()
+                    .any(|p| (p.x - r.at.x).abs() <= 10 && (p.y - r.at.y).abs() <= 10)
+            });
             if rooms.is_empty() && !told {
                 told = true;
                 self.log("dungeon: no room icons seen yet (waiting for the path picker)");
@@ -4283,6 +4338,18 @@ impl RunCtx {
                     &d.room_priority,
                 ) {
                     order.push(rest.remove(k));
+                }
+                // a rare chest ahead: its lane's room first (curses still
+                // checked below)
+                if let Some(fp) = future {
+                    if let Some(k) = order.iter().position(|j| rooms[*j].at == fp) {
+                        let j = order.remove(k);
+                        order.insert(0, j);
+                        self.log(format!(
+                            "dungeon path: future rare chest - taking its lane ({})",
+                            show(&rooms[j])
+                        ));
+                    }
                 }
                 let mut fallback: Option<(usize, usize)> = None;
                 let mut taken = None;
@@ -4334,6 +4401,7 @@ impl RunCtx {
                 if !self.click_word(self.main, &["enter", "confirm"])? {
                     self.log("dungeon path: no Enter button read - the click may have entered");
                 }
+                last_pick = Some(rooms[j].at);
                 self.sleep(2500)?;
                 continue;
             } else if !rooms.is_empty() {

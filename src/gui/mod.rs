@@ -3286,6 +3286,14 @@ impl App {
                     "open the end chests (Open / Claim / Collect) and report the loot",
                 )
                 .changed();
+            changed |= ui
+                .checkbox(&mut d.save_chests_for_boss, "save chests for the boss room")
+                .on_hover_text("chests stay unopened until Dungeon Depth N/N (the boss room) - the chest luck bought on the way counts for all of them")
+                .changed();
+            changed |= ui
+                .checkbox(&mut d.future_rare_chest_path, "future rare chest path")
+                .on_hover_text("a rare chest in the rooms ahead: take the room in its lane (left / center / right) - unless that room has a curse you avoid")
+                .changed();
         });
         changed
     }

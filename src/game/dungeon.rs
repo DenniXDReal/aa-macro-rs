@@ -207,6 +207,96 @@ pub fn accept_shrine(name: &str, deny_all: bool, rules: &[ShrineRule]) -> bool {
         .unwrap_or(!deny_all)
 }
 
+/// "Dungeon Depth 7/20" -> (7, Some(20)); OCR's o / l / I / | for digits
+/// are fixed (Spiral's reading).
+pub fn depth(text: &str) -> Option<(u32, Option<u32>)> {
+    let low = text.to_lowercase();
+    let i = low.find("depth")?;
+    let rest: Vec<char> = low[i + 5..].chars().collect();
+    let digit = |c: char| match c {
+        '0'..='9' => c.to_digit(10),
+        'o' => Some(0),
+        'l' | 'i' | '|' => Some(1),
+        _ => None,
+    };
+    let mut k = 0;
+    // up to 3 junk characters before the number
+    while k < rest.len() && k < 3 && digit(rest[k]).is_none() {
+        k += 1;
+    }
+    let num = |k: &mut usize| -> Option<u32> {
+        let mut n = None;
+        let mut len = 0;
+        while *k < rest.len() && len < 2 {
+            match digit(rest[*k]) {
+                Some(d) => {
+                    n = Some(n.unwrap_or(0) * 10 + d);
+                    len += 1;
+                    *k += 1;
+                }
+                None => break,
+            }
+        }
+        n
+    };
+    let a = num(&mut k)?;
+    while k < rest.len() && rest[k] == ' ' {
+        k += 1;
+    }
+    let total =
+        if rest.get(k) == Some(&'/') || rest[k..].iter().collect::<String>().starts_with("of") {
+            k += if rest[k] == '/' { 1 } else { 2 };
+            while k < rest.len() && rest[k] == ' ' {
+                k += 1;
+            }
+            num(&mut k)
+        } else {
+            None
+        };
+    Some((a, total))
+}
+
+/// The rooms you can pick now (the row nearest the bottom) and the rows
+/// ahead (the rest), rows by their y.
+pub fn rows(rooms: &[Room]) -> (Vec<usize>, Vec<usize>) {
+    if rooms.is_empty() {
+        return (vec![], vec![]);
+    }
+    let low = rooms.iter().map(|r| r.at.y).max().unwrap_or(0);
+    let (now, ahead): (Vec<usize>, Vec<usize>) =
+        (0..rooms.len()).partition(|i| (rooms[*i].at.y - low).abs() <= SAME_ROOM_PX);
+    (now, ahead)
+}
+
+/// "Future rare chest path": a rare chest in the rows ahead -> the room you
+/// can pick now in its lane (nearest by x). None = no rare chest ahead, or
+/// one in every lane.
+pub fn future_rare_room(rooms: &[Room]) -> Option<usize> {
+    let (now, ahead) = rows(rooms);
+    if ahead.is_empty() || now.is_empty() {
+        return None;
+    }
+    let lane = |x: i32| -> usize {
+        // nearest pickable room = its lane
+        now.iter()
+            .copied()
+            .min_by_key(|i| (rooms[*i].at.x - x).abs())
+            .unwrap_or(now[0])
+    };
+    let mut lanes: Vec<usize> = ahead
+        .iter()
+        .filter(|i| rooms[**i].kinds.contains(&RoomKind::RareChest))
+        .map(|i| lane(rooms[*i].at.x))
+        .collect();
+    lanes.sort();
+    lanes.dedup();
+    match lanes.as_slice() {
+        [one] if lanes.len() < now.len() => Some(*one),
+        [one] if now.len() == 1 => Some(*one),
+        _ => None,
+    }
+}
+
 /// Any of `curses` on your avoid list?
 pub fn avoided(curses: &[&str], avoid: &[String]) -> usize {
     curses
@@ -354,6 +444,12 @@ pub struct DungeonSettings {
     pub card_priority: Vec<String>,
     /// After a dungeon: open the end chests and report the loot.
     pub open_chests: bool,
+    /// Keep the chests unopened until the boss room (Depth N/N) - the
+    /// chest luck you buy on the way counts for all of them (Spiral).
+    pub save_chests_for_boss: bool,
+    /// A rare chest among the rooms ahead: take the room in its lane
+    /// (Left / Center / Right), unless that room has an avoided curse.
+    pub future_rare_chest_path: bool,
 }
 
 impl Default for DungeonSettings {
@@ -368,6 +464,8 @@ impl Default for DungeonSettings {
             avoid_curses: vec![],
             card_priority: vec![],
             open_chests: true,
+            save_chests_for_boss: false,
+            future_rare_chest_path: false,
         }
     }
 }
@@ -673,5 +771,39 @@ mod tests {
         assert!(SHOP_DEFAULT
             .iter()
             .all(|d| SHOP_ITEMS.iter().any(|i| i.0 == *d)));
+    }
+
+    #[test]
+    fn depth_counter() {
+        assert_eq!(depth("Dungeon Depth 7/20"), Some((7, Some(20))));
+        assert_eq!(depth("DEPTH: 2O of 2O"), Some((20, Some(20))));
+        assert_eq!(depth("Depth l2"), Some((12, None)));
+        assert_eq!(depth("Pick your own path"), None);
+    }
+
+    #[test]
+    fn rare_chest_ahead_picks_its_lane() {
+        use RoomKind::*;
+        let r = |kinds: Vec<RoomKind>, x, y| Room {
+            kinds,
+            at: Point::new(x, y),
+        };
+        let rooms = vec![
+            r(vec![Chest], 200, 400),
+            r(vec![Hoard], 400, 400),
+            r(vec![Shrine], 600, 400),
+            // ahead: a rare chest over the right lane
+            r(vec![Chest], 230, 250),
+            r(vec![RareChest], 590, 250),
+        ];
+        assert_eq!(rows(&rooms).0, vec![0, 1, 2]);
+        assert_eq!(future_rare_room(&rooms), Some(2));
+        // none ahead
+        assert_eq!(future_rare_room(&rooms[..4]), None);
+        // one in every lane: no help
+        let mut all = rooms.clone();
+        all[3].kinds = vec![RareChest];
+        all.push(r(vec![RareChest], 410, 250));
+        assert_eq!(future_rare_room(&all), None);
     }
 }
