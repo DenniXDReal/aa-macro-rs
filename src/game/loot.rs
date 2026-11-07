@@ -68,7 +68,12 @@ pub struct Session {
     pub event_currency: u64,
     pub pearls: u64,
     pub charms: u32,
+    /// Every drop's total this session ("Gems" -> 350).
+    pub items: std::collections::BTreeMap<String, u64>,
 }
+
+/// What a Dungeon report lists (each with this session's total).
+pub const DUNGEON_ITEMS: [&str; 4] = ["Star Remnant", "Gems", "Gold", "Snow Reaper"];
 
 impl Session {
     /// Count a run in; gives it its run number.
@@ -79,6 +84,9 @@ impl Session {
         self.event_currency += r.event_currency;
         self.pearls += r.pearls;
         self.charms += r.charm.is_some() as u32;
+        for (n, a) in &r.drops {
+            *self.items.entry(n.clone()).or_default() += a;
+        }
     }
 }
 
@@ -195,6 +203,55 @@ fn thousands(n: u64) -> String {
 }
 
 /// The Discord loot report for `r` (with `image` as the attachment).
+/// A Dungeon run's report: the dungeon loot (with session totals).
+fn dungeon_message(
+    r: &RunStats,
+    s: &Session,
+    image: Option<Frame>,
+    ping: bool,
+) -> crate::webhook::Message {
+    use crate::webhook::{Kind, Message};
+    let mut fields: Vec<(String, String, bool)> = DUNGEON_ITEMS
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                format!(
+                    "{} (session {})",
+                    thousands(amount(&r.drops, n)),
+                    thousands(s.items.get(*n).copied().unwrap_or(0))
+                ),
+                true,
+            )
+        })
+        .collect();
+    fields.push((
+        "Session".to_string(),
+        format!("{} runs · {}W / {}L", s.runs, s.wins, s.runs - s.wins),
+        true,
+    ));
+    let others: Vec<String> = r
+        .drops
+        .iter()
+        .filter(|(n, _)| !DUNGEON_ITEMS.contains(&n.as_str()))
+        .map(|(n, a)| format!("{} {n}", thousands(*a)))
+        .collect();
+    if !others.is_empty() {
+        fields.push(("Other drops".into(), others.join(", "), false));
+    }
+    Message {
+        kind: if r.won { Kind::Win } else { Kind::Loss },
+        title: format!("Dungeon #{} Complete - {}", r.run, r.result()),
+        body: r.map.clone(),
+        screenshot: image,
+        ping,
+        fields,
+        here: false,
+        extra: vec![],
+        thumbnail: None,
+    }
+}
+
 pub fn message(
     r: &RunStats,
     s: &Session,
@@ -202,6 +259,9 @@ pub fn message(
     ping: bool,
 ) -> crate::webhook::Message {
     use crate::webhook::{Kind, Message};
+    if r.mode == "Dungeon" {
+        return dungeon_message(r, s, image, ping);
+    }
     // pearls are the Summer Event currency: one field, not two
     let mut fields = vec![
         (
@@ -554,5 +614,39 @@ mod tests {
         assert_eq!((r.x, r.y, r.w, r.h), (120, 30, 560, 480));
         assert!(r.x + r.w <= 800 && r.y + r.h <= 600);
         assert!(r.contains(REWARD_AREA.center()));
+    }
+
+    #[test]
+    fn dungeon_report_fields() {
+        let mut s = Session::default();
+        let mut r = RunStats {
+            won: true,
+            mode: "Dungeon".into(),
+            drops: vec![
+                ("Gems".into(), 40),
+                ("Gold".into(), 1200),
+                ("Snow Reaper".into(), 1),
+                ("Trait Crystal".into(), 2),
+            ],
+            ..Default::default()
+        };
+        s.add(&mut r);
+        let mut r2 = RunStats {
+            mode: "Dungeon".into(),
+            drops: vec![("Gems".into(), 10)],
+            ..Default::default()
+        };
+        s.add(&mut r2);
+        let m = message(&r2, &s, None, false);
+        assert!(m.title.starts_with("Dungeon #2"));
+        let f = |n: &str| m.fields.iter().find(|x| x.0 == n).unwrap().1.clone();
+        assert_eq!(f("Gems"), "10 (session 50)");
+        assert_eq!(f("Gold"), "0 (session 1,200)");
+        assert_eq!(f("Snow Reaper"), "0 (session 1)");
+        let m1 = message(&r, &s, None, false);
+        assert!(m1
+            .fields
+            .iter()
+            .any(|x| x.0 == "Other drops" && x.1.contains("Trait Crystal")));
     }
 }

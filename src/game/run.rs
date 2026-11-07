@@ -697,6 +697,14 @@ impl RunCtx {
     pub fn enter_stage(&self) -> R<()> {
         let s = &self.settings;
         let mode = s.run.mode;
+        // Dungeon: no walk - the Dungeon button, Enter Dungeon, on every
+        // account (each runs its own)
+        if mode == Mode::Dungeon {
+            for h in self.main_last(self.clients.iter().map(|c| c.0).collect()) {
+                self.enter_dungeon(h)?;
+            }
+            return self.to_main();
+        }
         let key = lobby_route(mode);
         let routes = self.routes.get();
         let route = routes
@@ -713,9 +721,6 @@ impl RunCtx {
         // Infinity Castle / Challenge: walk into the pod, no matchmaking dialog
         if matches!(mode, Mode::InfinityCastle | Mode::Challenge) {
             return self.enter_pod(mode, route);
-        }
-        if mode == Mode::Dungeon {
-            return Err("Dungeon: getting into a dungeon from the lobby isn't set up yet (needs your screenshots of it) - the floor itself runs on the step machine once you're in".into());
         }
         // Join Matchmaking?
         match s.run.play {
@@ -967,7 +972,10 @@ impl RunCtx {
             self.weather_cards(h)?;
             return Ok(true);
         }
-        let prio = if self.settings.run.card_priority.is_empty() {
+        let dungeon_list = &self.settings.dungeon.card_priority;
+        let prio = if self.settings.run.mode == Mode::Dungeon && !dungeon_list.is_empty() {
+            dungeon_list.clone()
+        } else if self.settings.run.card_priority.is_empty() {
             super::cards::default_priority()
         } else {
             self.settings.run.card_priority.clone()
@@ -1487,6 +1495,12 @@ impl RunCtx {
             }
             self.sleep(500)?;
         }
+        // a dungeon has no map to detect / camera to set: the floor step
+        // takes it from the path picker
+        if s.run.mode == Mode::Dungeon {
+            self.sleep(1500)?;
+            return Ok("Dungeon".into());
+        }
         let fixed = matches!(s.run.mode, Mode::Story | Mode::Legend | Mode::Raid);
         let detect = main.with_prefix("loading_");
         let vote = Self::names(&["vote_start"]);
@@ -1822,6 +1836,12 @@ impl RunCtx {
     fn captcha_up(&self) -> bool {
         let scr = self.screen(self.main);
         if scr.has("captcha") && scr.find(&Self::names(&["captcha"]), None).is_some() {
+            return true;
+        }
+        if scr
+            .frame()
+            .is_some_and(|f| super::watchdog::captcha_dialog(&f))
+        {
             return true;
         }
         scr.frame()
@@ -3412,6 +3432,9 @@ impl RunCtx {
     ) -> R<()> {
         use super::loot;
         let main = self.screen(self.main);
+        if self.settings.run.mode == Mode::Dungeon && self.settings.dungeon.open_chests {
+            self.open_dungeon_chests()?;
+        }
         self.sleep(500)?; // let the reward screen finish drawing
         let frame = main.frame();
         let lines = frame
@@ -4033,7 +4056,13 @@ impl RunCtx {
             let pic = |name: &str| {
                 scr.has(name) && scr.find_picture_wide(&Self::names(&[name])).is_some()
             };
-            let (dis, cap) = (pic("disconnect_box"), pic("captcha"));
+            // captcha: your picture, else the built-in "Captcha" title (the
+            // dialog's fixed part - the code itself changes every time)
+            let cap = pic("captcha")
+                || scr
+                    .frame()
+                    .is_some_and(|f| super::watchdog::captcha_dialog(&f));
+            let dis = pic("disconnect_box");
             let text = (ocr && !dis && !cap)
                 .then(|| scr.frame().and_then(|f| scr.ocr_all(&f)))
                 .flatten();
@@ -4129,7 +4158,7 @@ impl RunCtx {
     /// doors (your door_* pictures): take the one highest on your room
     /// order. Ok(won).
     pub(crate) fn dungeon_floor(&self) -> R<bool> {
-        use super::dungeon::{choose_buys, choose_door, shop_items, shrine_action, RoomKind};
+        use super::dungeon::{choose_buys, choose_room, shop_items, shrine_action};
         let d = &self.settings.dungeon;
         let end = Self::names(&["victory", "defeat"]);
         let main = self.screen(self.main);
@@ -4138,6 +4167,11 @@ impl RunCtx {
             self.check()?;
             if let Some(won) = self.end_screen(&end)? {
                 return Ok(won);
+            }
+            // a card pick (Settings > Dungeon's card list)
+            if self.handle_cards(self.main)? {
+                self.sleep(800)?;
+                continue;
             }
             let f = main.frame();
             let lines = f
@@ -4194,36 +4228,123 @@ impl RunCtx {
                     }
                 }
             }
-            // doors
-            let doors: Vec<(RoomKind, Point)> = RoomKind::ALL
-                .into_iter()
-                .filter(|k| main.has(k.door_pattern()))
-                .filter_map(|k| {
-                    main.find_picture_wide(&Self::names(&[k.door_pattern()]))
-                        .map(|p| (k, p))
-                })
-                .collect();
-            if doors.is_empty() && !told {
+            // the path picker: room tiles by their icons (built in, plus
+            // your room_* pictures), the one highest on your room order
+            let rooms = self.dungeon_rooms(self.main);
+            if rooms.is_empty() && !told {
                 told = true;
-                self.log("dungeon: no door pictures found (capture door_item / door_gold / door_shrine / door_shop / door_combat / door_boss with F6)");
+                self.log("dungeon: no room icons seen yet (waiting for the path picker)");
             }
-            if let Some(i) = choose_door(&doors, &d.room_priority) {
-                let (k, p) = doors[i];
-                self.log(format!(
-                    "dungeon: {} door (of {}) - your room order",
-                    k.label(),
-                    doors
+            if let Some(i) = choose_room(&rooms, &d.room_priority) {
+                let r = &rooms[i];
+                let show = |r: &super::dungeon::Room| {
+                    r.kinds
                         .iter()
-                        .map(|d| d.0.label())
+                        .map(|k| k.label())
                         .collect::<Vec<_>>()
-                        .join(", ")
+                        .join("+")
+                };
+                self.log(format!(
+                    "dungeon path: {} (of {}) - your room order",
+                    show(r),
+                    rooms.iter().map(show).collect::<Vec<_>>().join(", ")
                 ));
-                self.click(self.main, p, "dungeon door")?;
+                self.click(self.main, r.at, "dungeon room")?;
                 self.sleep(2500)?;
                 continue;
+            } else if !rooms.is_empty() {
+                self.log("dungeon path: none of these rooms is on your room order");
             }
             self.sleep(2000)?;
         }
+    }
+
+    /// Dungeon button -> Enter Dungeon on one account (your dungeon_button /
+    /// enter_dungeon pictures if captured, else the built-in ones).
+    fn enter_dungeon(&self, h: Hwnd) -> R<()> {
+        let n = self.client_no(h);
+        for (pic, icon, what) in [
+            ("dungeon_button", "button_dungeon", "Dungeon button"),
+            ("enter_dungeon", "button_enter_dungeon", "Enter Dungeon"),
+        ] {
+            let mut dl = self.control.deadline(self.secs(15.0));
+            let at = loop {
+                self.check()?;
+                let scr = self.screen(h);
+                let mine = scr
+                    .has(pic)
+                    .then(|| scr.find_picture_wide(&Self::names(&[pic])))
+                    .flatten();
+                let found = mine.or_else(|| {
+                    let f = scr.frame()?;
+                    super::icons::get(icon)?.find(&f, 40, 0.8)
+                });
+                if let Some(p) = found {
+                    break p;
+                }
+                if dl.expired() {
+                    return Err(format!("dungeon: client {n} - no {what} after 15 s"));
+                }
+                self.sleep(500)?;
+            };
+            self.click(h, at, what)?;
+            self.log(format!("dungeon: client {n} - {what}"));
+            self.sleep(1200)?;
+        }
+        Ok(())
+    }
+
+    /// After a dungeon: press every Open / Claim / Collect (your
+    /// dungeon_chest picture first) until none is left, at most 8.
+    fn open_dungeon_chests(&self) -> R<()> {
+        let scr = self.screen(self.main);
+        let mut opened = 0;
+        for _ in 0..8 {
+            self.check()?;
+            let mine = scr
+                .has("dungeon_chest")
+                .then(|| scr.find_picture_wide(&Self::names(&["dungeon_chest"])))
+                .flatten();
+            let at = mine.or_else(|| {
+                let f = scr.frame()?;
+                let lines = scr.ocr_lines(&f)?;
+                lines.iter().flatten().find_map(|(w, r)| {
+                    let w: String = w
+                        .chars()
+                        .filter(|c| c.is_alphabetic())
+                        .collect::<String>()
+                        .to_lowercase();
+                    matches!(w.as_str(), "open" | "claim" | "collect")
+                        .then(|| Point::new(r.x + r.w / 2, r.y + r.h / 2))
+                })
+            });
+            let Some(p) = at else { break };
+            self.click(self.main, p, "dungeon chest")?;
+            opened += 1;
+            self.sleep(1500)?;
+        }
+        if opened > 0 {
+            self.log(format!("dungeon: opened {opened} chest(s) / reward(s)"));
+        }
+        Ok(())
+    }
+
+    /// Room tiles on `h`'s path picker.
+    fn dungeon_rooms(&self, h: Hwnd) -> Vec<super::dungeon::Room> {
+        use super::dungeon::{group_rooms, icon_hits, RoomKind};
+        let scr = self.screen(h);
+        let Some(f) = scr.frame() else {
+            return vec![];
+        };
+        let mut hits = icon_hits(&f);
+        for k in RoomKind::ALL {
+            if scr.has(k.door_pattern()) {
+                if let Some(p) = scr.find_picture_wide(&Self::names(&[k.door_pattern()])) {
+                    hits.push((k, p));
+                }
+            }
+        }
+        group_rooms(&hits)
     }
 
     /// Disconnect recovery: Reconnect on every disconnected client, wait

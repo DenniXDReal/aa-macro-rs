@@ -56,6 +56,11 @@ pub fn captcha_text(t: &str) -> bool {
         || t.contains("are you a robot")
 }
 
+/// The captcha dialog's yellow "Captcha" title on screen (built-in picture).
+pub fn captcha_dialog(f: &crate::capture::Frame) -> bool {
+    super::icons::get("captcha_title").is_some_and(|i| i.find(f, 40, 0.85).is_some())
+}
+
 /// What one look at a client found: the disconnect box beats a captcha.
 pub fn classify(disconnect_pic: bool, captcha_pic: bool, ocr: Option<&str>) -> Option<Kind> {
     if disconnect_pic || ocr.is_some_and(super::run::disconnect_text) {

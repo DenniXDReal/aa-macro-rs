@@ -289,12 +289,16 @@ pub fn card_name(text: &str) -> Option<String> {
             .to_lowercase();
         if let Some(i) = low.find(&key) {
             // tier = the I / l / | / ! marks right after the name
-            let tail = &flat[i + key.len()..];
-            let n = tail
-                .chars()
+            let tail: Vec<char> = flat[i + key.len()..].chars().collect();
+            let mut n = tail
+                .iter()
                 .take_while(|c| matches!(c, 'I' | 'l' | '|' | '!' | '1' | 'i'))
-                .count()
-                .clamp(1, 3);
+                .count();
+            // "II" + "ncreases": the last I starts the next word
+            if n > 0 && tail.get(n).is_some_and(|c| c.is_lowercase()) {
+                n -= 1;
+            }
+            let n = n.clamp(1, 3);
             let tier = ["I", "II", "III"][n - 1];
             return Some(format!("{b} {tier}"));
         }
@@ -391,21 +395,28 @@ pub fn choose(names: &[Option<String>; 3], priority: &[String]) -> Option<usize>
 /// given to the card whose box is nearest (left / middle / right).
 pub fn names_from_lines(lines: &[Vec<(String, Rect)>]) -> [Option<String>; 3] {
     let mut out: [Option<String>; 3] = [None, None, None];
-    for l in lines {
-        let text: String = l
-            .iter()
-            .map(|(w, _)| w.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let Some(name) = card_name(&text) else {
-            continue;
-        };
-        let x = l.iter().map(|(_, r)| r.x + r.w / 2).sum::<i32>() / l.len().max(1) as i32;
-        let i = (0..3)
+    // OCR can join the three titles into one line: split each line by card
+    // first (each word to the card box it sits over)
+    let col = |r: &Rect| {
+        let x = r.x + r.w / 2;
+        (0..3)
             .min_by_key(|k| (CARD_BOXES[*k].x + CARD_BOXES[*k].w / 2 - x).abs())
-            .unwrap_or(1);
-        if out[i].is_none() {
-            out[i] = Some(name);
+            .unwrap_or(1)
+    };
+    for l in lines {
+        for (i, slot) in out.iter_mut().enumerate() {
+            if slot.is_some() {
+                continue;
+            }
+            let text: String = l
+                .iter()
+                .filter(|(_, r)| col(r) == i)
+                .map(|(w, _)| w.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if let Some(name) = card_name(&text) {
+                *slot = Some(name);
+            }
         }
     }
     out
@@ -547,5 +558,40 @@ mod name_tests {
             "higher tier first"
         );
         assert!(is_green("Active Cooldown I") && !is_green("Enemy Regen II"));
+    }
+
+    #[test]
+    fn titles_joined_on_one_line() {
+        // OCR read all three titles as one line
+        let w = |t: &str, i: usize, dx: i32| {
+            let b = CARD_BOXES[i];
+            (t.to_string(), Rect::new(b.x + dx, b.y + 20, 30, 14))
+        };
+        let lines = vec![vec![
+            w("Enemy", 0, 10),
+            w("Speed", 0, 50),
+            w("II", 0, 90),
+            w("Attack", 1, 20),
+            w("I", 1, 70),
+            w("Range", 2, 20),
+            w("III", 2, 70),
+        ]];
+        let n = names_from_lines(&lines);
+        assert_eq!(n[0].as_deref(), Some("Enemy Speed II"));
+        assert_eq!(n[1].as_deref(), Some("Attack I"));
+        assert_eq!(n[2].as_deref(), Some("Range III"));
+    }
+
+    #[test]
+    fn tier_not_eaten_by_the_next_word() {
+        assert_eq!(
+            card_name("Enemy Speed IIncreases").as_deref(),
+            Some("Enemy Speed I")
+        );
+        assert_eq!(
+            card_name("Enemy Speed II").as_deref(),
+            Some("Enemy Speed II")
+        );
+        assert_eq!(card_name("Attack III").as_deref(), Some("Attack III"));
     }
 }

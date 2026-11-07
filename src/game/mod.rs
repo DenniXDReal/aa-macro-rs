@@ -9,6 +9,7 @@ pub mod drops;
 pub mod dump;
 pub mod dungeon;
 pub mod hotbar;
+pub mod icons;
 pub mod loot;
 pub mod machine;
 pub mod mapnav;

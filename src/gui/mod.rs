@@ -170,7 +170,7 @@ pub struct App {
     /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
     /// Settings > Dungeon editor texts: rooms, shop, shrines.
-    dungeon_text: Option<(String, String, String)>,
+    dungeon_text: Option<(String, String, String, String)>,
     dungeon_note: String,
     /// Settings > Weather editor text (None = not loaded yet).
     weather_text: Option<String>,
@@ -3146,16 +3146,13 @@ impl App {
                     .join("\n"),
                 d.shop_priority.join("\n"),
                 shrines_to_text(&d.shrines),
+                d.card_priority.join("\n"),
             )
         });
         card(ui, |ui| {
+            ui.label(RichText::new("DUNGEON (BETA)").size(11.0).color(WARN));
             ui.label(
-                RichText::new("DUNGEON (BETA - SKELETON)")
-                    .size(11.0)
-                    .color(WARN),
-            );
-            ui.label(
-                RichText::new("Getting into a dungeon isn't set up yet (needs your screenshots of the dungeon lobby, doors, shop and shrines). Set your choices now; the dungeon floor uses them on the step machine. Doors are found by your door_item / door_gold / door_shrine / door_shop / door_combat / door_boss pictures (F6).")
+                RichText::new("Every account on its own: Dungeon button > Enter Dungeon, then on the path picker the room highest on your order (rooms are read by their icons: Hoard, Chest, Rare Chest, Shop, Shrine, Curse - a cursed room ranks no better than Curse). Shop and shrines below; cards by the dungeon card list. At the end the chests are opened and the loot (Star Remnant, Gems, Gold, Snow Reaper) goes to Discord. Your own pictures win if captured: dungeon_button, enter_dungeon, room_<kind>, dungeon_chest.")
                     .size(11.0)
                     .color(MUTED),
             );
@@ -3232,6 +3229,32 @@ impl App {
                     changed = true;
                 }
             });
+        });
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("DUNGEON CARDS & LOOT")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            ui.label(
+                RichText::new("card names as they show, best first, one per line (e.g. Attack III) - empty = your normal card priority list")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            if ui
+                .add(egui::TextEdit::multiline(&mut texts.3).desired_rows(5))
+                .changed()
+            {
+                d.card_priority = crate::game::weather::from_text(&texts.3);
+                changed = true;
+            }
+            changed |= ui
+                .checkbox(
+                    &mut d.open_chests,
+                    "open the end chests (Open / Claim / Collect) and report the loot",
+                )
+                .changed();
         });
         changed
     }

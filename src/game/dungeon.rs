@@ -1,68 +1,217 @@
-//! Dungeon automation (skeleton - waiting on your screenshots of the
-//! dungeon lobby, doors, shop and shrines).
+//! Dungeon automation: rooms on the path picker read by their icons
+//! (built-in pictures of Hoard, Chest, Rare Chest, Shop, Shrine and Curse,
+//! from your screenshots) and taken in your room order; what to buy in the
+//! dungeon shop; which shrines to switch on / off.
 //!
-//! What's here is the decision side, tested on made-up data:
-//! - which door to take, by the icon above it, in your room order
-//!   (Item > Gold > Shrine > ... by default; a kind left off the list is
-//!   never entered);
-//! - what to buy in the dungeon shop, in your item order, while the money
-//!   lasts;
-//! - which shrines to switch on / off.
-//!
-//! The screen side (`RunCtx::dungeon_floor`) finds doors by your
-//! `door_item` / `door_gold` / ... pictures and the shop / shrine by OCR;
-//! it's wired into the step machine as the Dungeon step, but entering a
-//! dungeon from the lobby isn't (no screenshots of it yet).
+//! The screen side lives in `RunCtx`: `enter_dungeon` (Dungeon button >
+//! Enter Dungeon), `dungeon_floor` (cards, shop, shrines, the path), and the
+//! end chests + loot report in `end_rewards`.
 
 use crate::geom::Point;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomKind {
-    Item,
-    Gold,
-    Shrine,
+    /// Gold coin ("HOARD").
+    #[serde(alias = "Gold")]
+    Hoard,
+    /// Normal chest.
+    #[serde(alias = "Item")]
+    Chest,
+    /// Rare (red / gold) chest.
+    RareChest,
     Shop,
+    Shrine,
+    /// Purple curse mark: a room with one is ranked no better than the
+    /// curse's own place on your list.
+    Curse,
     Combat,
     Boss,
 }
 
 impl RoomKind {
-    pub const ALL: [RoomKind; 6] = [
-        RoomKind::Item,
-        RoomKind::Gold,
+    pub const ALL: [RoomKind; 8] = [
+        RoomKind::RareChest,
+        RoomKind::Hoard,
+        RoomKind::Chest,
         RoomKind::Shrine,
         RoomKind::Shop,
         RoomKind::Combat,
         RoomKind::Boss,
+        RoomKind::Curse,
     ];
     pub fn label(self) -> &'static str {
         match self {
-            RoomKind::Item => "Item",
-            RoomKind::Gold => "Gold",
-            RoomKind::Shrine => "Shrine",
+            RoomKind::Hoard => "Hoard",
+            RoomKind::Chest => "Chest",
+            RoomKind::RareChest => "Rare Chest",
             RoomKind::Shop => "Shop",
+            RoomKind::Shrine => "Shrine",
+            RoomKind::Curse => "Curse",
             RoomKind::Combat => "Combat",
             RoomKind::Boss => "Boss",
         }
     }
-    /// The picture of its door icon (capture with F6).
+    /// Your own picture of its icon (optional, capture with F6) - found
+    /// besides the built-in one.
     pub fn door_pattern(self) -> &'static str {
         match self {
-            RoomKind::Item => "door_item",
-            RoomKind::Gold => "door_gold",
-            RoomKind::Shrine => "door_shrine",
-            RoomKind::Shop => "door_shop",
-            RoomKind::Combat => "door_combat",
-            RoomKind::Boss => "door_boss",
+            RoomKind::Hoard => "room_hoard",
+            RoomKind::Chest => "room_chest",
+            RoomKind::RareChest => "room_rare_chest",
+            RoomKind::Shop => "room_shop",
+            RoomKind::Shrine => "room_shrine",
+            RoomKind::Curse => "room_curse",
+            RoomKind::Combat => "room_combat",
+            RoomKind::Boss => "room_boss",
+        }
+    }
+    /// Built-in icons of this kind.
+    pub fn icons(self) -> &'static [&'static str] {
+        match self {
+            RoomKind::Hoard => &["icon_hoard", "icon_hoard_big"],
+            RoomKind::Chest => &["icon_chest"],
+            RoomKind::RareChest => &["icon_rare_chest"],
+            RoomKind::Shop => &["icon_shop"],
+            RoomKind::Shrine => &["icon_shrine"],
+            RoomKind::Curse => &["icon_curse"],
+            RoomKind::Combat | RoomKind::Boss => &[],
         }
     }
     pub fn parse(s: &str) -> Option<RoomKind> {
-        let t = s.trim().to_lowercase();
-        RoomKind::ALL
-            .into_iter()
-            .find(|k| k.label().to_lowercase() == t)
+        let t: String = s
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        let alias = match t.as_str() {
+            "gold" => Some(RoomKind::Hoard),
+            "item" | "normalchest" => Some(RoomKind::Chest),
+            "rare" => Some(RoomKind::RareChest),
+            _ => None,
+        };
+        alias.or_else(|| {
+            RoomKind::ALL.into_iter().find(|k| {
+                k.label()
+                    .to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    == t
+            })
+        })
     }
+}
+
+/// One room on the dungeon path picker: what's on it, where to click.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Room {
+    pub kinds: Vec<RoomKind>,
+    pub at: Point,
+}
+
+/// Icons within this many px of each other are on the same room tile.
+pub const SAME_ROOM_PX: i32 = 24;
+
+/// Group icon hits into rooms (icons close together share a tile).
+pub fn group_rooms(hits: &[(RoomKind, Point)]) -> Vec<Room> {
+    let n = hits.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(r: &mut [usize], i: usize) -> usize {
+        let mut i = i;
+        while r[i] != i {
+            r[i] = r[r[i]];
+            i = r[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (hits[i].1, hits[j].1);
+            if (a.x - b.x).abs() <= SAME_ROOM_PX && (a.y - b.y).abs() <= SAME_ROOM_PX {
+                let (ri, rj) = (find(&mut root, i), find(&mut root, j));
+                root[ri] = rj;
+            }
+        }
+    }
+    let mut groups: Vec<(usize, Vec<usize>)> = vec![];
+    for i in 0..n {
+        let r = find(&mut root, i);
+        match groups.iter_mut().find(|g| g.0 == r) {
+            Some(g) => g.1.push(i),
+            None => groups.push((r, vec![i])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, idx)| {
+            let k = idx.len() as i32;
+            let mut kinds: Vec<RoomKind> = vec![];
+            for i in &idx {
+                if !kinds.contains(&hits[*i].0) {
+                    kinds.push(hits[*i].0);
+                }
+            }
+            Room {
+                kinds,
+                at: Point::new(
+                    idx.iter().map(|i| hits[*i].1.x).sum::<i32>() / k,
+                    idx.iter().map(|i| hits[*i].1.y).sum::<i32>() / k,
+                ),
+            }
+        })
+        .collect()
+}
+
+/// Every room icon on screen (built-in icons).
+pub fn icon_hits(f: &crate::capture::Frame) -> Vec<(RoomKind, Point)> {
+    let all = crate::geom::Rect::new(0, 0, f.width as i32, f.height as i32);
+    let mut out = vec![];
+    for k in RoomKind::ALL {
+        for name in k.icons() {
+            if let Some(icon) = super::icons::get(name) {
+                for (p, _) in icon.find_all(f, all, ICON_TOL, ICON_MATCH) {
+                    out.push((k, p));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Room icons: per-channel tolerance and share of pixels that must match.
+pub const ICON_TOL: u8 = 40;
+pub const ICON_MATCH: f32 = 0.8;
+
+/// A room's place on your list: its best kind, but never better than a
+/// curse on it. None = nothing on it is on your list.
+pub fn room_rank(r: &Room, priority: &[RoomKind]) -> Option<usize> {
+    let pos = |k: &RoomKind| priority.iter().position(|p| p == k);
+    let best = r
+        .kinds
+        .iter()
+        .filter(|k| **k != RoomKind::Curse)
+        .filter_map(pos)
+        .min();
+    let curse = r.kinds.contains(&RoomKind::Curse);
+    match (best, curse) {
+        (b, false) => b,
+        (b, true) => {
+            let c = pos(&RoomKind::Curse)?;
+            Some(b.map_or(c, |b| b.max(c)))
+        }
+    }
+}
+
+/// The room to take: highest on your list (ties: the first seen).
+pub fn choose_room(rooms: &[Room], priority: &[RoomKind]) -> Option<usize> {
+    rooms
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| room_rank(r, priority).map(|k| (k, i)))
+        .min()
+        .map(|(_, i)| i)
 }
 
 /// A shrine rule: "Shrine of Greed" on / off.
@@ -83,36 +232,24 @@ pub struct DungeonSettings {
     /// Keep at least this much money when buying.
     pub shop_keep: u64,
     pub shrines: Vec<ShrineRule>,
+    /// Card picks in a dungeon, best first (empty = the normal card list).
+    pub card_priority: Vec<String>,
+    /// After a dungeon: open the end chests and report the loot.
+    pub open_chests: bool,
 }
 
 impl Default for DungeonSettings {
     fn default() -> Self {
         Self {
-            room_priority: vec![
-                RoomKind::Item,
-                RoomKind::Gold,
-                RoomKind::Shrine,
-                RoomKind::Shop,
-                RoomKind::Combat,
-                RoomKind::Boss,
-            ],
+            room_priority: RoomKind::ALL.to_vec(),
             shop_priority: vec![],
             shop_enabled: true,
             shop_keep: 0,
             shrines: vec![],
+            card_priority: vec![],
+            open_chests: true,
         }
     }
-}
-
-/// Which door to take: the kind highest on `priority` (ties: the first
-/// one seen). None = no door worth entering.
-pub fn choose_door(doors: &[(RoomKind, Point)], priority: &[RoomKind]) -> Option<usize> {
-    doors
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (k, _))| priority.iter().position(|p| p == k).map(|r| (r, i)))
-        .min()
-        .map(|(_, i)| i)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -233,30 +370,91 @@ mod tests {
     use super::*;
     use crate::geom::Rect;
 
+    /// Your room tiles pasted onto a dark screen, as on the path picker.
+    fn path_screen() -> crate::capture::Frame {
+        use crate::capture::Frame;
+        let load = |n: &str| {
+            Frame::load_png(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(n),
+            )
+            .unwrap()
+        };
+        let mut px = vec![0u8; 800 * 600 * 4];
+        for p in px.chunks_exact_mut(4) {
+            p.copy_from_slice(&[40, 24, 22, 255]); // bgra, the dark backdrop
+        }
+        let mut f = Frame::new(800, 600, px);
+        for (name, x, y) in [
+            ("room_hoard_chest.png", 200, 250),
+            ("room_shop_shrine.png", 380, 250),
+            ("room_curse_rare.png", 560, 250),
+            ("room_hoard.png", 380, 400),
+        ] {
+            let t = load(name);
+            for ty in 0..t.height {
+                for tx in 0..t.width {
+                    let si = ((ty * t.width + tx) * 4) as usize;
+                    let di = (((y + ty) * 800 + x + tx) * 4) as usize;
+                    f.bgra[di..di + 4].copy_from_slice(&t.bgra[si..si + 4]);
+                }
+            }
+        }
+        f
+    }
+
     #[test]
-    fn door_by_your_room_order() {
+    fn rooms_from_your_tiles() {
+        let mut rooms = group_rooms(&icon_hits(&path_screen()));
+        rooms.sort_by_key(|r| (r.at.y / 100, r.at.x));
+        let kinds: Vec<Vec<RoomKind>> = rooms
+            .iter()
+            .map(|r| {
+                let mut k = r.kinds.clone();
+                k.sort_by_key(|k| k.label());
+                k
+            })
+            .collect();
+        use RoomKind::*;
+        assert_eq!(
+            kinds,
+            vec![
+                vec![Chest, Hoard],
+                vec![Shop, Shrine],
+                vec![Curse, RareChest, Shop],
+                vec![Hoard],
+            ],
+            "{rooms:?}"
+        );
+        // each room's click point is on its tile
+        assert!(rooms[0].at.x > 200 && rooms[0].at.x < 258);
+        assert!(rooms[2].at.x > 560 && rooms[2].at.x < 618);
+    }
+
+    #[test]
+    fn room_by_your_order() {
+        use RoomKind::*;
         let prio = DungeonSettings::default().room_priority;
-        let doors = vec![
-            (RoomKind::Combat, Point::new(100, 300)),
-            (RoomKind::Gold, Point::new(400, 300)),
-            (RoomKind::Shrine, Point::new(700, 300)),
+        let r = |kinds: Vec<RoomKind>, x| Room {
+            kinds,
+            at: Point::new(x, 300),
+        };
+        let rooms = vec![
+            r(vec![Shop, Shrine], 100),
+            r(vec![Curse, RareChest, Shop], 300),
+            r(vec![Hoard, Chest], 500),
         ];
-        assert_eq!(
-            choose_door(&doors, &prio),
-            Some(1),
-            "Gold beats Shrine, Combat"
-        );
-        let doors = vec![
-            (RoomKind::Shrine, Point::new(100, 300)),
-            (RoomKind::Item, Point::new(400, 300)),
-        ];
-        assert_eq!(choose_door(&doors, &prio), Some(1), "Item first");
-        // Combat left off your list: never entered
-        let only_shrine_gold = vec![RoomKind::Shrine, RoomKind::Gold];
-        assert_eq!(
-            choose_door(&[(RoomKind::Combat, Point::new(1, 1))], &only_shrine_gold),
-            None
-        );
+        // the rare chest is cursed: ranked as the curse (last) - Hoard wins
+        assert_eq!(choose_room(&rooms, &prio), Some(2));
+        // curses wanted (top of the list): the cursed room it is
+        let mut want = prio.clone();
+        want.retain(|k| *k != Curse);
+        want.insert(0, Curse);
+        assert_eq!(choose_room(&rooms, &want), Some(1));
+        // only Shrine on the list: just that room
+        assert_eq!(choose_room(&rooms, &[Shrine]), Some(0));
+        assert_eq!(choose_room(&rooms, &[Boss]), None);
     }
 
     #[test]
@@ -318,8 +516,8 @@ mod tests {
             "no rule"
         );
         assert_eq!(shrines_from_text(&shrines_to_text(&rules)), rules);
-        let (rooms, bad) = rooms_from_text("Item\ngold\nTreasure\nItem");
-        assert_eq!(rooms, vec![RoomKind::Item, RoomKind::Gold]);
+        let (rooms, bad) = rooms_from_text("Rare Chest\ngold\nTreasure\nrare chest");
+        assert_eq!(rooms, vec![RoomKind::RareChest, RoomKind::Hoard]);
         assert_eq!(bad, vec!["Treasure"]);
     }
 }
