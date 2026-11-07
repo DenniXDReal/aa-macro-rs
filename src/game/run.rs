@@ -1100,6 +1100,27 @@ impl RunCtx {
                 }
             }
         }
+        // still unread: your card pictures (Patterns "card_<name>", e.g.
+        // card_Attack_III) over that card
+        if names.iter().any(|n| n.is_none()) {
+            let pics = scr.with_prefix("card_");
+            for i in 0..3 {
+                if names[i].is_some() {
+                    continue;
+                }
+                let b = super::cards::CARD_BOXES[i];
+                for p in &pics {
+                    if scr.find(std::slice::from_ref(p), Some(b)).is_some() {
+                        let said = p.trim_start_matches("card_").replace('_', " ");
+                        if let Some(n) = super::cards::card_name(&said) {
+                            raw[i] = format!("{} | picture {p}", raw[i]);
+                            names[i] = Some(n);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         // red cards: the tier from the pearls line beats the title's I/II/III
         for i in 0..3 {
             if let Some(n) = names[i].clone() {
@@ -1375,7 +1396,16 @@ impl RunCtx {
                     scr.ocr_rect(&f, crate::geom::Rect::new(a[0], a[1], a[2], a[3]))
                         .unwrap_or_default()
                 };
-                let seen = super::events::matches(&rule, &read);
+                let pic_ok = rule.picture.trim().is_empty() || {
+                    let a = rule.area;
+                    let names = Self::names(&[rule.picture.trim()]);
+                    scr.has(rule.picture.trim())
+                        && (scr
+                            .find(&names, Some(crate::geom::Rect::new(a[0], a[1], a[2], a[3])))
+                            .is_some()
+                            || scr.find_picture_wide(&names).is_some())
+                };
+                let seen = pic_ok && super::events::matches(&rule, &read);
                 let fire = {
                     let mut g = EVENTS.lock().unwrap_or_else(|e| e.into_inner());
                     g.as_mut()

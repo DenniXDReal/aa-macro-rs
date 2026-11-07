@@ -177,6 +177,17 @@ fn rule_ui(
             ui.colored_label(WARN, "bad regex");
         }
     });
+    ui.horizontal(|ui| {
+        ui.label("and the picture");
+        changed |= ui
+            .add(
+                egui::TextEdit::singleline(&mut r.picture)
+                    .desired_width(180.0)
+                    .hint_text("a Patterns name (empty = none)"),
+            )
+            .on_hover_text("capture it on the Patterns page; it has to be on screen (in the area, else anywhere) for the rule to fire. Text empty + picture = picture only.")
+            .changed();
+    });
     // actions, in order
     ui.label("Then, in order:");
     let mut remove: Option<usize> = None;

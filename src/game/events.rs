@@ -148,6 +148,9 @@ pub struct Rule {
     /// What to find there (empty = no OCR, always true).
     pub text: String,
     pub matching: Match,
+    /// A picture (your Patterns name) that must be on screen too - in the
+    /// area if it has one, else anywhere (empty = no picture check).
+    pub picture: String,
     /// What to do, in order (Wait = pause between them).
     pub actions: Vec<Do>,
     /// Older files: a single action (moved into `actions` on load).
@@ -168,6 +171,7 @@ impl Default for Rule {
             area: [300, 200, 200, 60],
             text: String::new(),
             matching: Match::Contains,
+            picture: String::new(),
             actions: vec![Do::PressKey { key: "e".into() }],
             action: None,
             all_clients: false,
