@@ -2127,12 +2127,14 @@ impl RunCtx {
                 let slot = i + 1;
                 // your spots for this unit: its slot's, its role's (Farm /
                 // DPS / Support / Hill), then the open ones
-                let mut spots: Vec<Point> = self
-                    .placements
-                    .for_unit(&key, slot as u8, u.spot_role())
-                    .iter()
-                    .map(|p| Point::new(p.x, p.y))
-                    .collect();
+                let mut spots: Vec<Point> = if s.advanced_placement {
+                    self.placements.for_unit(&key, slot as u8, u.spot_role())
+                } else {
+                    self.placements.for_slot(&key, slot as u8)
+                }
+                .iter()
+                .map(|p| Point::new(p.x, p.y))
+                .collect();
                 if s.spiral_fallback {
                     let nth = s.placers.iter().position(|x| *x == n).unwrap_or(0);
                     spots.extend(super::placing::shape_spots_for(
@@ -2181,7 +2183,7 @@ impl RunCtx {
                         ));
                     }
                     let mut v = hs;
-                    if s.verify_terrain && !u.hybrid {
+                    if s.advanced_placement && s.verify_terrain && !u.hybrid {
                         // a hill unit can't go on the ground: only your Hill /
                         // its slot's spots after the glowing ones (the shape
                         // and open spots would just be hovered and refused)
@@ -2340,7 +2342,7 @@ impl RunCtx {
                         let terrain = units[slot - 1].terrain();
                         let unit_key = keys.units[slot.clamp(1, 6) - 1];
                         let aim = |at: Point| -> Option<Point> {
-                            if !s.verify_terrain {
+                            if !s.advanced_placement || !s.verify_terrain {
                                 return Some(at);
                             }
                             for (k, p) in super::placing::nudges(at).into_iter().enumerate() {

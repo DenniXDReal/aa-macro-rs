@@ -542,6 +542,23 @@ impl App {
     pub(super) fn page_placement(&mut self, ui: &mut egui::Ui) {
         ui.heading("Placement designer");
         ui.horizontal(|ui| {
+            if super::toggle(
+                ui,
+                &mut self.settings.advanced_placement,
+                "Use Advanced Grid Placement",
+            ) {
+                self.dirty();
+            }
+            ui.label(
+                egui::RichText::new(if self.settings.advanced_placement {
+                    "on: role spots (Farm / DPS / Support / Hill) + the ground check before each click"
+                } else {
+                    "off: the old way - slot spots, then the shape; no role spots, no ground check"
+                })
+                .color(MUTED),
+            );
+        });
+        ui.horizontal(|ui| {
             ui.label("Map:");
             let mut maps: Vec<String> = self
                 .placements
@@ -682,13 +699,15 @@ impl App {
             }
         });
         ui.horizontal(|ui| {
-            if super::toggle(
-                ui,
-                &mut self.settings.verify_terrain,
-                "Check the ground before each click",
-            ) {
-                self.dirty();
-            }
+            ui.add_enabled_ui(self.settings.advanced_placement, |ui| {
+                if super::toggle(
+                    ui,
+                    &mut self.settings.verify_terrain,
+                    "Check the ground before each click",
+                ) {
+                    self.dirty();
+                }
+            });
             ui.label(egui::RichText::new("hover first: Hill units need the green glow, Ground units no red; blocked = 10 px over, 3 tries, then the next spot").color(MUTED));
         });
         ui.horizontal(|ui| {

@@ -113,6 +113,10 @@ pub struct Settings {
     /// Before each placement click, hover and read the highlight (Hill:
     /// green needed, Ground: no red); blocked = nudge 10 px, 3 times.
     pub verify_terrain: bool,
+    /// Advanced grid placement: role spots (Farm / DPS / Support / Hill)
+    /// and the terrain check. Off = the old way (slot spots, then the
+    /// shape, hill units on any green first).
+    pub advanced_placement: bool,
     /// Per client number (1 = the first): which lane it walks and its own
     /// % (Routes page).
     pub client_walk: std::collections::BTreeMap<usize, crate::game::mapnav::ClientWalk>,
@@ -586,6 +590,7 @@ impl Default for Settings {
             minimap_walk_pct: 50,
             prefer_minimap: false,
             verify_terrain: true,
+            advanced_placement: true,
             client_walk: Default::default(),
             dungeon: Default::default(),
             schedule: Schedule::default(),
