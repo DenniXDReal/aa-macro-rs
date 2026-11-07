@@ -274,36 +274,92 @@ pub fn default_priority() -> Vec<String> {
     v
 }
 
+/// The tier from the characters right after a card's name: I / II / III
+/// (OCR reads I as l | ! 1 i too; "II" + "ncreases" = the last I starts the
+/// next word).
+fn tier_after(tail: &[char]) -> &'static str {
+    let mut n = tail
+        .iter()
+        .take_while(|c| matches!(c, 'I' | 'l' | '|' | '!' | '1' | 'i'))
+        .count();
+    if n > 0 && tail.get(n).is_some_and(|c| c.is_lowercase()) {
+        n -= 1;
+    }
+    ["I", "II", "III"][n.clamp(1, 3) - 1]
+}
+
 /// OCR text of a card title -> "Enemy Speed II" (None if not a known card).
+/// The exact name first; else the closest name with at most one slip per
+/// 4 letters ("Atfack III" = Attack III).
 pub fn card_name(text: &str) -> Option<String> {
-    let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    let low = flat.to_lowercase();
+    let flat: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let low: Vec<char> = flat.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let key = |b: &str| -> Vec<char> {
+        b.chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
     // longest base first ("Active Cooldown" before "Cooldown")
     let mut bases: Vec<&(&str, bool)> = CARD_BASES.iter().collect();
     bases.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
-    for (b, _) in bases {
-        let key: String = b
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_lowercase();
-        if let Some(i) = low.find(&key) {
-            // tier = the I / l / | / ! marks right after the name
-            let tail: Vec<char> = flat[i + key.len()..].chars().collect();
-            let mut n = tail
-                .iter()
-                .take_while(|c| matches!(c, 'I' | 'l' | '|' | '!' | '1' | 'i'))
-                .count();
-            // "II" + "ncreases": the last I starts the next word
-            if n > 0 && tail.get(n).is_some_and(|c| c.is_lowercase()) {
-                n -= 1;
-            }
-            let n = n.clamp(1, 3);
-            let tier = ["I", "II", "III"][n - 1];
-            return Some(format!("{b} {tier}"));
+    for (b, _) in &bases {
+        let k = key(b);
+        if let Some(i) = low.windows(k.len()).position(|w| w == k.as_slice()) {
+            return Some(format!("{b} {}", tier_after(&flat[i + k.len()..])));
         }
     }
-    None
+    // closest name against every stretch of about its length
+    let mut best: Option<(f32, usize, &str, usize)> = None;
+    for (b, _) in &bases {
+        let k = key(b);
+        if k.len() < 5 {
+            continue; // "Yen", "Range": too short to guess at
+        }
+        let ks: String = k.iter().collect();
+        let max = k.len() / 4;
+        for len in k.len() - 1..=k.len() + 1 {
+            for start in 0..=low.len().saturating_sub(len) {
+                if start + len > low.len() {
+                    break;
+                }
+                let w: String = low[start..start + len].iter().collect();
+                let d = super::weather::edits(&w, &ks);
+                let ratio = d as f32 / k.len() as f32;
+                if d <= max && best.is_none_or(|(r, ..)| ratio < r) {
+                    best = Some((ratio, d, b, start + len));
+                }
+            }
+        }
+    }
+    best.map(|(_, _, b, end)| format!("{b} {}", tier_after(&flat[end..])))
+}
+
+/// What OCR read over each card (left / middle / right), shortened - for
+/// the log.
+pub fn column_texts(lines: &[Vec<(String, Rect)>]) -> [String; 3] {
+    let col = |r: &Rect| {
+        let x = r.x + r.w / 2;
+        (0..3)
+            .min_by_key(|k| (CARD_BOXES[*k].x + CARD_BOXES[*k].w / 2 - x).abs())
+            .unwrap_or(1)
+    };
+    let mut out: [String; 3] = Default::default();
+    for (i, o) in out.iter_mut().enumerate() {
+        let t: Vec<&str> = lines
+            .iter()
+            .flatten()
+            .filter(|(_, r)| col(r) == i)
+            .map(|(w, _)| w.as_str())
+            .collect();
+        let t = t.join(" ");
+        *o = if t.chars().count() > 50 {
+            format!("{}...", t.chars().take(50).collect::<String>())
+        } else {
+            t
+        };
+    }
+    out
 }
 
 /// Is this card name a green (helps you) card?
@@ -327,13 +383,29 @@ pub fn picker_line(
         .iter()
         .map(|n| n.clone().unwrap_or_else(|| "?".into()))
         .collect();
-    let offered = shown.join(" / ");
     let base = |n: &str| {
         n.trim_end_matches(" III")
             .trim_end_matches(" II")
             .trim_end_matches(" I")
             .to_string()
     };
+    // each card with its place on the list
+    let offered = shown
+        .iter()
+        .map(|n| {
+            if n == "?" {
+                return "? (not read)".to_string();
+            }
+            match priority.iter().position(|p| p.eq_ignore_ascii_case(n)) {
+                Some(r) => format!("{n} #{}", r + 1),
+                None => match priority.iter().position(|p| base(p) == base(n)) {
+                    Some(r) => format!("{n} ~#{}", r + 1),
+                    None => format!("{n} (not on list)"),
+                },
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
     match chosen {
         Some(i) => {
             let n = &shown[i];
@@ -452,7 +524,7 @@ mod name_tests {
         assert_eq!(c, Some(2), "Attack I is #2, Cooldown I #3");
         assert_eq!(
             picker_line("priority list", &names, &prio, c, 1, "middle one"),
-            "Card Picker: Chose Attack I because it was #2 on the priority list (offered: Cooldown I / Range I / Attack I)"
+            "Card Picker: Chose Attack I because it was #2 on the priority list (offered: Cooldown I #3 / Range I (not on list) / Attack I #2)"
         );
         // same card at another tier
         let names2: [Option<String>; 3] =
@@ -461,7 +533,7 @@ mod name_tests {
         assert_eq!(c2, Some(0));
         assert_eq!(
             picker_line("priority list", &names2, &prio, c2, 1, "middle one"),
-            "Card Picker: Chose Enemy Health II because it was #1 on the priority list as Enemy Health III - other tier (offered: Enemy Health II / ? / Range I)"
+            "Card Picker: Chose Enemy Health II because it was #1 on the priority list as Enemy Health III - other tier (offered: Enemy Health II ~#1 / ? (not read) / Range I (not on list))"
         );
         // nothing on the list / nothing read: says so, and what it took
         let none: [Option<String>; 3] = [Some("Yen I".into()), Some("Range I".into()), None];
@@ -593,5 +665,43 @@ mod name_tests {
             Some("Enemy Speed II")
         );
         assert_eq!(card_name("Attack III").as_deref(), Some("Attack III"));
+    }
+
+    /// The pick follows your list - not the leftmost card - whatever
+    /// position the best card is in, and through small OCR slips.
+    #[test]
+    fn picks_by_your_list_not_position() {
+        let prio = default_priority();
+        let w = |t: &str, i: usize| {
+            let b = CARD_BOXES[i];
+            vec![(t.to_string(), Rect::new(b.x + 20, b.y + 20, 80, 14))]
+        };
+        // best card on the right
+        let lines = vec![w("Yen I", 0), w("Range II", 1), w("Enemy Health III", 2)];
+        let n = names_from_lines(&lines);
+        assert_eq!(choose(&n, &prio), Some(2));
+        // OCR slips: "Atfack III", "Enemv Speed II", "Rangc I"
+        let lines = vec![w("Rangc I", 0), w("Atfack III", 1), w("Enemv Speed II", 2)];
+        let n = names_from_lines(&lines);
+        assert_eq!(n[1].as_deref(), Some("Attack III"));
+        assert_eq!(n[2].as_deref(), Some("Enemy Speed II"));
+        // Enemy Speed II is above Attack III on the default list
+        assert_eq!(choose(&n, &prio), Some(2));
+        // the log says what was read and why
+        let line = picker_line("priority list", &n, &prio, Some(2), 0, "");
+        assert!(
+            line.contains("Chose Enemy Speed II because it was #"),
+            "{line}"
+        );
+        assert!(line.contains("Attack III #"), "{line}");
+        // nothing readable: not "the list" - the fallback says so
+        let none: [Option<String>; 3] = [None, None, None];
+        assert!(
+            picker_line("priority list", &none, &prio, None, 1, "the middle one")
+                .contains("none of the cards could be read")
+        );
+        // short names aren't guessed from junk
+        assert_eq!(card_name("Yan"), None);
+        assert_eq!(card_name("Choose a card"), None);
     }
 }

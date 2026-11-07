@@ -170,7 +170,7 @@ pub struct App {
     /// Command Center dashboard (cards, multi-client dock).
     dash: command::Dash,
     /// Settings > Dungeon editor texts: rooms, shop, shrines.
-    dungeon_text: Option<(String, String, String, String)>,
+    dungeon_text: Option<(String, String, String, String, String)>,
     dungeon_note: String,
     /// Settings > Weather editor text (None = not loaded yet).
     weather_text: Option<String>,
@@ -3147,6 +3147,7 @@ impl App {
                 d.shop_priority.join("\n"),
                 shrines_to_text(&d.shrines),
                 d.card_priority.join("\n"),
+                d.avoid_curses.join("\n"),
             )
         });
         card(ui, |ui| {
@@ -3196,9 +3197,16 @@ impl App {
                     .checkbox(&mut d.shop_enabled, "buy in the dungeon shop")
                     .changed();
                 ui.label(
-                    RichText::new("items to buy, best first (names as the shop shows them)")
-                        .size(11.0)
-                        .color(MUTED),
+                    RichText::new(format!(
+                        "items to buy, best first. Known: {}",
+                        crate::game::dungeon::SHOP_ITEMS
+                            .iter()
+                            .map(|i| i.0)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
                 );
                 if ui
                     .add(egui::TextEdit::multiline(&mut texts.1).desired_rows(7))
@@ -3217,15 +3225,38 @@ impl App {
             card(&mut cols[2], |ui| {
                 ui.label(RichText::new("SHRINES").size(11.0).color(MUTED));
                 ui.label(
-                    RichText::new("one per line: Shrine name = on / off")
-                        .size(11.0)
-                        .color(MUTED),
+                    RichText::new(format!(
+                        "one per line: shrine = on (accept) / off (deny). Shrines: {}",
+                        crate::game::dungeon::SHRINES.join(", ")
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
                 );
                 if ui
                     .add(egui::TextEdit::multiline(&mut texts.2).desired_rows(7))
                     .changed()
                 {
                     d.shrines = shrines_from_text(&texts.2);
+                    changed = true;
+                }
+                changed |= ui
+                    .checkbox(&mut d.deny_shrines, "deny every shrine not set to on")
+                    .changed();
+                ui.add_space(6.0);
+                ui.label(RichText::new("CURSES TO AVOID").size(11.0).color(MUTED));
+                ui.label(
+                    RichText::new(format!(
+                        "one per line ({}): a room with one is skipped unless every room has one",
+                        crate::game::dungeon::CURSES.join(", ")
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                if ui
+                    .add(egui::TextEdit::multiline(&mut texts.4).desired_rows(4))
+                    .changed()
+                {
+                    d.avoid_curses = crate::game::weather::from_text(&texts.4);
                     changed = true;
                 }
             });

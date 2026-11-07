@@ -30,10 +30,12 @@ pub enum RoomKind {
 }
 
 impl RoomKind {
+    /// Default order: Spiral's (Rare Chest, Chest, Hoard, Shrine), then
+    /// the rest.
     pub const ALL: [RoomKind; 8] = [
         RoomKind::RareChest,
-        RoomKind::Hoard,
         RoomKind::Chest,
+        RoomKind::Hoard,
         RoomKind::Shrine,
         RoomKind::Shop,
         RoomKind::Combat,
@@ -102,6 +104,115 @@ impl RoomKind {
             })
         })
     }
+}
+
+/// The curses a room can carry ("Curse of Health", ...) - as in Spiral.
+pub const CURSES: [&str; 6] = [
+    "Flying",
+    "Money",
+    "Health",
+    "Exploding",
+    "Shielding",
+    "Regen",
+];
+/// The shrines - as in Spiral.
+pub const SHRINES: [&str; 5] = ["Burst", "Armor", "Chaos", "Vamparism", "Frenzy"];
+/// Every shop item (Spiral's list, in its order) with what it does.
+pub const SHOP_ITEMS: &[(&str, &str)] = &[
+    (
+        "Philosopher's Stone",
+        "Instantly converts all chests to Rare",
+    ),
+    ("Genie Lamp", "+100% Chest Luck"),
+    ("Golden Fishhook", "+40% Chest Luck"),
+    ("Shimmering Moon Fragment", "+1 Star Remnant per chest"),
+    ("Fishhook", "+20% Chest Luck"),
+    ("Mask of Riches", "-50% Upgrade & Placement costs"),
+    ("Golden Mushroom", "-30% Upgrade & Placement costs"),
+    ("Golden Branch", "-15% Upgrade & Placement costs"),
+    ("Archmage's Hat", "+250% Magic Damage"),
+    ("Magic Tome", "+100% Magic Damage"),
+    ("Scimitar", "+75% Attack"),
+    ("Glacial Axe", "Enemies move 30% slower"),
+    ("Ice Dagger", ""),
+    ("Sylvanthorn", "+150% Range"),
+    ("Stormbringer", ""),
+    ("Mage Coat", "+50% Magic Damage"),
+    ("Sword", "+30% Damage"),
+    ("Elf Bow", "+50% Range"),
+    ("Longbow", "+30% Range"),
+    ("Reaper Scythe", "+75% Boss Damage"),
+    ("Speedy Boots", ""),
+    ("Dagger", "+15% Attack"),
+    ("Ninja Belt", "-12% Attack Speed"),
+    ("Nimble Cloak", ""),
+    ("Aureus Maul", "+200% Physical Damage"),
+    ("Headsplitter", "+75% Physical Damage"),
+    ("Solar Cleaver", "+100% Physical Crit Chance"),
+    ("Celestial Blade", "+777% True Damage"),
+];
+/// Bought by default: the loot items (chest luck, Star Remnants), then
+/// the cost cutters.
+pub const SHOP_DEFAULT: [&str; 8] = [
+    "Philosopher's Stone",
+    "Genie Lamp",
+    "Shimmering Moon Fragment",
+    "Golden Fishhook",
+    "Fishhook",
+    "Mask of Riches",
+    "Golden Mushroom",
+    "Golden Branch",
+];
+
+/// Shop item named in an OCR line: the longest known name in it (so
+/// "Golden Fishhook" isn't read as "Fishhook").
+pub fn shop_item_in(line: &str) -> Option<&'static str> {
+    let low = line.to_lowercase();
+    SHOP_ITEMS
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| low.contains(&n.to_lowercase()))
+        .max_by_key(|n| n.len())
+}
+
+/// The curses named on screen ("Curse of Shielding" -> "Shielding").
+pub fn curses_in(text: &str) -> Vec<&'static str> {
+    let low = text.to_lowercase();
+    CURSES
+        .iter()
+        .filter(|c| low.contains(&format!("curse of {}", c.to_lowercase())))
+        .copied()
+        .collect()
+}
+
+/// The shrine named on screen (Burst, Armor, ...), if one of the known.
+pub fn shrine_in(text: &str) -> Option<&'static str> {
+    let low = text.to_lowercase();
+    SHRINES
+        .iter()
+        .find(|s| low.contains(&s.to_lowercase()))
+        .copied()
+}
+
+/// Accept this shrine? Your rule for it, else accept unless `deny_all`.
+pub fn accept_shrine(name: &str, deny_all: bool, rules: &[ShrineRule]) -> bool {
+    rules
+        .iter()
+        .find(|r| {
+            let r = r.name.to_lowercase();
+            let n = name.to_lowercase();
+            r == n || r.contains(&n) || n.contains(&r)
+        })
+        .map(|r| r.on)
+        .unwrap_or(!deny_all)
+}
+
+/// Any of `curses` on your avoid list?
+pub fn avoided(curses: &[&str], avoid: &[String]) -> usize {
+    curses
+        .iter()
+        .filter(|c| avoid.iter().any(|a| a.trim().eq_ignore_ascii_case(c)))
+        .count()
 }
 
 /// One room on the dungeon path picker: what's on it, where to click.
@@ -231,7 +342,14 @@ pub struct DungeonSettings {
     pub shop_enabled: bool,
     /// Keep at least this much money when buying.
     pub shop_keep: u64,
+    /// Per shrine: accept (on) / deny (off); a shrine not listed is
+    /// accepted unless `deny_shrines`.
     pub shrines: Vec<ShrineRule>,
+    /// Deny every shrine not listed as on.
+    pub deny_shrines: bool,
+    /// Curses ("Health", "Shielding", ...): a room with one of these is
+    /// only entered when every room has one.
+    pub avoid_curses: Vec<String>,
     /// Card picks in a dungeon, best first (empty = the normal card list).
     pub card_priority: Vec<String>,
     /// After a dungeon: open the end chests and report the loot.
@@ -242,10 +360,12 @@ impl Default for DungeonSettings {
     fn default() -> Self {
         Self {
             room_priority: RoomKind::ALL.to_vec(),
-            shop_priority: vec![],
+            shop_priority: SHOP_DEFAULT.iter().map(|s| s.to_string()).collect(),
             shop_enabled: true,
             shop_keep: 0,
             shrines: vec![],
+            deny_shrines: false,
+            avoid_curses: vec![],
             card_priority: vec![],
             open_chests: true,
         }
@@ -303,7 +423,10 @@ pub fn shop_items(lines: &[Vec<(String, crate::geom::Rect)>]) -> Vec<ShopItem> {
             .collect::<String>()
             .parse()
             .unwrap_or(0);
-        let name = words[..pi].join(" ").trim().to_string();
+        let said = words[..pi].join(" ");
+        let name = shop_item_in(&said)
+            .map(str::to_string)
+            .unwrap_or_else(|| said.trim().to_string());
         if name.is_empty() || price == 0 {
             continue;
         }
@@ -519,5 +642,36 @@ mod tests {
         let (rooms, bad) = rooms_from_text("Rare Chest\ngold\nTreasure\nrare chest");
         assert_eq!(rooms, vec![RoomKind::RareChest, RoomKind::Hoard]);
         assert_eq!(bad, vec!["Treasure"]);
+    }
+
+    #[test]
+    fn spiral_lists() {
+        assert_eq!(
+            shop_item_in("Golden Fishhook +40% Chest Luck"),
+            Some("Golden Fishhook")
+        );
+        assert_eq!(shop_item_in("Fishhook 300"), Some("Fishhook"));
+        assert_eq!(
+            curses_in("Curse of Shielding  Curse of Health"),
+            vec!["Health", "Shielding"]
+        );
+        assert_eq!(avoided(&["Health", "Shielding"], &["shielding".into()]), 1);
+        assert_eq!(shrine_in("Shrine of Frenzy  Accept"), Some("Frenzy"));
+        let rules = shrines_from_text("Frenzy = off");
+        assert!(!accept_shrine("Frenzy", false, &rules));
+        assert!(accept_shrine("Burst", false, &rules));
+        assert!(!accept_shrine("Burst", true, &rules));
+        assert_eq!(
+            DungeonSettings::default().room_priority[..4],
+            [
+                RoomKind::RareChest,
+                RoomKind::Chest,
+                RoomKind::Hoard,
+                RoomKind::Shrine
+            ]
+        );
+        assert!(SHOP_DEFAULT
+            .iter()
+            .all(|d| SHOP_ITEMS.iter().any(|i| i.0 == *d)));
     }
 }

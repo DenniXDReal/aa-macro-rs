@@ -956,7 +956,16 @@ impl RunCtx {
             self.set_weather(&weather);
         }
         // read the three card titles and take the first one in your order
-        let names = Self::read_cards(scr, &f);
+        let (names, raw) = Self::read_cards(scr, &f);
+        self.log(format!(
+            "Card OCR: 1 \"{}\" -> {} | 2 \"{}\" -> {} | 3 \"{}\" -> {}",
+            raw[0],
+            names[0].as_deref().unwrap_or("?"),
+            raw[1],
+            names[1].as_deref().unwrap_or("?"),
+            raw[2],
+            names[2].as_deref().unwrap_or("?"),
+        ));
         // weather shift cards (Grounded, Mud, ...) on this screen: your
         // weather list decides (Settings > Weather)
         let shift = LAST_SHIFT
@@ -1057,14 +1066,27 @@ impl RunCtx {
     /// The three card names on a card screen (OCR): each title box, else
     /// the names found anywhere on the cards; red cards take their tier
     /// from the pearls line. None = that card not readable.
-    fn read_cards(scr: &super::LiveScreen, f: &crate::capture::Frame) -> [Option<String>; 3] {
-        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
+    fn read_cards(
+        scr: &super::LiveScreen,
+        f: &crate::capture::Frame,
+    ) -> ([Option<String>; 3], [String; 3]) {
+        let mut raw: [String; 3] = std::array::from_fn(|i| {
             scr.ocr_rect(f, super::cards::title_box(i))
-                .and_then(|t| super::cards::card_name(&t))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
         });
+        let mut names: [Option<String>; 3] =
+            std::array::from_fn(|i| super::cards::card_name(&raw[i]));
         // a title box missed: look for the names anywhere on the cards
         if names.iter().any(|n| n.is_none()) {
             if let Some(lines) = scr.ocr_lines(f) {
+                let cols = super::cards::column_texts(&lines);
+                for i in 0..3 {
+                    if names[i].is_none() && !cols[i].is_empty() {
+                        raw[i] = format!("{} | card: {}", raw[i], cols[i]);
+                    }
+                }
                 let more = super::cards::names_from_lines(&lines);
                 for i in 0..3 {
                     if names[i].is_none() {
@@ -1084,7 +1106,7 @@ impl RunCtx {
                 }
             }
         }
-        names
+        (names, raw)
     }
 
     /// The three weather shift card names (Grounded, Mud, ...): each title
@@ -4158,7 +4180,7 @@ impl RunCtx {
     /// doors (your door_* pictures): take the one highest on your room
     /// order. Ok(won).
     pub(crate) fn dungeon_floor(&self) -> R<bool> {
-        use super::dungeon::{choose_buys, choose_room, shop_items, shrine_action};
+        use super::dungeon::{choose_buys, choose_room, shop_items};
         let d = &self.settings.dungeon;
         let end = Self::names(&["victory", "defeat"]);
         let main = self.screen(self.main);
@@ -4183,50 +4205,59 @@ impl RunCtx {
                 .flat_map(|l| l.iter().map(|(w, _)| w.to_lowercase()))
                 .collect::<Vec<_>>()
                 .join(" ");
-            // the shop
-            if d.shop_enabled && text.contains("shop") && !d.shop_priority.is_empty() {
+            // the shop: your list, best first, while the money lasts; the
+            // "Would you like to buy" box is confirmed
+            if text.contains("would you like to buy") {
+                self.click_word(self.main, &["confirm", "yes", "buy"])?;
+                self.sleep(600)?;
+                continue;
+            }
+            if d.shop_enabled && text.contains("shop") {
+                // an empty list = the built-in one (loot items, cost cutters)
+                let wanted: Vec<String> = if d.shop_priority.is_empty() {
+                    super::dungeon::SHOP_DEFAULT.iter().map(|s| s.to_string()).collect()
+                } else {
+                    d.shop_priority.clone()
+                };
                 let items = shop_items(&lines);
                 let money = main
                     .frame()
                     .and_then(|f| main.ocr_rect(&f, crate::geom::Rect::new(300, 470, 200, 30)))
                     .and_then(|t| super::loot::parse_amount(&t))
                     .unwrap_or(0);
-                for i in choose_buys(&items, &d.shop_priority, money, d.shop_keep) {
+                let buys = choose_buys(&items, &wanted, money, d.shop_keep);
+                if buys.is_empty() && !items.is_empty() {
+                    self.log("dungeon shop: none of your items is offered (or affordable)");
+                }
+                for i in buys {
                     self.log(format!(
                         "dungeon shop: buying {} ({})",
                         items[i].name, items[i].price
                     ));
                     self.click(self.main, items[i].at, "dungeon buy")?;
+                    self.sleep(700)?;
+                    self.click_word(self.main, &["confirm", "yes", "buy"])?;
                     self.sleep(600)?;
                 }
             }
-            // a shrine: "<name> ... on/off"
-            if text.contains("shrine") {
-                for l in &lines {
-                    let t: String = l
-                        .iter()
-                        .map(|(w, _)| w.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if !t.to_lowercase().contains("shrine") {
-                        continue;
-                    }
-                    let on = t.to_lowercase().contains(" on");
-                    let name = t.split([':', '(']).next().unwrap_or(&t).trim().to_string();
-                    if let Some(want) = shrine_action(&name, on, &d.shrines) {
-                        self.log(format!(
-                            "dungeon shrine: {name} -> {}",
-                            if want { "on" } else { "off" }
-                        ));
-                        let r = l[0].1;
-                        self.click(
-                            self.main,
-                            Point::new(r.x + r.w / 2, r.y + r.h / 2),
-                            "shrine",
-                        )?;
-                        self.sleep(600)?;
-                    }
+            // a shrine: accept / deny by your rules (Spiral's way)
+            if text.contains("shrine") && (text.contains("accept") || text.contains("deny")) {
+                let name = super::dungeon::shrine_in(&text).unwrap_or("?");
+                let yes = super::dungeon::accept_shrine(name, d.deny_shrines, &d.shrines);
+                self.log(format!(
+                    "dungeon shrine: {name} - {}",
+                    if yes { "accept" } else { "deny" }
+                ));
+                let words: &[&str] = if yes {
+                    &["accept"]
+                } else {
+                    &["deny", "reject", "decline"]
+                };
+                if !self.click_word(self.main, words)? {
+                    self.log("dungeon shrine: its button wasn't found");
                 }
+                self.sleep(800)?;
+                continue;
             }
             // the path picker: room tiles by their icons (built in, plus
             // your room_* pictures), the one highest on your room order
@@ -4236,7 +4267,6 @@ impl RunCtx {
                 self.log("dungeon: no room icons seen yet (waiting for the path picker)");
             }
             if let Some(i) = choose_room(&rooms, &d.room_priority) {
-                let r = &rooms[i];
                 let show = |r: &super::dungeon::Room| {
                     r.kinds
                         .iter()
@@ -4244,12 +4274,66 @@ impl RunCtx {
                         .collect::<Vec<_>>()
                         .join("+")
                 };
+                // best first; a cursed room with a curse you avoid is
+                // skipped (all of them cursed: the fewest avoided curses)
+                let mut order: Vec<usize> = vec![i];
+                let mut rest: Vec<usize> = (0..rooms.len()).filter(|j| *j != i).collect();
+                while let Some(k) = choose_room(
+                    &rest.iter().map(|j| rooms[*j].clone()).collect::<Vec<_>>(),
+                    &d.room_priority,
+                ) {
+                    order.push(rest.remove(k));
+                }
+                let mut fallback: Option<(usize, usize)> = None;
+                let mut taken = None;
+                for j in order {
+                    let r = &rooms[j];
+                    self.click(self.main, r.at, "dungeon room")?;
+                    self.sleep(700)?;
+                    if !r.kinds.contains(&super::dungeon::RoomKind::Curse)
+                        || d.avoid_curses.is_empty()
+                    {
+                        taken = Some(j);
+                        break;
+                    }
+                    let t = main
+                        .frame()
+                        .and_then(|f| main.ocr_all(&f))
+                        .unwrap_or_default();
+                    let curses = super::dungeon::curses_in(&t);
+                    let bad = super::dungeon::avoided(&curses, &d.avoid_curses);
+                    if bad == 0 {
+                        taken = Some(j);
+                        break;
+                    }
+                    self.log(format!(
+                        "dungeon path: {} has {} - avoided, next room",
+                        show(r),
+                        curses.join(", ")
+                    ));
+                    if fallback.is_none_or(|(_, b)| bad < b) {
+                        fallback = Some((j, bad));
+                    }
+                }
+                let j = match (taken, fallback) {
+                    (Some(j), _) => j,
+                    (None, Some((j, _))) => {
+                        self.log("dungeon path: every room has an avoided curse - the fewest");
+                        self.click(self.main, rooms[j].at, "dungeon room")?;
+                        self.sleep(700)?;
+                        j
+                    }
+                    (None, None) => i,
+                };
                 self.log(format!(
                     "dungeon path: {} (of {}) - your room order",
-                    show(r),
+                    show(&rooms[j]),
                     rooms.iter().map(show).collect::<Vec<_>>().join(", ")
                 ));
-                self.click(self.main, r.at, "dungeon room")?;
+                // the room is selected: Enter (or Confirm)
+                if !self.click_word(self.main, &["enter", "confirm"])? {
+                    self.log("dungeon path: no Enter button read - the click may have entered");
+                }
                 self.sleep(2500)?;
                 continue;
             } else if !rooms.is_empty() {
@@ -4327,6 +4411,32 @@ impl RunCtx {
             self.log(format!("dungeon: opened {opened} chest(s) / reward(s)"));
         }
         Ok(())
+    }
+
+    /// Click the first OCR word that is one of `words` (whole word, any
+    /// case). True when one was clicked.
+    fn click_word(&self, h: Hwnd, words: &[&str]) -> R<bool> {
+        let scr = self.screen(h);
+        let Some(lines) = scr.frame().and_then(|f| scr.ocr_lines(&f)) else {
+            return Ok(false);
+        };
+        let hit = words.iter().find_map(|want| {
+            lines.iter().flatten().find_map(|(w, r)| {
+                let w: String = w
+                    .chars()
+                    .filter(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    .to_lowercase();
+                (w == *want).then(|| (Point::new(r.x + r.w / 2, r.y + r.h / 2), *want))
+            })
+        });
+        match hit {
+            Some((p, w)) => {
+                self.click(h, p, w)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Room tiles on `h`'s path picker.
