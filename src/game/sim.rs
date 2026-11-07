@@ -292,22 +292,26 @@ mod tests {
                     area: [10, 10, 200, 30],
                     text: r"Wave 10\b".into(),
                     matching: Match::Regex,
-                    action: Do::Click { x: 321, y: 123 },
+                    actions: vec![
+                        Do::Click { x: 321, y: 123 },
+                        Do::Wait { ms: 50 },
+                        Do::Click { x: 322, y: 124 },
+                    ],
                     ..Default::default()
                 },
                 Rule {
                     name: "other map".into(),
                     when: When::Every(1),
                     maps: vec!["Navy Bay".into()],
-                    action: Do::Click { x: 1, y: 1 },
+                    actions: vec![Do::Click { x: 1, y: 1 }],
                     ..Default::default()
                 },
                 Rule {
                     name: "jump".into(),
                     when: When::BeforeEnd,
-                    action: Do::ChangeStep {
+                    actions: vec![Do::ChangeStep {
                         step: "upgrade".into(),
-                    },
+                    }],
                     ..Default::default()
                 },
             ],
@@ -355,6 +359,16 @@ mod tests {
             "fired once: {logs:?} {:?}",
             sim.raw_clicks.lock().unwrap()
         );
+        // the whole sequence ran, in order
+        let seq: Vec<(i32, i32)> = sim
+            .raw_clicks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|k| (k.1, k.2))
+            .filter(|p| *p == (321, 123) || *p == (322, 124))
+            .collect();
+        assert_eq!(seq, vec![(321, 123), (322, 124)]);
         // gone (wave 11), then back: again. (A look right after input on the
         // same unchanged picture is skipped as "frozen" - other sim tests
         // click Hwnd(1) too - so give each phase a few looks.)
@@ -927,40 +941,6 @@ mod tests {
             .contains("reconnect is off"));
     }
 
-    /// Captcha: paused + the app told; gone: un-paused + told.
-    #[test]
-    fn captcha_pauses_until_gone() {
-        let sim = Arc::new(Sim::new(vec![
-            /*0 captcha, gone after a few looks*/
-            Screen {
-                els: vec![el("captcha", 300, 250, None)],
-                auto: Some((3, 1)),
-                wheel_down: None,
-            },
-            /*1 stage*/ scr(vec![el("vote_start", 400, 100, None)]),
-        ]));
-        let (c, rx, _arb) = ctx(sim, Settings::default());
-        c.watch_once(false);
-        assert!(c.control.is_paused(), "paused for the captcha");
-        let mut told = false;
-        while let Ok(e) = rx.try_recv() {
-            told |= matches!(e, Event::Captcha(_));
-        }
-        assert!(told, "app pinged");
-        for _ in 0..6 {
-            c.watch_once(false);
-        }
-        assert!(!c.control.is_paused(), "carries on once it's gone");
-        let mut gone = false;
-        while let Ok(e) = rx.try_recv() {
-            gone |= matches!(e, Event::CaptchaGone);
-        }
-        assert!(gone);
-    }
-
-    /// Priority upgrade, no money: the top unit's level doesn't move -
-    /// the macro stays on it (waits for cash, tries again) and never goes
-    /// to the next unit or rests it.
     #[test]
     fn priority_upgrade_waits_for_cash() {
         // its panel open; two screens taking turns so the picture changes

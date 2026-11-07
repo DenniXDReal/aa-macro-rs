@@ -18,7 +18,7 @@ use std::time::Duration;
 
 /// Limits for the wrapped procedures. The step machine's own defaults
 /// (`RetryPolicy::default_for`) are for fine-grained steps; a wrapped
-/// procedure has long waits of its own inside (captcha 2 min, Vote Start
+/// procedure has long waits of its own inside (Vote Start
 /// 2 min, end screen 90 s + the Discord upload), so its hard timeout has to
 /// sit above those or it'd be cut off mid-way. Place / Upgrade keep theirs.
 pub fn wrapped_policy(step: Step) -> RetryPolicy {
@@ -29,7 +29,7 @@ pub fn wrapped_policy(step: Step) -> RetryPolicy {
         backoff: Duration::from_millis(backoff_ms),
     };
     match step {
-        // walk to the portal, matchmaking, captcha (you type it: 2 min), Start
+        // walk to the portal, matchmaking, Start
         Step::Lobby => p(300, 300, 2, 2000),
         // loading + up to 2 min for Vote Start, map, camera, Teleport to Spawn
         Step::StageSetup => p(240, 240, 2, 1000),
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn wrapped_limits_sit_above_the_procedures_own_waits() {
-        // captcha 120 s, Vote Start 120 s, end screen 90 s + Discord 15 s
+        // Vote Start 120 s, end screen 90 s + Discord 15 s
         assert!(wrapped_policy(Step::Lobby).hard_timeout >= Duration::from_secs(120 + 60));
         assert!(wrapped_policy(Step::StageSetup).hard_timeout >= Duration::from_secs(120 + 60));
         assert!(

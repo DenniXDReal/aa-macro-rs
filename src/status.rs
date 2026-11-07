@@ -25,7 +25,7 @@ pub struct Status {
     pub step_since: Option<Instant>,
     /// The latest retry per client (cleared when it went through).
     pub attempts: Vec<Attempt>,
-    /// Watchdog findings per client ("CAPTCHA", "DISCONNECTED").
+    /// Watchdog findings per client ("DISCONNECTED").
     pub incidents: Vec<(Hwnd, &'static str)>,
 }
 

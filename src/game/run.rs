@@ -140,8 +140,8 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
                 false,
             )),
             PlayChoice::FindMatch => out.push(step(
-                "Join Matchmaking > Find Match (you type the captcha)",
-                &["join_matchmaking", "find_match", "captcha"],
+                "Join Matchmaking > Find Match",
+                &["join_matchmaking", "find_match"],
                 false,
             )),
         }
@@ -245,14 +245,10 @@ pub enum Event {
     /// A finished run's loot (End step); `reported` = the game loop sent
     /// the Discord loot report itself.
     Run(super::loot::RunStats, bool),
-    /// Something needs the user (captcha) - ping them.
+    /// Something needs the user - ping them.
     Attention(String),
     /// Step machine: a step went Fatal - the loop paused itself (F4 resumes).
     Fatal(String),
-    /// Captcha on a client: the watchdog paused the macro until it's gone.
-    Captcha(String),
-    /// The captcha is gone: the watchdog un-paused.
-    CaptchaGone,
     /// Disconnect recovery: what happened (Reconnecting / back / failed).
     Reconnect(String),
     Done(String),
@@ -281,7 +277,7 @@ pub struct RunCtx {
     pub loot_hook: Option<(String, String)>,
     /// Run count + totals since Start.
     pub session: std::sync::Arc<std::sync::Mutex<super::loot::Session>>,
-    /// Recovery watchdog's findings (disconnect / captcha per client).
+    /// Recovery watchdog's findings (disconnects per client).
     pub watch: std::sync::Arc<super::watchdog::Watch>,
     /// Step machine: the running step's hard deadline. `check()` / `sleep()`
     /// fail with "step timed out" past it (the old loop never sets it).
@@ -742,19 +738,6 @@ impl RunCtx {
                 self.click_when(self.main, "find_match", 6000)?;
                 self.sleep(1500)?;
                 self.fire_events(super::events::When::Matchmaking)?;
-                if self.captcha_up() {
-                    let _ = self.tx.send(Event::Attention(
-                        "Captcha - type it in Roblox, the macro waits".into(),
-                    ));
-                    // wait until the captcha is gone (typed) - up to 2 min
-                    let mut dl = self.control.deadline(self.secs(120.0));
-                    while self.captcha_up() {
-                        if dl.expired() {
-                            return Err("captcha not typed in time".into());
-                        }
-                        self.sleep(500)?;
-                    }
-                }
                 self.log("matchmaking - waiting to load");
                 return Ok(());
             }
@@ -1412,68 +1395,79 @@ impl RunCtx {
                         format!(" (read \"{}\")", read.trim())
                     }
                 ));
-                let mut b = Batch::new(h, "custom event");
-                b.long = true; // typing can take a while
-                let b = match &rule.action {
-                    Do::TypeText { text, chat } => {
-                        let mut b = b;
-                        if *chat {
-                            if let Some(k) = crate::keys::Key::parse("/") {
-                                b = b
-                                    .then(Action::KeyTap {
+                // the actions in order, each its own input turn (a Wait
+                // doesn't hold the other clients up)
+                for act in &rule.actions {
+                    let mut b = Batch::new(h, "custom event");
+                    b.long = true; // typing can take a while
+                    let b = match act {
+                        Do::TypeText { text, chat } => {
+                            let mut b = b;
+                            if *chat {
+                                if let Some(k) = crate::keys::Key::parse("/") {
+                                    b = b
+                                        .then(Action::KeyTap {
+                                            key: k,
+                                            hold_ms: 40,
+                                        })
+                                        .wait(300);
+                                }
+                            }
+                            b = b.then(Action::TypeText {
+                                text: text.clone(),
+                                gap_ms: gap,
+                            });
+                            if *chat {
+                                if let Some(k) = crate::keys::Key::parse("enter") {
+                                    b = b.wait(150).then(Action::KeyTap {
                                         key: k,
                                         hold_ms: 40,
-                                    })
-                                    .wait(300);
+                                    });
+                                }
                             }
+                            Some(b)
                         }
-                        b = b.then(Action::TypeText {
-                            text: text.clone(),
-                            gap_ms: gap,
-                        });
-                        if *chat {
-                            if let Some(k) = crate::keys::Key::parse("enter") {
-                                b = b.wait(150).then(Action::KeyTap {
-                                    key: k,
-                                    hold_ms: 40,
-                                });
+                        Do::PressKey { key } => match crate::keys::Key::parse(key) {
+                            Some(k) => Some(b.then(Action::KeyTap {
+                                key: k,
+                                hold_ms: 60,
+                            })),
+                            None => {
+                                self.log(format!(
+                                    "custom event '{}': unknown key '{key}'",
+                                    rule.name
+                                ));
+                                None
                             }
-                        }
-                        Some(b)
-                    }
-                    Do::PressKey { key } => match crate::keys::Key::parse(key) {
-                        Some(k) => Some(b.then(Action::KeyTap {
-                            key: k,
-                            hold_ms: 60,
-                        })),
-                        None => {
-                            self.log(format!("custom event '{}': unknown key '{key}'", rule.name));
+                        },
+                        Do::Click { x, y } => Some(b.click(*x, *y)),
+                        Do::Wait { ms } => {
+                            self.sleep(*ms)?;
                             None
                         }
-                    },
-                    Do::Click { x, y } => Some(b.click(*x, *y)),
-                    Do::ChangeStep { step } => {
-                        match super::events::step_named(step) {
-                            Some(s) => {
-                                super::events::request_jump(s);
-                                self.log(format!(
-                                    "custom event '{}': jumping to the {} step",
-                                    rule.name,
-                                    s.name()
-                                ));
+                        Do::ChangeStep { step } => {
+                            match super::events::step_named(step) {
+                                Some(s) => {
+                                    super::events::request_jump(s);
+                                    self.log(format!(
+                                        "custom event '{}': jumping to the {} step",
+                                        rule.name,
+                                        s.name()
+                                    ));
+                                }
+                                None => self.log(format!(
+                                    "custom event '{}': no step called '{step}'",
+                                    rule.name
+                                )),
                             }
-                            None => self.log(format!(
-                                "custom event '{}': no step called '{step}'",
-                                rule.name
-                            )),
+                            None
                         }
-                        None
+                    };
+                    if let Some(b) = b {
+                        self.arb
+                            .run(b)
+                            .map_err(|e| format!("custom event '{}': {e}", rule.name))?;
                     }
-                };
-                if let Some(b) = b {
-                    self.arb
-                        .run(b)
-                        .map_err(|e| format!("custom event '{}': {e}", rule.name))?;
                 }
             }
         }
@@ -1695,7 +1689,6 @@ impl RunCtx {
             "start_button",
             "waiting_for_players",
             "join_matchmaking",
-            "captcha",
         ]);
         let mut dl = self.control.deadline(self.secs(90.0));
         while main.find(&gone, None).is_some() {
@@ -2051,24 +2044,6 @@ impl RunCtx {
         }
         // a Sandstorm seen here is already in the plan: no walk-back
         SANDSTORM_REWALK.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// A captcha on the main client: your `captcha` picture (its fixed
-    /// frame), else its fixed words ("Verify", "Captcha") - never the code.
-    fn captcha_up(&self) -> bool {
-        let scr = self.screen(self.main);
-        if scr.has("captcha") && scr.find(&Self::names(&["captcha"]), None).is_some() {
-            return true;
-        }
-        if scr
-            .frame()
-            .is_some_and(|f| super::watchdog::captcha_dialog(&f))
-        {
-            return true;
-        }
-        scr.frame()
-            .and_then(|f| scr.ocr_all(&f))
-            .is_some_and(|t| super::watchdog::captcha_text(&t))
     }
 
     /// The minimap on screen is one of the built-in (or saved) ones: its map
@@ -4263,7 +4238,7 @@ impl RunCtx {
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
             sc.spawn(|| self.anti_afk(&finished));
-            // disconnect box / captcha on any client
+            // disconnect box on any client
             sc.spawn(|| self.watchdog(&finished));
             // Challenge runs from the next :00 / :30 on
             super::challenge::reset();
@@ -4459,8 +4434,7 @@ impl RunCtx {
     }
 
     /// Recovery watchdog: every few seconds, every client - disconnect box
-    /// (your `disconnect_box` picture, or its words), captcha (`captcha`
-    /// picture, or its words). Captcha: pause + ping until it's gone.
+    /// (your `disconnect_box` picture, or its words).
     fn watchdog(&self, finished: &std::sync::atomic::AtomicBool) {
         use super::watchdog::{EVERY, OCR_EVERY_NTH};
         use std::sync::atomic::Ordering;
@@ -4468,8 +4442,7 @@ impl RunCtx {
         while !finished.load(Ordering::Relaxed) && !self.control.is_stopped() {
             n += 1;
             self.watch_once(n.is_multiple_of(OCR_EVERY_NTH));
-            // the watchdog's own wait ignores pause (it has to see the
-            // captcha go away while paused)
+            // the watchdog's own wait ignores pause
             let until = Instant::now() + Duration::from_secs_f64(self.secs(EVERY.as_secs_f64()));
             while Instant::now() < until {
                 if finished.load(Ordering::Relaxed) || self.control.is_stopped() {
@@ -4481,52 +4454,23 @@ impl RunCtx {
     }
 
     /// One watchdog look at every client (`ocr`: also read the screen when
-    /// no picture matched). Captcha: pause + ping; gone: carry on.
+    /// no picture matched).
     pub(crate) fn watch_once(&self, ocr: bool) {
         use super::watchdog::{classify, Kind};
-        use std::sync::atomic::Ordering;
         for (i, (h, scr)) in self.clients.iter().enumerate() {
             let pic = |name: &str| {
                 scr.has(name) && scr.find_picture_wide(&Self::names(&[name])).is_some()
             };
-            // captcha: your picture, else the built-in "Captcha" title (the
-            // dialog's fixed part - the code itself changes every time)
-            let cap = pic("captcha")
-                || scr
-                    .frame()
-                    .is_some_and(|f| super::watchdog::captcha_dialog(&f));
             let dis = pic("disconnect_box");
-            let text = (ocr && !dis && !cap)
+            let text = (ocr && !dis)
                 .then(|| scr.frame().and_then(|f| scr.ocr_all(&f)))
                 .flatten();
-            let kind = classify(dis, cap, text.as_deref());
+            let kind = classify(dis, text.as_deref());
             if self.watch.set(*h, i + 1, kind) {
                 let what = kind.map(Kind::label).unwrap_or("");
                 self.log(format!("watchdog: client {} - {what}", i + 1));
             }
             crate::status::set_incident(*h, kind.map(Kind::label));
-        }
-        // captcha: hold everything until it's typed
-        let captcha = self.watch.first(Kind::Captcha);
-        let ours = self.watch.captcha_paused.load(Ordering::Relaxed);
-        match (captcha, ours) {
-            (Some(c), false) if self.settings.recovery.captcha_pause => {
-                self.watch.captcha_paused.store(true, Ordering::Relaxed);
-                self.control.set_paused(true);
-                let why = format!(
-                    "Captcha on client {} - type it in Roblox, the macro is paused until it's gone",
-                    c.client
-                );
-                self.log(format!("WARN {why}"));
-                let _ = self.tx.send(Event::Captcha(why));
-            }
-            (None, true) => {
-                self.watch.captcha_paused.store(false, Ordering::Relaxed);
-                self.control.set_paused(false);
-                self.log("captcha gone - carrying on");
-                let _ = self.tx.send(Event::CaptchaGone);
-            }
-            _ => {}
         }
     }
 

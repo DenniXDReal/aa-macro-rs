@@ -1,14 +1,11 @@
 //! Recovery watchdog (Phase 1): a background thread that looks at every
-//! client every few seconds for Roblox's disconnect box and for a captcha,
-//! and posts what it sees here. It never clicks.
+//! client every few seconds for Roblox's disconnect box and posts what it
+//! sees here. It never clicks.
 //!
 //! - Disconnect: `RunCtx::check()` / the step machine's abort check see it
 //!   and stop the step; the loop then runs the reconnect recovery
 //!   (`RunCtx::recover_disconnect`): Reconnect > back in the lobby > party >
 //!   next round. The lost stage is an aborted run (no Discord report).
-//! - Captcha: the watchdog pauses the macro, pings Discord and shows it on
-//!   the card; once the captcha is gone (you typed it) it un-pauses. The
-//!   macro never solves it.
 
 use crate::geom::Hwnd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,14 +22,12 @@ pub const RECONNECT_WAIT_SECS: f64 = 90.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Disconnected,
-    Captcha,
 }
 
 impl Kind {
     pub fn label(self) -> &'static str {
         match self {
             Kind::Disconnected => "DISCONNECTED",
-            Kind::Captcha => "CAPTCHA",
         }
     }
 }
@@ -46,38 +41,15 @@ pub struct Incident {
     pub since: Instant,
 }
 
-/// Captcha by its words (when you haven't captured a `captcha` picture).
-pub fn captcha_text(t: &str) -> bool {
-    let t = t.to_lowercase();
-    // the code itself is random: only the dialog's fixed words count
-    t.contains("captcha")
-        || t.contains("verify")
-        || t.contains("verification")
-        || t.contains("are you a robot")
-}
-
-/// The captcha dialog's yellow "Captcha" title on screen (built-in picture).
-pub fn captcha_dialog(f: &crate::capture::Frame) -> bool {
-    super::icons::get("captcha_title").is_some_and(|i| i.find(f, 40, 0.85).is_some())
-}
-
-/// What one look at a client found: the disconnect box beats a captcha.
-pub fn classify(disconnect_pic: bool, captcha_pic: bool, ocr: Option<&str>) -> Option<Kind> {
-    if disconnect_pic || ocr.is_some_and(super::run::disconnect_text) {
-        Some(Kind::Disconnected)
-    } else if captcha_pic || ocr.is_some_and(captcha_text) {
-        Some(Kind::Captcha)
-    } else {
-        None
-    }
+/// What one look at a client found.
+pub fn classify(disconnect_pic: bool, ocr: Option<&str>) -> Option<Kind> {
+    (disconnect_pic || ocr.is_some_and(super::run::disconnect_text)).then_some(Kind::Disconnected)
 }
 
 /// Shared between the watchdog thread and the loop.
 #[derive(Default, Debug)]
 pub struct Watch {
     now: Mutex<Vec<Incident>>,
-    /// The watchdog paused the macro for a captcha (and un-pauses it).
-    pub captcha_paused: AtomicBool,
     /// A reconnect is running: `check()` doesn't stop it for the very
     /// disconnect it's fixing.
     pub recovering: AtomicBool,
@@ -159,50 +131,39 @@ mod tests {
 
     #[test]
     fn what_a_look_finds() {
-        assert_eq!(classify(true, false, None), Some(Kind::Disconnected));
-        assert_eq!(classify(false, true, None), Some(Kind::Captcha));
-        assert_eq!(classify(true, true, None), Some(Kind::Disconnected));
+        assert_eq!(classify(true, None), Some(Kind::Disconnected));
         assert_eq!(
             classify(
-                false,
                 false,
                 Some("Disconnected\nLost connection to the game server\nReconnect Leave")
             ),
             Some(Kind::Disconnected)
         );
         assert_eq!(
-            classify(false, false, Some("Error Code: 277")),
+            classify(false, Some("Error Code: 277")),
             Some(Kind::Disconnected)
         );
-        assert_eq!(
-            classify(false, false, Some("Please complete the captcha")),
-            Some(Kind::Captcha)
-        );
-        assert_eq!(
-            classify(false, false, Some("Verify  X7kQ2  Submit")),
-            Some(Kind::Captcha)
-        );
-        assert_eq!(classify(false, false, Some("VICTORY  +7291")), None);
-        assert_eq!(classify(false, false, Some("Wave 17 Navy Bay")), None);
-        assert_eq!(classify(false, false, None), None);
+        assert_eq!(classify(false, Some("Please complete the captcha")), None);
+        assert_eq!(classify(false, Some("VICTORY  +7291")), None);
+        assert_eq!(classify(false, None), None);
     }
 
     #[test]
     fn incidents_per_client() {
         let w = Watch::default();
         let (a, b) = (Hwnd(1), Hwnd(2));
-        assert!(w.set(a, 1, Some(Kind::Captcha)), "new");
-        assert!(!w.set(a, 1, Some(Kind::Captcha)), "same one again");
+        assert!(w.set(a, 1, Some(Kind::Disconnected)), "new");
+        assert!(!w.set(a, 1, Some(Kind::Disconnected)), "same one again");
         assert!(w.set(b, 2, Some(Kind::Disconnected)));
-        assert_eq!(w.first(Kind::Disconnected).map(|i| i.client), Some(2));
+        assert_eq!(w.first(Kind::Disconnected).map(|i| i.client), Some(1));
         assert!(w.stopping_disconnect().is_some());
         {
             let _r = Recovering::new(&w);
             assert!(w.stopping_disconnect().is_none(), "not while reconnecting");
         }
         assert!(w.stopping_disconnect().is_some());
-        w.set(b, 2, None);
-        assert!(w.first(Kind::Disconnected).is_none());
+        w.set(a, 1, None);
+        assert_eq!(w.first(Kind::Disconnected).map(|i| i.client), Some(2));
         assert_eq!(w.incidents().len(), 1);
     }
 

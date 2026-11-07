@@ -1,5 +1,5 @@
 //! Small built-in pictures found anywhere on screen: the dungeon room icons,
-//! the Dungeon / Enter Dungeon buttons, the captcha title. Only a picture's
+//! the Dungeon / Enter Dungeon buttons, Next. Only a picture's
 //! opaque pixels are compared (its background is cut away), so an icon is
 //! found on any tile colour.
 
@@ -119,7 +119,6 @@ pub fn get(name: &str) -> Option<&'static Icon> {
             icon!("icon_curse"),
             icon!("button_dungeon"),
             icon!("button_enter_dungeon"),
-            icon!("captcha_title"),
             icon!("button_next"),
         ]
         .into_iter()
@@ -155,22 +154,18 @@ mod tests {
             "icon_curse",
             "button_dungeon",
             "button_enter_dungeon",
-            "captcha_title",
         ] {
             assert!(get(n).is_some(), "{n}");
         }
     }
 
     #[test]
-    fn captcha_title_on_the_dialog() {
-        let f = upload("captcha.png");
-        let p = get("captcha_title").unwrap().find(&f, 40, 0.85);
-        let p = p.expect("found");
-        assert!((p.x - 200).abs() < 6 && (p.y - 21).abs() < 6, "{p:?}");
-        // not on the dungeon buttons
-        assert!(get("captcha_title")
+    fn next_button_on_the_end_screen() {
+        let f = upload("end_defeat_pearls.png");
+        let p = get("button_next")
             .unwrap()
-            .find(&upload("dungeon_enter.png"), 40, 0.85)
-            .is_none());
+            .find(&f, 40, 0.8)
+            .expect("found");
+        assert!((p.x - 321).abs() < 6 && (p.y - 395).abs() < 6, "{p:?}");
     }
 }

@@ -177,64 +177,42 @@ fn rule_ui(
             ui.colored_label(WARN, "bad regex");
         }
     });
-    // action
+    // actions, in order
+    ui.label("Then, in order:");
+    let mut remove: Option<usize> = None;
+    let mut swap: Option<(usize, usize)> = None;
+    let n = r.actions.len();
+    for (j, act) in r.actions.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("{}.", j + 1));
+            changed |= action_ui(ui, (i, j), act);
+            if ui.small_button("↑").clicked() && j > 0 {
+                swap = Some((j, j - 1));
+            }
+            if ui.small_button("↓").clicked() && j + 1 < n {
+                swap = Some((j, j + 1));
+            }
+            if ui.small_button("✕").clicked() {
+                remove = Some(j);
+            }
+        });
+    }
+    if let Some((a, b)) = swap {
+        r.actions.swap(a, b);
+        changed = true;
+    }
+    if let Some(j) = remove {
+        r.actions.remove(j);
+        changed = true;
+    }
     ui.horizontal(|ui| {
-        ui.label("Then");
-        let mut k = r.action.kind();
-        egui::ComboBox::from_id_salt(("ev_do", i))
-            .selected_text(Do::KINDS[k])
-            .show_ui(ui, |ui| {
-                for (j, l) in Do::KINDS.iter().enumerate() {
-                    ui.selectable_value(&mut k, j, *l);
-                }
-            });
-        if k != r.action.kind() {
-            r.action = Do::of_kind(k);
+        if ui.button("+ step").clicked() {
+            r.actions.push(Do::of_kind(1));
             changed = true;
         }
-        match &mut r.action {
-            Do::TypeText { text, chat } => {
-                changed |= ui
-                    .add(egui::TextEdit::singleline(text).desired_width(180.0))
-                    .changed();
-                changed |= ui
-                    .checkbox(chat, "in chat (/ first, Enter after)")
-                    .changed();
-            }
-            Do::PressKey { key } => {
-                changed |= ui
-                    .add(
-                        egui::TextEdit::singleline(key)
-                            .desired_width(80.0)
-                            .hint_text("e, space, f1..."),
-                    )
-                    .changed();
-                if crate::keys::Key::parse(key).is_none() {
-                    ui.colored_label(WARN, "unknown key");
-                }
-            }
-            Do::Click { x, y } => {
-                changed |= ui.add(egui::DragValue::new(x).prefix("x ")).changed();
-                changed |= ui.add(egui::DragValue::new(y).prefix("y ")).changed();
-            }
-            Do::ChangeStep { step } => {
-                egui::ComboBox::from_id_salt(("ev_step", i))
-                    .selected_text(step.as_str())
-                    .show_ui(ui, |ui| {
-                        for s in [
-                            "lobby",
-                            "stage_setup",
-                            "walk",
-                            "vote",
-                            "place",
-                            "upgrade",
-                            "dungeon",
-                            "end",
-                        ] {
-                            changed |= ui.selectable_value(step, s.to_string(), s).changed();
-                        }
-                    });
-            }
+        if ui.button("+ wait").clicked() {
+            r.actions.push(Do::Wait { ms: 500 });
+            changed = true;
         }
     });
     changed |= ui
@@ -243,6 +221,73 @@ fn rule_ui(
             "look and act on every client (else the main one)",
         )
         .changed();
+    changed
+}
+
+/// One action of a rule: its kind and what it needs.
+fn action_ui(ui: &mut egui::Ui, id: (usize, usize), act: &mut Do) -> bool {
+    let mut changed = false;
+    let mut k = act.kind();
+    egui::ComboBox::from_id_salt(("ev_do", id))
+        .selected_text(Do::KINDS[k])
+        .show_ui(ui, |ui| {
+            for (j, l) in Do::KINDS.iter().enumerate() {
+                ui.selectable_value(&mut k, j, *l);
+            }
+        });
+    if k != act.kind() {
+        *act = Do::of_kind(k);
+        changed = true;
+    }
+    match act {
+        Do::TypeText { text, chat } => {
+            changed |= ui
+                .add(egui::TextEdit::singleline(text).desired_width(160.0))
+                .changed();
+            changed |= ui
+                .checkbox(chat, "in chat (/ first, Enter after)")
+                .changed();
+        }
+        Do::PressKey { key } => {
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(key)
+                        .desired_width(80.0)
+                        .hint_text("e, space, f1..."),
+                )
+                .changed();
+            if crate::keys::Key::parse(key).is_none() {
+                ui.colored_label(WARN, "unknown key");
+            }
+        }
+        Do::Click { x, y } => {
+            changed |= ui.add(egui::DragValue::new(x).prefix("x ")).changed();
+            changed |= ui.add(egui::DragValue::new(y).prefix("y ")).changed();
+        }
+        Do::ChangeStep { step } => {
+            egui::ComboBox::from_id_salt(("ev_step", id))
+                .selected_text(step.as_str())
+                .show_ui(ui, |ui| {
+                    for s in [
+                        "lobby",
+                        "stage_setup",
+                        "walk",
+                        "vote",
+                        "place",
+                        "upgrade",
+                        "dungeon",
+                        "end",
+                    ] {
+                        changed |= ui.selectable_value(step, s.to_string(), s).changed();
+                    }
+                });
+        }
+        Do::Wait { ms } => {
+            changed |= ui
+                .add(egui::DragValue::new(ms).range(0..=600_000).suffix(" ms"))
+                .changed();
+        }
+    }
     changed
 }
 

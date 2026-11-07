@@ -94,17 +94,27 @@ pub enum Do {
     ChangeStep {
         step: String,
     },
+    /// Pause before the next action.
+    Wait {
+        ms: u64,
+    },
 }
 
 impl Do {
-    pub const KINDS: [&'static str; 4] =
-        ["Type Text", "Press Key", "Click Coordinates", "Change Step"];
+    pub const KINDS: [&'static str; 5] = [
+        "Type Text",
+        "Press Key",
+        "Click Coordinates",
+        "Change Step",
+        "Wait",
+    ];
     pub fn kind(&self) -> usize {
         match self {
             Do::TypeText { .. } => 0,
             Do::PressKey { .. } => 1,
             Do::Click { .. } => 2,
             Do::ChangeStep { .. } => 3,
+            Do::Wait { .. } => 4,
         }
     }
     pub fn of_kind(k: usize) -> Do {
@@ -115,9 +125,10 @@ impl Do {
             },
             1 => Do::PressKey { key: "e".into() },
             2 => Do::Click { x: 400, y: 300 },
-            _ => Do::ChangeStep {
+            3 => Do::ChangeStep {
                 step: "upgrade".into(),
             },
+            _ => Do::Wait { ms: 500 },
         }
     }
 }
@@ -137,7 +148,11 @@ pub struct Rule {
     /// What to find there (empty = no OCR, always true).
     pub text: String,
     pub matching: Match,
-    pub action: Do,
+    /// What to do, in order (Wait = pause between them).
+    pub actions: Vec<Do>,
+    /// Older files: a single action (moved into `actions` on load).
+    #[serde(skip_serializing)]
+    pub action: Option<Do>,
     /// Look (and act) on every client, not only the main one.
     pub all_clients: bool,
 }
@@ -153,7 +168,8 @@ impl Default for Rule {
             area: [300, 200, 200, 60],
             text: String::new(),
             matching: Match::Contains,
-            action: Do::PressKey { key: "e".into() },
+            actions: vec![Do::PressKey { key: "e".into() }],
+            action: None,
             all_clients: false,
         }
     }
@@ -183,6 +199,13 @@ pub fn load_from(p: &std::path::Path) -> Rules {
         .unwrap_or_default();
     if r.type_gap_ms == 0 {
         r.type_gap_ms = 50;
+    }
+    for rule in &mut r.rules {
+        if let Some(a) = rule.action.take() {
+            if rule.actions.is_empty() || rule.actions == Rule::default().actions {
+                rule.actions = vec![a];
+            }
+        }
     }
     r
 }
@@ -381,17 +404,21 @@ mod tests {
                     name: "jump at wave 10".into(),
                     when: When::Every(3),
                     text: "Wave 10".into(),
-                    action: Do::PressKey {
-                        key: "space".into(),
-                    },
+                    actions: vec![
+                        Do::PressKey {
+                            key: "space".into(),
+                        },
+                        Do::Wait { ms: 250 },
+                        Do::Click { x: 5, y: 6 },
+                    ],
                     ..Default::default()
                 },
                 Rule {
                     when: When::BeforeEnd,
-                    action: Do::TypeText {
+                    actions: vec![Do::TypeText {
                         text: "gg".into(),
                         chat: true,
-                    },
+                    }],
                     ..Default::default()
                 },
             ],
@@ -399,6 +426,16 @@ mod tests {
         };
         std::fs::write(&p, serde_json::to_string_pretty(&rules).unwrap()).unwrap();
         assert_eq!(load_from(&p), rules);
+        // an older file with one "action": becomes the list
+        std::fs::write(
+            &p,
+            r#"{"rules":[{"name":"old","action":{"Click":{"x":1,"y":2}}}],"type_gap_ms":50}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_from(&p).rules[0].actions,
+            vec![Do::Click { x: 1, y: 2 }]
+        );
         assert_eq!(
             step_named("Upgrade"),
             Some(super::super::steps::Step::Upgrade)

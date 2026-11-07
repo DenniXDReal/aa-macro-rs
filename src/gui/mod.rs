@@ -603,21 +603,6 @@ impl App {
                         ));
                     }
                 }
-                Event::Captcha(s) => {
-                    self.paused = true;
-                    self.say(format!("WARN {s}"));
-                    self.hook_with(
-                        crate::webhook::Kind::Problem,
-                        "Captcha detected - manual input needed",
-                        &s,
-                        true,
-                        self.settings.recovery.captcha_here,
-                    );
-                }
-                Event::CaptchaGone => {
-                    self.paused = false;
-                    self.say("captcha gone - carrying on");
-                }
                 Event::Reconnect(s) => {
                     self.say(s.clone());
                     self.hook(crate::webhook::Kind::Problem, "Reconnect", &s, false);
@@ -1777,11 +1762,9 @@ impl App {
                 });
                 if r.play == PlayChoice::FindMatch {
                     ui.label(
-                        RichText::new(
-                            "Find Match shows a captcha: type it yourself, the macro waits.",
-                        )
-                        .size(11.0)
-                        .color(WARN),
+                        RichText::new("Find Match: public matchmaking.")
+                            .size(11.0)
+                            .color(WARN),
                     );
                 }
             }
@@ -3316,7 +3299,7 @@ impl App {
         changed
     }
 
-    /// Settings > Recovery: disconnect / captcha handling.
+    /// Settings > Recovery: disconnect handling.
     fn recovery_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         card(ui, |ui| {
@@ -3341,25 +3324,6 @@ impl App {
                 .checkbox(
                     &mut self.settings.auto_relaunch,
                     "If reconnecting fails: close Roblox and relaunch every account (Roblox Account Manager)",
-                )
-                .changed();
-        });
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("CAPTCHA").size(11.0).color(MUTED));
-            ui.label(
-                RichText::new("A captcha anywhere (your captcha picture, else its words): the macro pauses, pings Discord and shows CAPTCHA on the client's card. Type it in Roblox - once it's gone the macro carries on by itself. It never solves captchas.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-            let r = &mut self.settings.recovery;
-            changed |= ui
-                .checkbox(&mut r.captcha_pause, "Pause while a captcha is up")
-                .changed();
-            changed |= ui
-                .checkbox(
-                    &mut r.captcha_here,
-                    "Ping @here on Discord (off = only your user ping)",
                 )
                 .changed();
         });
