@@ -124,6 +124,43 @@ mod tests {
     }
 }
 
+/// The card picker is up, by its look (no OCR): all three card panels are
+/// dark inside (the card art is a near-black panel with a little text).
+/// Cheap enough for every pass; OCR still confirms / reads the cards.
+pub fn screen_by_look(f: &crate::capture::Frame) -> bool {
+    CARD_BOXES.iter().all(|b| {
+        let (mut n, mut dark) = (0u32, 0u32);
+        for y in (b.y + 30..b.y + b.h - 30).step_by(3) {
+            for x in (b.x + 15..b.x + b.w - 15).step_by(3) {
+                if let Some((r, g, bl)) = f.rgb(x, y) {
+                    n += 1;
+                    if r.max(g).max(bl) < 75 {
+                        dark += 1;
+                    }
+                }
+            }
+        }
+        if n == 0 || (dark as f32 / n as f32) < 0.9 {
+            return false;
+        }
+        // and a title on it: some bright text in its title strip (a dark
+        // map alone has none)
+        let t = title_box(CARD_BOXES.iter().position(|c| c == b).unwrap_or(0));
+        let (mut tn, mut lit) = (0u32, 0u32);
+        for y in t.y..t.y + t.h {
+            for x in t.x..t.x + t.w {
+                if let Some((r, g, bl)) = f.rgb(x, y) {
+                    tn += 1;
+                    if r.min(g).min(bl) > 170 {
+                        lit += 1;
+                    }
+                }
+            }
+        }
+        lit >= 12 && (lit as f32) < tn as f32 * 0.4
+    })
+}
+
 /// The three cards (client px): left, middle, right.
 pub const CARD_BOXES: [Rect; 3] = [
     Rect {
@@ -333,6 +370,18 @@ pub fn card_name(text: &str) -> Option<String> {
         }
     }
     best.map(|(_, _, b, end)| format!("{b} {}", tier_after(&flat[end..])))
+}
+
+/// The words of `lines` inside `area`, joined (a card's text from one
+/// read of the whole panel).
+pub fn column_texts_in(lines: &[Vec<(String, Rect)>], area: Rect) -> String {
+    lines
+        .iter()
+        .flatten()
+        .filter(|(_, r)| area.contains(Point::new(r.x + r.w / 2, r.y + r.h / 2)))
+        .map(|(w, _)| w.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What OCR read over each card (left / middle / right), shortened - for
@@ -703,5 +752,26 @@ mod name_tests {
         // short names aren't guessed from junk
         assert_eq!(card_name("Yan"), None);
         assert_eq!(card_name("Choose a card"), None);
+    }
+
+    #[test]
+    fn card_screen_by_its_look() {
+        let load = |n: &str| {
+            crate::capture::Frame::load_png(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(n),
+            )
+            .unwrap()
+        };
+        assert!(screen_by_look(&load("card_screen_red.png")));
+        assert!(screen_by_look(&load("card_screen_green.png")));
+        // after the pick, the end screen: not it
+        assert!(!screen_by_look(&load("card_picked.png")));
+        assert!(!screen_by_look(&load("end_defeat_pearls.png")));
+        // a dark map with nothing on it
+        assert!(!screen_by_look(&crate::capture::Frame::solid(
+            800, 599, 20, 20, 25
+        )));
     }
 }

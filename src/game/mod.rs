@@ -427,6 +427,46 @@ pub struct LiveScreen {
     pats: crate::hotreload::LivePatterns,
 }
 
+/// A quick fingerprint of an area's pixels (every 2nd pixel of every 2nd
+/// row; a hash, so any change shows).
+fn area_print(f: &crate::capture::Frame, a: Rect) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write_i32(a.x);
+    h.write_i32(a.y);
+    h.write_u32(f.width);
+    for y in (a.y.max(0)..(a.y + a.h).min(f.height as i32)).step_by(2) {
+        let row = (y as u32 * f.width) as usize * 4;
+        for x in (a.x.max(0)..(a.x + a.w).min(f.width as i32)).step_by(2) {
+            let i = row + x as usize * 4;
+            h.write(&f.bgra[i..i + 3]);
+        }
+    }
+    h.finish()
+}
+
+/// OCR reuse: (client, area) -> (fingerprint, text, when). Reads of an
+/// unchanged area within `OCR_REUSE` give the text again without OCR.
+type OcrCache = Vec<(Hwnd, Rect, u64, String, std::time::Instant)>;
+static OCR_CACHE: std::sync::Mutex<OcrCache> = std::sync::Mutex::new(Vec::new());
+const OCR_REUSE: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn ocr_cache_get(h: Hwnd, a: Rect, print: u64) -> Option<String> {
+    let c = OCR_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    c.iter()
+        .find(|e| e.0 == h && e.1 == a && e.2 == print && e.4.elapsed() < OCR_REUSE)
+        .map(|e| e.3.clone())
+}
+
+fn ocr_cache_put(h: Hwnd, a: Rect, print: u64, t: &str) {
+    let mut c = OCR_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    c.retain(|e| !(e.0 == h && e.1 == a) && e.4.elapsed() < OCR_REUSE);
+    c.push((h, a, print, t.to_string(), std::time::Instant::now()));
+    if c.len() > 256 {
+        c.remove(0);
+    }
+}
+
 impl LiveScreen {
     pub fn new(platform: Arc<dyn Platform>, hwnd: Hwnd, lib: &Library) -> Self {
         Self {
@@ -675,9 +715,19 @@ impl LiveScreen {
     pub fn ocr_rect(&self, frame: &crate::capture::Frame, area: Rect) -> Option<String> {
         let fresh = self.fresh(frame);
         let frame: &crate::capture::Frame = &fresh;
+        // the same pixels as the last read of this area (a few seconds ago):
+        // same text - no OCR call (the level box, a title still on screen)
+        // (not in tests: the simulator's text changes without its pixels)
+        let print = area_print(frame, area);
+        if !cfg!(test) {
+            if let Some(t) = ocr_cache_get(self.hwnd, area, print) {
+                return Some(t);
+            }
+        }
         let t = self.platform.ocr(frame, area);
         if let Some(t) = &t {
             crate::debugbus::ocr(self.hwnd, area, t);
+            ocr_cache_put(self.hwnd, area, print, t);
         }
         t
     }
@@ -1092,5 +1142,33 @@ mod end_look_tests {
         // no Next button: not the end screen
         let blank = crate::capture::Frame::solid(800, 599, 40, 40, 40);
         assert_eq!(end_by_look(&blank), None);
+    }
+}
+
+#[cfg(test)]
+mod ocr_cache_tests {
+    use super::*;
+
+    #[test]
+    fn same_pixels_same_text() {
+        let a = Rect::new(10, 10, 40, 20);
+        let f = crate::capture::Frame::solid(100, 100, 10, 20, 30);
+        let mut g = f.clone();
+        let p1 = area_print(&f, a);
+        assert_eq!(p1, area_print(&g, a));
+        // a change inside the area: a new print
+        let i = ((20 * 100 + 20) * 4) as usize;
+        g.bgra[i] = 200;
+        assert_ne!(p1, area_print(&g, a));
+        // outside it: the same
+        let mut o = f.clone();
+        o.bgra[((90 * 100 + 90) * 4) as usize] = 200;
+        assert_eq!(p1, area_print(&o, a));
+        let h = Hwnd(4242);
+        assert_eq!(ocr_cache_get(h, a, p1), None);
+        ocr_cache_put(h, a, p1, "UPG [3]");
+        assert_eq!(ocr_cache_get(h, a, p1).as_deref(), Some("UPG [3]"));
+        assert_eq!(ocr_cache_get(h, a, p1 ^ 1), None);
+        assert_eq!(ocr_cache_get(Hwnd(4243), a, p1), None);
     }
 }

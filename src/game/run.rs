@@ -763,10 +763,14 @@ impl RunCtx {
         let mut weather = String::new();
         let mut shift: Option<String> = None;
         let mut shift_cards = false;
+        // by its look first (no OCR, every pass): the three dark card panels
+        let looks = scr
+            .frame()
+            .is_some_and(|f| super::cards::screen_by_look(&f));
         let seen =
             if scr.has("choose_card") && scr.find(&Self::names(&["choose_card"]), None).is_some() {
                 true
-            } else if ocr_due(h) {
+            } else if looks || ocr_due(h) {
                 let f = scr.frame();
                 let text = f.as_ref().and_then(|f| scr.ocr_text_fast(f));
                 // Mahoraga's adaptation panel shares this OCR read
@@ -786,10 +790,12 @@ impl RunCtx {
                             shift = super::weather_shift_text(&t);
                             // cards to vote on with it ("Vote ends in")
                             shift_cards = t.to_lowercase().contains("vote");
-                            false
+                            // "Choose a card" misread, but the three card
+                            // panels are plainly there
+                            looks && shift.is_none()
                         }
                     },
-                    None => false,
+                    None => looks,
                 }
             } else {
                 false
@@ -980,17 +986,35 @@ impl RunCtx {
         scr: &super::LiveScreen,
         f: &crate::capture::Frame,
     ) -> ([Option<String>; 3], [String; 3]) {
-        let mut raw: [String; 3] = std::array::from_fn(|i| {
-            scr.ocr_rect(
-                f,
-                crate::ocrareas::get(&format!("card_{}", i + 1), super::cards::title_box(i)),
-            )
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-        });
-        let mut names: [Option<String>; 3] =
-            std::array::from_fn(|i| super::cards::card_name(&raw[i]));
+        let title =
+            |i: usize| crate::ocrareas::get(&format!("card_{}", i + 1), super::cards::title_box(i));
+        // one read over the three titles and texts together (one OCR call
+        // instead of six), each word to the card it sits over
+        let (band_names, band_cols, band_lines) = Self::ocr_band(
+            scr,
+            f,
+            [
+                title(0),
+                title(1),
+                title(2),
+                super::cards::body_box(0),
+                super::cards::body_box(2),
+            ],
+        );
+        let mut raw: [String; 3] = band_cols.clone();
+        let mut names: [Option<String>; 3] = band_names;
+        // a card that one read missed: its own title box
+        for i in 0..3 {
+            if names[i].is_none() {
+                let t = scr
+                    .ocr_rect(f, title(i))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                names[i] = super::cards::card_name(&t);
+                raw[i] = format!("{} | title: {t}", raw[i]);
+            }
+        }
         // a title box missed: look for the names anywhere on the cards
         if names.iter().any(|n| n.is_none()) {
             if let Some(lines) = scr.ocr_lines(f) {
@@ -1030,17 +1054,74 @@ impl RunCtx {
             }
         }
         // red cards: the tier from the pearls line beats the title's I/II/III
+        // (from the same one read; its own box only if that read failed)
         for i in 0..3 {
             if let Some(n) = names[i].clone() {
-                if let Some(t) = scr
-                    .ocr_rect(f, super::cards::body_box(i))
-                    .and_then(|b| super::cards::tier_from_pearls(&b))
-                {
+                let body = match &band_lines {
+                    Some(lines) => Some(super::cards::column_texts_in(
+                        lines,
+                        super::cards::body_box(i),
+                    )),
+                    None => scr.ocr_rect(f, super::cards::body_box(i)),
+                };
+                if let Some(t) = body.and_then(|b| super::cards::tier_from_pearls(&b)) {
                     names[i] = Some(super::cards::with_tier(&n, t));
                 }
             }
         }
         (names, raw)
+    }
+
+    /// One OCR over the area covering `parts` (cut out of `f`): the card
+    /// names, what was read over each card, and the words (screen spots).
+    #[allow(clippy::type_complexity)]
+    fn ocr_band(
+        scr: &super::LiveScreen,
+        f: &crate::capture::Frame,
+        parts: [crate::geom::Rect; 5],
+    ) -> (
+        [Option<String>; 3],
+        [String; 3],
+        Option<Vec<Vec<(String, crate::geom::Rect)>>>,
+    ) {
+        let x0 = parts.iter().map(|r| r.x).min().unwrap_or(0).max(0);
+        let y0 = parts.iter().map(|r| r.y).min().unwrap_or(0).max(0);
+        let x1 = parts.iter().map(|r| r.x + r.w).max().unwrap_or(0);
+        let y1 = parts.iter().map(|r| r.y + r.h).max().unwrap_or(0);
+        let band = f.crop(
+            x0 as u32,
+            y0 as u32,
+            (x1 - x0).max(1) as u32,
+            (y1 - y0).max(1) as u32,
+        );
+        let Some(mut lines) = scr.ocr_lines(&band) else {
+            return (Default::default(), Default::default(), None);
+        };
+        for l in lines.iter_mut() {
+            for (_, r) in l.iter_mut() {
+                r.x += x0;
+                r.y += y0;
+            }
+        }
+        // names from the title strips only (the texts below can name other
+        // cards' stats: "+20 Enemy Physical Resist")
+        let (ty0, ty1) = (
+            parts[..3].iter().map(|r| r.y).min().unwrap_or(0),
+            parts[..3].iter().map(|r| r.y + r.h).max().unwrap_or(0),
+        );
+        let titles: Vec<Vec<(String, crate::geom::Rect)>> = lines
+            .iter()
+            .map(|l| {
+                l.iter()
+                    .filter(|(_, r)| (ty0..ty1).contains(&(r.y + r.h / 2)))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .filter(|l| !l.is_empty())
+            .collect();
+        let names = super::cards::names_from_lines(&titles);
+        let cols = super::cards::column_texts(&titles);
+        (names, cols, Some(lines))
     }
 
     /// The three weather shift card names (Grounded, Mud, ...): each title

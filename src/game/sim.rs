@@ -858,20 +858,33 @@ mod tests {
         let t = std::thread::spawn(move || {
             let _ = c.upgrade_until_end(&placed);
         });
-        std::thread::sleep(std::time::Duration::from_secs(6));
-        ctl.stop();
-        t.join().unwrap();
-        let logs: Vec<String> = rx
-            .try_iter()
-            .filter_map(|e| match e {
+        // wait for what's checked (3 visits + the cash-wait line) instead of
+        // a fixed 6 s - under a busy test run the first visit can be late;
+        // 60 s at most
+        let want =
+            "Upgrade: slot 1 at 400,300 (Level 3) - waiting for cash to reach Target Level 5...";
+        let mut logs: Vec<String> = vec![];
+        let started = std::time::Instant::now();
+        loop {
+            logs.extend(rx.try_iter().filter_map(|e| match e {
                 Event::Log(l) => Some(l),
                 _ => None,
-            })
-            .collect();
-        assert!(
-            logs.iter().any(|l| l.contains("Upgrade: slot 1 at 400,300 (Level 3) - waiting for cash to reach Target Level 5...")),
-            "{logs:#?}"
-        );
+            }));
+            let seen = logs.iter().any(|l| l.contains(want));
+            if (seen && sim.raw_clicks.lock().unwrap().len() >= 3)
+                || started.elapsed() > std::time::Duration::from_secs(60)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        ctl.stop();
+        t.join().unwrap();
+        logs.extend(rx.try_iter().filter_map(|e| match e {
+            Event::Log(l) => Some(l),
+            _ => None,
+        }));
+        assert!(logs.iter().any(|l| l.contains(want)), "{logs:#?}");
         assert!(
             !logs.iter().any(|l| l.contains("back in a minute")),
             "never rested: {logs:#?}"
