@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Disconnect / captcha recovery.
+/// Disconnect recovery.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RecoverySettings {
@@ -12,10 +12,6 @@ pub struct RecoverySettings {
     pub reconnect: bool,
     /// At most this many reconnects an hour (then the full relaunch, if on).
     pub max_reconnects_per_hour: u32,
-    /// Captcha: pause the macro until it's gone (you type it).
-    pub captcha_pause: bool,
-    /// Captcha ping on Discord: @here (true) or just your user ping.
-    pub captcha_here: bool,
 }
 
 impl Default for RecoverySettings {
@@ -23,8 +19,6 @@ impl Default for RecoverySettings {
         Self {
             reconnect: true,
             max_reconnects_per_hour: 6,
-            captcha_pause: true,
-            captcha_here: true,
         }
     }
 }
@@ -71,6 +65,9 @@ pub struct Settings {
     /// Open a unit with a right-click first (left-click is the default and
     /// what the game documents; in Roblox a right-drag turns the camera).
     pub upgrade_right_click: bool,
+    /// OCR areas / the minimap crop you moved (OCR areas page):
+    /// key -> [x, y, w, h].
+    pub ocr_areas: std::collections::BTreeMap<String, [i32; 4]>,
     /// Upgrades: wait this long (ms) after opening a unit / pressing upgrade
     /// before reading its level (OCR).
     pub upgrade_read_ms: u64,
@@ -103,7 +100,7 @@ pub struct Settings {
     pub placement_detect: PlacementDetect,
     /// Megumi's Mahoraga "Choose an Adaptation" picks.
     pub adaptations: Adaptations,
-    /// Disconnect / captcha recovery (Settings > Recovery).
+    /// Disconnect recovery (Settings > Recovery).
     pub recovery: RecoverySettings,
     /// After a restart mid-stage (within 5 min): pick up at the saved step
     /// (Auto), ask first (Ask) or always start from the lobby (Off).
@@ -208,9 +205,9 @@ impl Mode {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayChoice {
-    /// Your own portal / lobby (no captcha).
+    /// Your own portal / lobby.
     PlayHere,
-    /// Public matchmaking: shows a captcha you type yourself; the macro waits.
+    /// Public matchmaking.
     FindMatch,
 }
 
@@ -554,6 +551,7 @@ impl Default for Settings {
             upgrade_read_ms: 800,
             upgrade_press_cap: 0,
             upgrade_right_click: false,
+            ocr_areas: Default::default(),
             place_shape: Default::default(),
             shape_scale: 1.8,
             idle_click: true,
@@ -640,6 +638,7 @@ impl Settings {
             serde_json::from_str(&txt).with_context(|| format!("parsing {}", path.display()))?;
         s.ensure(0);
         s.fix_teams();
+        crate::ocrareas::set_all(&s.ocr_areas);
         Ok(s)
     }
 

@@ -6,6 +6,7 @@
 /// Names that always count (matched loosely).
 pub const TRACKED: &[&str] = &[
     "Gems",
+    "Gold",
     "Summer Coin",
     "Star Remnant",
     "Snow Reaper",
@@ -17,6 +18,11 @@ pub fn parse_line(line: &str) -> Option<(String, u64)> {
     let words: Vec<&str> = line.split_whitespace().collect();
     if words.is_empty() {
         return None;
+    }
+    // a unit drop has no number: "Snow Reaper (War)" = 1
+    let flat = line.to_lowercase();
+    if flat.contains("snow reaper") && !line.chars().any(|c| c.is_ascii_digit()) {
+        return Some(("Snow Reaper".into(), 1));
     }
     // the number: "x12", "+12", "12", "12x", "1,200"
     let num = |w: &str| -> Option<u64> {
@@ -60,6 +66,12 @@ pub fn parse_line(line: &str) -> Option<(String, u64)> {
     }
     if low.contains("gem") {
         return Some(("Gems".into(), amount));
+    }
+    if low
+        .split_whitespace()
+        .any(|w| w.trim_matches(|c: char| !c.is_alphabetic()) == "gold")
+    {
+        return Some(("Gold".into(), amount));
     }
     for t in TRACKED {
         if low.contains(&t.to_lowercase()) {
@@ -125,5 +137,24 @@ mod tests {
             parse_line("Star Remnant x2"),
             Some(("Star Remnant".into(), 2))
         );
+    }
+
+    #[test]
+    fn dungeon_loot() {
+        let lines: Vec<String> = [
+            "Gold x1,200",
+            "Star Remnant x3",
+            "Snow Reaper (War)",
+            "Gems 40",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let d = parse(&lines);
+        let get = |n: &str| d.iter().find(|x| x.0 == n).map(|x| x.1);
+        assert_eq!(get("Gold"), Some(1200));
+        assert_eq!(get("Star Remnant"), Some(3));
+        assert_eq!(get("Snow Reaper"), Some(1));
+        assert_eq!(get("Gems"), Some(40));
     }
 }

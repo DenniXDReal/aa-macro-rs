@@ -7,6 +7,7 @@
 
 mod command;
 mod debug_tp; // TEMPORARY - remove with tp_dbg_click and its 2 calls
+mod ocrui;
 mod tools;
 
 use crate::accounts::{self, AccountRole, AccountSlot, Ram};
@@ -56,6 +57,7 @@ enum Page {
     Accounts,
     Movement,
     Placement,
+    OcrAreas,
     Patterns,
     Settings,
 }
@@ -141,6 +143,7 @@ pub struct App {
     map: String,
     new_map: String,
     place_slot: u8,
+    ocr_ui: ocrui::OcrUi,
     show_spiral: bool,
 
     // movement
@@ -311,6 +314,7 @@ impl App {
             map,
             new_map: String::new(),
             place_slot: 0,
+            ocr_ui: Default::default(),
             show_spiral: true,
             route_text: String::new(),
             routes,
@@ -581,21 +585,6 @@ impl App {
                         ));
                     }
                 }
-                Event::Captcha(s) => {
-                    self.paused = true;
-                    self.say(format!("WARN {s}"));
-                    self.hook_with(
-                        crate::webhook::Kind::Problem,
-                        "Captcha detected - manual input needed",
-                        &s,
-                        true,
-                        self.settings.recovery.captcha_here,
-                    );
-                }
-                Event::CaptchaGone => {
-                    self.paused = false;
-                    self.say("captcha gone - carrying on");
-                }
                 Event::Reconnect(s) => {
                     self.say(s.clone());
                     self.hook(crate::webhook::Kind::Problem, "Reconnect", &s, false);
@@ -796,6 +785,8 @@ impl App {
                 ping,
                 fields: vec![],
                 here,
+                extra: vec![],
+                thumbnail: None,
             },
         );
     }
@@ -1739,11 +1730,9 @@ impl App {
                 });
                 if r.play == PlayChoice::FindMatch {
                     ui.label(
-                        RichText::new(
-                            "Find Match shows a captcha: type it yourself, the macro waits.",
-                        )
-                        .size(11.0)
-                        .color(WARN),
+                        RichText::new("Find Match: public matchmaking.")
+                            .size(11.0)
+                            .color(WARN),
                     );
                 }
             }
@@ -3104,7 +3093,7 @@ impl App {
         }
     }
 
-    /// Settings > Recovery: disconnect / captcha handling.
+    /// Settings > Recovery: disconnect handling.
     fn recovery_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         card(ui, |ui| {
@@ -3129,25 +3118,6 @@ impl App {
                 .checkbox(
                     &mut self.settings.auto_relaunch,
                     "If reconnecting fails: close Roblox and relaunch every account (Roblox Account Manager)",
-                )
-                .changed();
-        });
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("CAPTCHA").size(11.0).color(MUTED));
-            ui.label(
-                RichText::new("A captcha anywhere (your captcha picture, else its words): the macro pauses, pings Discord and shows CAPTCHA on the client's card. Type it in Roblox - once it's gone the macro carries on by itself. It never solves captchas.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-            let r = &mut self.settings.recovery;
-            changed |= ui
-                .checkbox(&mut r.captcha_pause, "Pause while a captcha is up")
-                .changed();
-            changed |= ui
-                .checkbox(
-                    &mut r.captcha_here,
-                    "Ping @here on Discord (off = only your user ping)",
                 )
                 .changed();
         });
@@ -3799,6 +3769,8 @@ impl App {
                         ping: true,
                         fields: vec![],
                         here: false,
+                        extra: vec![],
+                        thumbnail: None,
                     };
                     let _ = tx.send(match webhook::send(&url, &ping, &m) {
                         Ok(()) => "webhook test sent - check Discord".into(),
@@ -4359,6 +4331,7 @@ impl eframe::App for App {
                         Page::Accounts => self.page_accounts(ui),
                         Page::Movement => self.page_movement(ui),
                         Page::Placement => self.page_placement(ui),
+                        Page::OcrAreas => self.page_ocr_areas(ui),
                         Page::Patterns => self.page_patterns(ui),
                         Page::Settings => self.page_settings(ui),
                     });

@@ -20,7 +20,12 @@ pub const HISTORY_KEEP: usize = 5000;
 /// run) sits, right of "+55 XP". Used when the pearl icon isn't found.
 pub const PEARL_RECT: Rect = Rect::new(330, 336, 84, 36);
 /// Where the pearl icon is looked for on the end panel.
-const PEARL_SEARCH: Rect = Rect::new(250, 320, 310, 70);
+pub const PEARL_SEARCH: Rect = Rect::new(250, 315, 300, 80);
+/// The top-left HUD's pearl counter ("+7291" with the flower, under the
+/// wave number) - shows the run's pearls on the end screen too.
+pub const PEARL_HUD: Rect = Rect::new(140, 90, 100, 30);
+/// Where the reward popup / end panel is: only here can a drop be.
+pub const REWARD_AREA: Rect = Rect::new(200, 100, 400, 400);
 
 /// Longest the End step waits for the Discord upload before going on.
 pub const WEBHOOK_WAIT_SECS: u64 = 15;
@@ -63,7 +68,12 @@ pub struct Session {
     pub event_currency: u64,
     pub pearls: u64,
     pub charms: u32,
+    /// Every drop's total this session ("Gems" -> 350).
+    pub items: std::collections::BTreeMap<String, u64>,
 }
+
+/// What a Dungeon report lists (each with this session's total).
+pub const DUNGEON_ITEMS: [&str; 4] = ["Star Remnant", "Gems", "Gold", "Snow Reaper"];
 
 impl Session {
     /// Count a run in; gives it its run number.
@@ -74,6 +84,9 @@ impl Session {
         self.event_currency += r.event_currency;
         self.pearls += r.pearls;
         self.charms += r.charm.is_some() as u32;
+        for (n, a) in &r.drops {
+            *self.items.entry(n.clone()).or_default() += a;
+        }
     }
 }
 
@@ -98,9 +111,31 @@ pub fn amount(drops: &[(String, u64)], name: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// The bottom-left HUD (Equipped Charm, settings cog): never a drop.
-fn in_hud(r: Rect) -> bool {
-    r.x < 220 && r.y > 470
+/// In the middle of the screen, where the reward popup shows.
+pub fn in_reward_area(r: Rect) -> bool {
+    let c = r.center();
+    crate::ocrareas::get("reward_area", REWARD_AREA).contains(c)
+}
+
+/// The pearls from OCR lines of the end panel: the "+7291" on the line
+/// with "+55 XP" (the one that isn't the XP). None = no such line.
+pub fn pearls_from_lines(lines: &[Vec<(String, Rect)>]) -> Option<u64> {
+    for l in lines {
+        let words: Vec<&str> = l.iter().map(|(w, _)| w.as_str()).collect();
+        let Some(xp) = words.iter().position(|w| w.to_uppercase().contains("XP")) else {
+            continue;
+        };
+        // a "+number" on that line that isn't the XP's own number
+        for (i, w) in words.iter().enumerate() {
+            if !w.starts_with('+') || i + 1 == xp || i == xp {
+                continue;
+            }
+            if let Some(n) = parse_amount(w) {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// A charm / portal on the reward screen by OCR: its line's text and the
@@ -113,8 +148,9 @@ pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
             .collect::<Vec<_>>()
             .join(" ");
         let low = text.to_lowercase();
-        // "Equipped Charm:" (bottom left, the charm you wear) isn't a drop
-        if low.contains("equip") || l.first().is_some_and(|(_, r)| in_hud(*r)) {
+        // only the reward popup in the middle: "Equipped Charm:" (bottom
+        // left, the charm you wear) and the minimap aren't drops
+        if low.contains("equip") || l.first().is_some_and(|(_, r)| !in_reward_area(*r)) {
             continue;
         }
         if !(low.contains("charm") || low.contains("portal")) {
@@ -137,6 +173,13 @@ pub fn find_charm(lines: &[Vec<(String, Rect)>]) -> Option<(String, Rect)> {
 
 /// Picture area for a dropped item whose label / icon is at `at`: the icon
 /// sits above its name, so mostly upwards. Clamped to the frame.
+/// The middle of the end screen: the VICTORY / DEFEAT title, the pearls and
+/// the rewards (not the HUD / chat around them).
+pub fn end_shot_rect(w: u32, h: u32) -> Rect {
+    let (w, h) = (w as i32, h as i32);
+    Rect::new(w * 15 / 100, h * 5 / 100, w * 70 / 100, h * 80 / 100)
+}
+
 pub fn crop_around(at: Rect, w: u32, h: u32) -> Option<Rect> {
     let c = at.center();
     Rect::new(c.x - 110, c.y - 150, 220, 200).intersect(&Rect::new(0, 0, w as i32, h as i32))
@@ -160,6 +203,55 @@ fn thousands(n: u64) -> String {
 }
 
 /// The Discord loot report for `r` (with `image` as the attachment).
+/// A Dungeon run's report: the dungeon loot (with session totals).
+fn dungeon_message(
+    r: &RunStats,
+    s: &Session,
+    image: Option<Frame>,
+    ping: bool,
+) -> crate::webhook::Message {
+    use crate::webhook::{Kind, Message};
+    let mut fields: Vec<(String, String, bool)> = DUNGEON_ITEMS
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                format!(
+                    "{} (session {})",
+                    thousands(amount(&r.drops, n)),
+                    thousands(s.items.get(*n).copied().unwrap_or(0))
+                ),
+                true,
+            )
+        })
+        .collect();
+    fields.push((
+        "Session".to_string(),
+        format!("{} runs · {}W / {}L", s.runs, s.wins, s.runs - s.wins),
+        true,
+    ));
+    let others: Vec<String> = r
+        .drops
+        .iter()
+        .filter(|(n, _)| !DUNGEON_ITEMS.contains(&n.as_str()))
+        .map(|(n, a)| format!("{} {n}", thousands(*a)))
+        .collect();
+    if !others.is_empty() {
+        fields.push(("Other drops".into(), others.join(", "), false));
+    }
+    Message {
+        kind: if r.won { Kind::Win } else { Kind::Loss },
+        title: format!("Dungeon #{} Complete - {}", r.run, r.result()),
+        body: r.map.clone(),
+        screenshot: image,
+        ping,
+        fields,
+        here: false,
+        extra: vec![],
+        thumbnail: None,
+    }
+}
+
 pub fn message(
     r: &RunStats,
     s: &Session,
@@ -167,6 +259,9 @@ pub fn message(
     ping: bool,
 ) -> crate::webhook::Message {
     use crate::webhook::{Kind, Message};
+    if r.mode == "Dungeon" {
+        return dungeon_message(r, s, image, ping);
+    }
     // pearls are the Summer Event currency: one field, not two
     let mut fields = vec![
         (
@@ -215,6 +310,8 @@ pub fn message(
         ping,
         fields,
         here: false,
+        extra: vec![],
+        thumbnail: None,
     }
 }
 
@@ -226,7 +323,7 @@ pub fn pearl_icon(f: &Frame) -> Option<Rect> {
         f.rgb(x, y)
             .is_some_and(|(r, g, b)| r > 180 && b > 170 && r as i32 - g as i32 > 25)
     };
-    let a = PEARL_SEARCH;
+    let a = crate::ocrareas::get("pearls_search", PEARL_SEARCH);
     let col: Vec<u32> = (a.x..a.right())
         .map(|x| (a.y..a.bottom()).filter(|y| pinkish(x, *y)).count() as u32)
         .collect();
@@ -269,8 +366,33 @@ pub fn pearl_amount_rect(icon: Option<Rect>) -> Rect {
             let cy = i.y + i.h / 2;
             Rect::new((i.x - 90).max(0), cy - 18, 88, 36)
         }
-        None => PEARL_RECT,
+        None => crate::ocrareas::get("pearls_box", PEARL_RECT),
     }
+}
+
+/// `area` cut out, 3x bigger, as black text on white - the pink-white
+/// "+7291" on the dark panel is easy for OCR this way. (Fresh picture: its
+/// own size, so OCR never swaps it for a new capture.)
+pub fn clean_for_ocr(f: &Frame, area: Rect) -> Frame {
+    const K: i32 = 3;
+    let (w, h) = (area.w.max(1), area.h.max(1));
+    let mut px = vec![255u8; (w * K * h * K * 4) as usize];
+    for y in 0..h * K {
+        for x in 0..w * K {
+            let ink = f
+                .rgb(area.x + x / K, area.y + y / K)
+                .is_some_and(|(r, g, b)| {
+                    let lo = r.min(g).min(b);
+                    // white / pink-white text, not the dark panel
+                    lo > 150 || (r > 200 && b > 180 && g > 110)
+                });
+            if ink {
+                let i = ((y * w * K + x) * 4) as usize;
+                px[i..i + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    Frame::new((w * K) as u32, (h * K) as u32, px)
 }
 
 /// "+7291", "+ 7,291", "+7291 &" (the icon read as a letter) -> 7291.
@@ -364,6 +486,24 @@ mod tests {
     }
 
     #[test]
+    fn pearls_from_the_xp_line() {
+        let w = |t: &str, x: i32| (t.to_string(), Rect::new(x, 345, 40, 18));
+        let lines = vec![
+            vec![w("Total", 240), w("Time:", 290), w("33:12", 340)],
+            vec![w("+55", 230), w("XP", 270), w("+7291", 345)],
+        ];
+        assert_eq!(pearls_from_lines(&lines), Some(7291));
+        assert_eq!(
+            pearls_from_lines(&[vec![w("+55", 230), w("XP", 270)]]),
+            None
+        );
+        assert_eq!(
+            pearls_from_lines(&[vec![w("Wave", 200), w("+30", 260)]]),
+            None
+        );
+    }
+
+    #[test]
     fn amounts_read_cleanly() {
         assert_eq!(parse_amount("+7291"), Some(7291));
         assert_eq!(parse_amount("+ 7,291"), Some(7291));
@@ -400,6 +540,14 @@ mod tests {
             ("Charm:".to_string(), Rect::new(118, 520, 40, 12)),
         ];
         assert!(find_charm(&[equipped]).is_none());
+        // the minimap corner / anything outside the popup: never a drop
+        assert!(find_charm(&[vec![("Charm".to_string(), Rect::new(700, 520, 40, 12))]]).is_none());
+        assert!(find_charm(&[vec![("Portal".to_string(), Rect::new(20, 300, 40, 12))]]).is_none());
+        assert!(find_charm(&[vec![(
+            "Summer Charm".to_string(),
+            Rect::new(380, 300, 60, 12)
+        )]])
+        .is_some());
         assert!(find_charm(&[vec![(
             "Summer Charm".to_string(),
             Rect::new(85, 578, 60, 10)
@@ -483,5 +631,63 @@ mod tests {
         assert_eq!(h.last().unwrap().run, 99_999);
         assert_eq!(thousands(1_250), "1,250");
         assert_eq!(thousands(999), "999");
+    }
+
+    #[test]
+    fn end_shot_is_the_middle() {
+        let r = end_shot_rect(800, 600);
+        assert_eq!((r.x, r.y, r.w, r.h), (120, 30, 560, 480));
+        assert!(r.x + r.w <= 800 && r.y + r.h <= 600);
+        assert!(r.contains(REWARD_AREA.center()));
+    }
+
+    #[test]
+    fn dungeon_report_fields() {
+        let mut s = Session::default();
+        let mut r = RunStats {
+            won: true,
+            mode: "Dungeon".into(),
+            drops: vec![
+                ("Gems".into(), 40),
+                ("Gold".into(), 1200),
+                ("Snow Reaper".into(), 1),
+                ("Trait Crystal".into(), 2),
+            ],
+            ..Default::default()
+        };
+        s.add(&mut r);
+        let mut r2 = RunStats {
+            mode: "Dungeon".into(),
+            drops: vec![("Gems".into(), 10)],
+            ..Default::default()
+        };
+        s.add(&mut r2);
+        let m = message(&r2, &s, None, false);
+        assert!(m.title.starts_with("Dungeon #2"));
+        let f = |n: &str| m.fields.iter().find(|x| x.0 == n).unwrap().1.clone();
+        assert_eq!(f("Gems"), "10 (session 50)");
+        assert_eq!(f("Gold"), "0 (session 1,200)");
+        assert_eq!(f("Snow Reaper"), "0 (session 1)");
+        let m1 = message(&r, &s, None, false);
+        assert!(m1
+            .fields
+            .iter()
+            .any(|x| x.0 == "Other drops" && x.1.contains("Trait Crystal")));
+    }
+
+    #[test]
+    fn pearls_cleaned_for_ocr() {
+        let f = Frame::load_png(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/end_defeat_pearls.png"),
+        )
+        .unwrap();
+        let area = pearl_amount_rect(pearl_icon(&f));
+        let c = clean_for_ocr(&f, area);
+        assert_eq!((c.width, c.height), (area.w as u32 * 3, area.h as u32 * 3));
+        // "+7291" is ink: a good share of the box, but not all of it
+        let ink = c.bgra.chunks_exact(4).filter(|p| p[0] == 0).count();
+        let all = (c.width * c.height) as usize;
+        assert!(ink > all / 20 && ink < all / 2, "{ink} of {all}");
     }
 }

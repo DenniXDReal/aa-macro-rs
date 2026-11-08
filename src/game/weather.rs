@@ -78,7 +78,7 @@ fn letters(s: &str) -> String {
 }
 
 /// Edit distance (letters changed / added / dropped).
-fn edits(a: &str, b: &str) -> usize {
+pub(crate) fn edits(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for i in 1..=a.len() {
@@ -138,6 +138,39 @@ pub fn is_buff(name: &str) -> bool {
 
 pub fn path() -> PathBuf {
     super::data_dir().join("weather_priorities.json")
+}
+
+/// The weathers (each card's weather in [`WEATHER_CARDS`]).
+pub const WEATHERS: [&str; 7] = [
+    "Windy",
+    "Rainy",
+    "Flooded",
+    "Sandstorm",
+    "Magical",
+    "Inferno",
+    "Starfall",
+];
+
+/// Sandstorm: enemies take no damage early in their walk - minimap walks
+/// stop at least this % along the enemy path from their spawn.
+pub const SANDSTORM_MIN_PCT: u8 = 25;
+
+/// A weather named in `text` ("The weather shifted to Sandstorm", a card
+/// screen's weather line), as in [`WEATHERS`].
+pub fn weather_in(text: &str) -> Option<&'static str> {
+    let t = text.to_lowercase();
+    WEATHERS
+        .iter()
+        .find(|w| t.contains(&w.to_lowercase()))
+        .copied()
+}
+
+/// The weather a shift card belongs to (Haboob -> Sandstorm).
+pub fn weather_of_card(card: &str) -> Option<&'static str> {
+    WEATHER_CARDS
+        .iter()
+        .find(|c| c.0.eq_ignore_ascii_case(card))
+        .and_then(|c| WEATHERS.iter().find(|w| **w == c.1).copied())
 }
 
 pub fn default_list() -> Vec<String> {
@@ -331,5 +364,17 @@ mod tests {
         std::fs::write(path(), "not json").unwrap();
         assert_eq!(load(), default_list());
         let _ = std::fs::remove_file(path());
+    }
+
+    #[test]
+    fn weather_names() {
+        assert_eq!(
+            weather_in("The weather shifted to SANDSTORM!"),
+            Some("Sandstorm")
+        );
+        assert_eq!(weather_in("Choose a card"), None);
+        assert_eq!(weather_of_card("Haboob"), Some("Sandstorm"));
+        assert_eq!(weather_of_card("Mud"), Some("Rainy"));
+        assert!(WEATHER_CARDS.iter().all(|c| weather_of_card(c.0).is_some()));
     }
 }

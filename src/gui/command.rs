@@ -68,7 +68,7 @@ impl ClientView {
                 health: Health::Idle,
             };
         }
-        // the watchdog's finding (captcha / disconnected) beats the step
+        // the watchdog's finding (disconnected) beats the step
         if let Some(w) = h.and_then(|h| st.incident(h)) {
             return ClientView {
                 step: w.into(),
@@ -589,10 +589,11 @@ pub(super) const NAV: [(Page, &str); 5] = [
     (Page::Settings, "⚙  Settings"),
     (Page::Logs, "📝  Logs"),
 ];
-pub(super) const NAV_SETUP: [(Page, &str); 3] = [
+pub(super) const NAV_SETUP: [(Page, &str); 4] = [
     (Page::Home, "▶  Run setup"),
     (Page::Accounts, "👤  Accounts"),
     (Page::Placement, "📍  Placement"),
+    (Page::OcrAreas, "🔤  OCR areas"),
 ];
 
 #[cfg(test)]
@@ -619,7 +620,7 @@ mod tests {
                 of: 4,
                 at: Instant::now(),
             }],
-            incidents: vec![(Hwnd(0xBAD), "CAPTCHA")],
+            incidents: vec![(Hwnd(0xBAD), "DISCONNECTED")],
         };
         let idle = ClientView::build(&st, Some(h), false, false);
         let fresh = ClientView::build(&crate::status::Status::default(), Some(h), true, false);
@@ -633,7 +634,10 @@ mod tests {
         assert_eq!(p.health, Health::Paused);
         // the watchdog's finding shows instead of the step
         let cap = ClientView::build(&st, Some(Hwnd(0xBAD)), true, false);
-        assert_eq!((cap.step.as_str(), cap.health), ("CAPTCHA", Health::Paused));
+        assert_eq!(
+            (cap.step.as_str(), cap.health),
+            ("DISCONNECTED", Health::Paused)
+        );
         let other = ClientView::build(&st, Some(Hwnd(1)), true, false);
         assert_eq!((other.attempt, other.health), (None, Health::Ok));
     }

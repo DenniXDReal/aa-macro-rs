@@ -813,40 +813,6 @@ mod tests {
             .contains("reconnect is off"));
     }
 
-    /// Captcha: paused + the app told; gone: un-paused + told.
-    #[test]
-    fn captcha_pauses_until_gone() {
-        let sim = Arc::new(Sim::new(vec![
-            /*0 captcha, gone after a few looks*/
-            Screen {
-                els: vec![el("captcha", 300, 250, None)],
-                auto: Some((3, 1)),
-                wheel_down: None,
-            },
-            /*1 stage*/ scr(vec![el("vote_start", 400, 100, None)]),
-        ]));
-        let (c, rx, _arb) = ctx(sim, Settings::default());
-        c.watch_once(false);
-        assert!(c.control.is_paused(), "paused for the captcha");
-        let mut told = false;
-        while let Ok(e) = rx.try_recv() {
-            told |= matches!(e, Event::Captcha(_));
-        }
-        assert!(told, "app pinged");
-        for _ in 0..6 {
-            c.watch_once(false);
-        }
-        assert!(!c.control.is_paused(), "carries on once it's gone");
-        let mut gone = false;
-        while let Ok(e) = rx.try_recv() {
-            gone |= matches!(e, Event::CaptchaGone);
-        }
-        assert!(gone);
-    }
-
-    /// Priority upgrade, no money: the top unit's level doesn't move -
-    /// the macro stays on it (waits for cash, tries again) and never goes
-    /// to the next unit or rests it.
     #[test]
     fn priority_upgrade_waits_for_cash() {
         // its panel open; two screens taking turns so the picture changes

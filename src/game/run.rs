@@ -140,8 +140,8 @@ pub fn plan(s: &Settings, routes: &Routes) -> Vec<PlanStep> {
                 false,
             )),
             PlayChoice::FindMatch => out.push(step(
-                "Join Matchmaking > Find Match (you type the captcha)",
-                &["join_matchmaking", "find_match", "captcha"],
+                "Join Matchmaking > Find Match",
+                &["join_matchmaking", "find_match"],
                 false,
             )),
         }
@@ -245,14 +245,10 @@ pub enum Event {
     /// A finished run's loot (End step); `reported` = the game loop sent
     /// the Discord loot report itself.
     Run(super::loot::RunStats, bool),
-    /// Something needs the user (captcha) - ping them.
+    /// Something needs the user - ping them.
     Attention(String),
     /// Step machine: a step went Fatal - the loop paused itself (F4 resumes).
     Fatal(String),
-    /// Captcha on a client: the watchdog paused the macro until it's gone.
-    Captcha(String),
-    /// The captcha is gone: the watchdog un-paused.
-    CaptchaGone,
     /// Disconnect recovery: what happened (Reconnecting / back / failed).
     Reconnect(String),
     Done(String),
@@ -281,7 +277,7 @@ pub struct RunCtx {
     pub loot_hook: Option<(String, String)>,
     /// Run count + totals since Start.
     pub session: std::sync::Arc<std::sync::Mutex<super::loot::Session>>,
-    /// Recovery watchdog's findings (disconnect / captcha per client).
+    /// Recovery watchdog's findings (disconnects per client).
     pub watch: std::sync::Arc<super::watchdog::Watch>,
     /// Step machine: the running step's hard deadline. `check()` / `sleep()`
     /// fail with "step timed out" past it (the old loop never sets it).
@@ -296,6 +292,8 @@ pub(crate) struct EndOnce {
     pub rewarded: std::sync::atomic::AtomicBool,
     /// End-screen drops + pearls, as first read.
     pub read: std::sync::Mutex<(Vec<(String, u64)>, Option<u64>)>,
+    /// The VICTORY / DEFEAT panel (centre of the screen), for Discord.
+    pub shot: std::sync::Mutex<Option<crate::capture::Frame>>,
 }
 
 /// Pause between placing and upgrading, after placement mode is closed.
@@ -317,12 +315,24 @@ fn ocr_due(h: Hwnd) -> bool {
     ocr_due_for(h, 0)
 }
 
+/// VICTORY / DEFEAT read by OCR at most this often per client (ms).
+const END_OCR_MS: u64 = 700;
+/// The upgrade-phase watch loop: one look for the end screen / cards
+/// every this many ms.
+const END_POLL_MS: u64 = 350;
+
+/// Units whose Auto ability was tried this match (client, spot) - once each.
+static AUTO_TRIED: std::sync::Mutex<std::collections::BTreeSet<(isize, i32, i32)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 /// Same, per purpose (0 = cards / weather, 1 = VICTORY / DEFEAT).
 fn ocr_due_for(h: Hwnd, what: u8) -> bool {
     static LAST: std::sync::Mutex<Vec<(Hwnd, u8, Instant)>> = std::sync::Mutex::new(Vec::new());
     let mut v = LAST.lock().unwrap();
     match v.iter_mut().find(|e| e.0 == h && e.1 == what) {
-        Some(e) if e.2.elapsed() < Duration::from_millis(if what == 0 { 1000 } else { 2000 }) => {
+        Some(e)
+            if e.2.elapsed() < Duration::from_millis(if what == 0 { 1000 } else { END_OCR_MS }) =>
+        {
             false
         }
         Some(e) => {
@@ -644,23 +654,7 @@ impl RunCtx {
             PlayChoice::PlayHere => self.click_when(self.main, "play_here", 6000)?,
             PlayChoice::FindMatch => {
                 self.click_when(self.main, "find_match", 6000)?;
-                if self.wait_any(self.main, &["captcha"], 3000)?.is_some() {
-                    let _ = self.tx.send(Event::Attention(
-                        "Captcha - type it in Roblox, the macro waits".into(),
-                    ));
-                    // wait until the captcha is gone (typed) - up to 2 min
-                    let mut dl = self.control.deadline(self.secs(120.0));
-                    while self
-                        .screen(self.main)
-                        .find(&Self::names(&["captcha"]), None)
-                        .is_some()
-                    {
-                        if dl.expired() {
-                            return Err("captcha not typed in time".into());
-                        }
-                        self.sleep(500)?;
-                    }
-                }
+                self.sleep(1500)?;
                 self.log("matchmaking - waiting to load");
                 return Ok(());
             }
@@ -875,7 +869,16 @@ impl RunCtx {
             self.log(format!("card screen - weather: {weather}"));
         }
         // read the three card titles and take the first one in your order
-        let names = Self::read_cards(scr, &f);
+        let (names, raw) = Self::read_cards(scr, &f);
+        self.log(format!(
+            "Card OCR: 1 \"{}\" -> {} | 2 \"{}\" -> {} | 3 \"{}\" -> {}",
+            raw[0],
+            names[0].as_deref().unwrap_or("?"),
+            raw[1],
+            names[1].as_deref().unwrap_or("?"),
+            raw[2],
+            names[2].as_deref().unwrap_or("?"),
+        ));
         // weather shift cards (Grounded, Mud, ...) on this screen: your
         // weather list decides (Settings > Weather)
         let shift = LAST_SHIFT
@@ -973,18 +976,55 @@ impl RunCtx {
     /// The three card names on a card screen (OCR): each title box, else
     /// the names found anywhere on the cards; red cards take their tier
     /// from the pearls line. None = that card not readable.
-    fn read_cards(scr: &super::LiveScreen, f: &crate::capture::Frame) -> [Option<String>; 3] {
-        let mut names: [Option<String>; 3] = std::array::from_fn(|i| {
-            scr.ocr_rect(f, super::cards::title_box(i))
-                .and_then(|t| super::cards::card_name(&t))
+    fn read_cards(
+        scr: &super::LiveScreen,
+        f: &crate::capture::Frame,
+    ) -> ([Option<String>; 3], [String; 3]) {
+        let mut raw: [String; 3] = std::array::from_fn(|i| {
+            scr.ocr_rect(
+                f,
+                crate::ocrareas::get(&format!("card_{}", i + 1), super::cards::title_box(i)),
+            )
+            .unwrap_or_default()
+            .trim()
+            .to_string()
         });
+        let mut names: [Option<String>; 3] =
+            std::array::from_fn(|i| super::cards::card_name(&raw[i]));
         // a title box missed: look for the names anywhere on the cards
         if names.iter().any(|n| n.is_none()) {
             if let Some(lines) = scr.ocr_lines(f) {
+                let cols = super::cards::column_texts(&lines);
+                for i in 0..3 {
+                    if names[i].is_none() && !cols[i].is_empty() {
+                        raw[i] = format!("{} | card: {}", raw[i], cols[i]);
+                    }
+                }
                 let more = super::cards::names_from_lines(&lines);
                 for i in 0..3 {
                     if names[i].is_none() {
                         names[i] = more[i].clone();
+                    }
+                }
+            }
+        }
+        // still unread: your card pictures (Patterns "card_<name>", e.g.
+        // card_Attack_III) over that card
+        if names.iter().any(|n| n.is_none()) {
+            let pics = scr.with_prefix("card_");
+            for i in 0..3 {
+                if names[i].is_some() {
+                    continue;
+                }
+                let b = super::cards::CARD_BOXES[i];
+                for p in &pics {
+                    if scr.find(std::slice::from_ref(p), Some(b)).is_some() {
+                        let said = p.trim_start_matches("card_").replace('_', " ");
+                        if let Some(n) = super::cards::card_name(&said) {
+                            raw[i] = format!("{} | picture {p}", raw[i]);
+                            names[i] = Some(n);
+                            break;
+                        }
                     }
                 }
             }
@@ -1000,7 +1040,7 @@ impl RunCtx {
                 }
             }
         }
-        names
+        (names, raw)
     }
 
     /// The three weather shift card names (Grounded, Mud, ...): each title
@@ -1327,7 +1367,6 @@ impl RunCtx {
             "start_button",
             "waiting_for_players",
             "join_matchmaking",
-            "captcha",
         ]);
         let mut dl = self.control.deadline(self.secs(90.0));
         while main.find(&gone, None).is_some() {
@@ -1619,6 +1658,7 @@ impl RunCtx {
 
     /// Place on every placing client at once. Returns placed (client, slot, spot).
     pub fn place_all(&self, map: &str) -> R<Vec<(Hwnd, usize, Point)>> {
+        AUTO_TRIED.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let s = &self.settings;
         super::placing::PLACE_SETTLE_MS.store(
             s.place_settle_ms.clamp(100, 5000),
@@ -2177,7 +2217,12 @@ impl RunCtx {
                 .iter()
                 .map(|(h, slot, _)| {
                     let n = self.clients.iter().position(|c| c.0 == *h).unwrap_or(0) + 1;
-                    format!("c{n} slot {slot} (prio {})", unit(h, *slot).priority)
+                    let u = unit(h, *slot);
+                    let to = match u.upgrade {
+                        Upgrade::Level(l) => format!("to Lv {l}"),
+                        _ => "to MAX".into(),
+                    };
+                    format!("c{n} slot {slot} (prio {}, {to})", u.priority)
                 })
                 .collect();
             self.log(format!("upgrade order: {}", list.join(" > ")));
@@ -2260,7 +2305,7 @@ impl RunCtx {
                 if UPGRADING.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                     let _ = self.idle_click(&mut last_idle, keys_ref(&keys));
                 }
-                if self.sleep(700).is_err() {
+                if self.sleep(END_POLL_MS).is_err() {
                     break Err("stopped".into());
                 }
             };
@@ -2408,6 +2453,29 @@ impl RunCtx {
                     self.sleep(PANEL_CLOSE_MS)?;
                     continue;
                 }
+                // its Auto ability is off (your picture shows where you
+                // captured it): switch it on - one try per unit a match, and
+                // if that click closed the panel it wasn't the button
+                if s.run.auto_ability && scr.has("auto_ability") {
+                    let unit = (h.0, at.x, at.y);
+                    let first = AUTO_TRIED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(unit);
+                    if first {
+                        if let Some(p) = scr.find(&Self::names(&["auto_ability"]), None) {
+                            self.click(*h, p, "auto ability")?;
+                            self.sleep(400)?;
+                            if self.panel_open(scr, 600)? {
+                                self.log(format!("slot {slot}: auto ability on"));
+                            } else {
+                                self.log(format!(
+                                    "slot {slot}: the auto ability picture matched but the click closed the panel - not tried on this unit again (recapture auto_ability?)"
+                                ));
+                            }
+                        }
+                    }
+                }
                 let mut waiting_cash = false;
                 let is_max = scr.has("upgrade_max")
                     && scr.find(&Self::names(&["upgrade_max"]), None).is_some();
@@ -2479,8 +2547,10 @@ impl RunCtx {
                                 cash_since[k] = None;
                                 done[k] = a;
                                 self.log(format!(
-                                    "slot {slot} at {},{} upgraded to {a}",
-                                    at.x, at.y
+                                    "slot {slot} at {},{} upgraded to {a} (target {})",
+                                    at.x,
+                                    at.y,
+                                    target(want)
                                 ));
                                 if let Upgrade::Level(n) = want {
                                     if a >= n as u32 {
@@ -2748,6 +2818,10 @@ impl RunCtx {
                     return Ok(Some(n == "victory"));
                 }
             }
+            // by its look (Next button + title colour): no OCR, every pass
+            if let Some(won) = scr.frame().and_then(|f| super::end_by_look(&f)) {
+                return Ok(Some(won));
+            }
             // OCR reads VICTORY / DEFEAT too (no capture needed)
             if ocr_due_for(h, 1) {
                 if let Some(r) = scr.frame().and_then(|f| scr.ocr_end(&f)) {
@@ -2906,21 +2980,32 @@ impl RunCtx {
         if !main.has_ocr() {
             return Ok(None);
         }
-        for _ in 0..4 {
+        // the panel slides / counts up: several looks over ~5 s
+        let mut tried: Vec<String> = vec![];
+        for attempt in 0..10 {
             if let Some(f) = main.frame() {
                 let icon = main
                     .has("pearl_icon")
                     .then(|| {
                         main.find(
                             &Self::names(&["pearl_icon"]),
-                            Some(crate::geom::Rect::new(250, 320, 310, 70)),
+                            Some(crate::geom::Rect::new(250, 315, 300, 80)),
                         )
                     })
                     .flatten()
                     .map(|p| crate::geom::Rect::new(p.x - 12, p.y - 12, 24, 24))
                     .or_else(|| loot::pearl_icon(&f));
                 let area = loot::pearl_amount_rect(icon);
-                let text = crate::platform::urgent_ocr(|| main.ocr_rect(&f, area));
+                // black-on-white and 3x first (OCR reads it far better),
+                // then the picture as it is
+                let clean = loot::clean_for_ocr(&f, area);
+                let whole = crate::geom::Rect::new(0, 0, clean.width as i32, clean.height as i32);
+                let text = crate::platform::urgent_ocr(|| main.ocr_rect(&clean, whole))
+                    .filter(|t| loot::parse_amount(t).is_some())
+                    .or_else(|| crate::platform::urgent_ocr(|| main.ocr_rect(&f, area)));
+                if attempt == 0 || attempt == 9 {
+                    tried.push(text.clone().unwrap_or_default().trim().to_string());
+                }
                 if let Some(n) = text.as_deref().and_then(loot::parse_amount) {
                     self.log(format!(
                         "pearls this run: {n} (read '{}' {})",
@@ -2933,10 +3018,36 @@ impl RunCtx {
                     ));
                     return Ok(Some(n));
                 }
+                // the panel's "+55 XP  +7291" line, wherever it sits
+                if attempt >= 2 {
+                    let lines =
+                        crate::platform::urgent_ocr(|| main.ocr_lines(&f)).unwrap_or_default();
+                    if let Some(n) = loot::pearls_from_lines(&lines) {
+                        self.log(format!("pearls this run: {n} (the +XP line)"));
+                        return Ok(Some(n));
+                    }
+                }
+                // last: the top-left counter (it shows the run's pearls too)
+                if attempt >= 6 {
+                    let t = crate::platform::urgent_ocr(|| {
+                        main.ocr_rect(&f, crate::ocrareas::area("pearls_hud"))
+                    });
+                    if let Some(n) = t
+                        .as_deref()
+                        .filter(|t| t.contains('+'))
+                        .and_then(loot::parse_amount)
+                    {
+                        self.log(format!("pearls this run: {n} (the top-left counter)"));
+                        return Ok(Some(n));
+                    }
+                }
             }
-            self.sleep(400)?;
+            self.sleep(500)?;
         }
-        self.log("WARN pearls not read on the end panel");
+        self.log(format!(
+            "WARN pearls not read on the end panel (icon box, +XP line or top-left counter) - the box read {:?}",
+            tried
+        ));
         Ok(None)
     }
 
@@ -2950,6 +3061,7 @@ impl RunCtx {
         map: &str,
         end_drops: &[(String, u64)],
         pearls: Option<u64>,
+        end_shot: Option<crate::capture::Frame>,
     ) -> R<()> {
         use super::loot;
         let main = self.screen(self.main);
@@ -2978,6 +3090,8 @@ impl RunCtx {
         let charm: Option<(String, crate::geom::Rect)> = (!pics.is_empty())
             .then(|| main.find_wide(&pics))
             .flatten()
+            // only in the reward popup (not the Equipped Charm corner)
+            .filter(|p| crate::ocrareas::area("reward_area").contains(*p))
             .map(|p| {
                 (
                     "item".to_string(),
@@ -3034,7 +3148,17 @@ impl RunCtx {
         // Discord: wait for the upload (the picture) before going on, but
         // never longer than WEBHOOK_WAIT_SECS
         let reported = if let Some((url, ping)) = &self.loot_hook {
-            let m = loot::message(&stats, &session, picture, false);
+            // the VICTORY / DEFEAT panel is the big picture; the charm (if
+            // any) rides along as charm.png, shown as the thumbnail
+            let m = match (end_shot, picture) {
+                (Some(shot), Some(charm)) => {
+                    let mut m = loot::message(&stats, &session, Some(shot), false);
+                    m.extra = vec![("charm.png".to_string(), charm)];
+                    m.thumbnail = Some("charm.png".to_string());
+                    m
+                }
+                (shot, charm) => loot::message(&stats, &session, shot.or(charm), false),
+            };
             match crate::webhook::send_and_wait(
                 url,
                 ping,
@@ -3297,6 +3421,12 @@ impl RunCtx {
             };
             // the pearls (Summer Event currency) on the VICTORY / DEFEAT panel
             let pearls = self.read_pearls()?;
+            // the result panel, while it's still up (Next comes after)
+            let shot = self.screen(self.main).frame().map(|f| {
+                let r = super::loot::end_shot_rect(f.width, f.height);
+                f.crop(r.x as u32, r.y as u32, r.w as u32, r.h as u32)
+            });
+            *once.shot.lock().unwrap_or_else(|e| e.into_inner()) = shot;
             let _ = self.tx.send(if won { Event::Win } else { Event::Loss });
             once.reported.store(true, Ordering::Relaxed);
             *once.read.lock().unwrap_or_else(|e| e.into_inner()) = (end_drops.clone(), pearls);
@@ -3311,7 +3441,8 @@ impl RunCtx {
             if once.rewarded.swap(true, Ordering::Relaxed) {
                 return Ok(());
             }
-            c.end_rewards(won, map, &end_drops, pearls)
+            let shot = once.shot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            c.end_rewards(won, map, &end_drops, pearls, shot)
         };
         if stop {
             // still record the run, but don't leave the end screen
@@ -3324,12 +3455,13 @@ impl RunCtx {
     /// The whole loop until Stop / an error.
     pub fn run(&self) {
         crate::debugbus::set_clients(&self.clients.iter().map(|c| c.0).collect::<Vec<_>>());
+        crate::ocrareas::set_all(&self.settings.ocr_areas);
         super::resume::install();
         let finished = std::sync::atomic::AtomicBool::new(false);
         let res = std::thread::scope(|sc| {
             // alts that sit idle get kicked after 20 min: poke them every few minutes
             sc.spawn(|| self.anti_afk(&finished));
-            // disconnect box / captcha on any client
+            // disconnect box on any client
             sc.spawn(|| self.watchdog(&finished));
             let r = (|| -> R<()> {
                 if self.settings.run.own_team
@@ -3515,8 +3647,7 @@ impl RunCtx {
     }
 
     /// Recovery watchdog: every few seconds, every client - disconnect box
-    /// (your `disconnect_box` picture, or its words), captcha (`captcha`
-    /// picture, or its words). Captcha: pause + ping until it's gone.
+    /// (your `disconnect_box` picture, or its words).
     fn watchdog(&self, finished: &std::sync::atomic::AtomicBool) {
         use super::watchdog::{EVERY, OCR_EVERY_NTH};
         use std::sync::atomic::Ordering;
@@ -3524,8 +3655,7 @@ impl RunCtx {
         while !finished.load(Ordering::Relaxed) && !self.control.is_stopped() {
             n += 1;
             self.watch_once(n % OCR_EVERY_NTH == 0);
-            // the watchdog's own wait ignores pause (it has to see the
-            // captcha go away while paused)
+            // the watchdog's own wait ignores pause
             let until = Instant::now() + Duration::from_secs_f64(self.secs(EVERY.as_secs_f64()));
             while Instant::now() < until {
                 if finished.load(Ordering::Relaxed) || self.control.is_stopped() {
@@ -3537,46 +3667,23 @@ impl RunCtx {
     }
 
     /// One watchdog look at every client (`ocr`: also read the screen when
-    /// no picture matched). Captcha: pause + ping; gone: carry on.
+    /// no picture matched).
     pub(crate) fn watch_once(&self, ocr: bool) {
         use super::watchdog::{classify, Kind};
-        use std::sync::atomic::Ordering;
         for (i, (h, scr)) in self.clients.iter().enumerate() {
             let pic = |name: &str| {
                 scr.has(name) && scr.find_picture_wide(&Self::names(&[name])).is_some()
             };
-            let (dis, cap) = (pic("disconnect_box"), pic("captcha"));
-            let text = (ocr && !dis && !cap)
+            let dis = pic("disconnect_box");
+            let text = (ocr && !dis)
                 .then(|| scr.frame().and_then(|f| scr.ocr_all(&f)))
                 .flatten();
-            let kind = classify(dis, cap, text.as_deref());
+            let kind = classify(dis, text.as_deref());
             if self.watch.set(*h, i + 1, kind) {
                 let what = kind.map(Kind::label).unwrap_or("");
                 self.log(format!("watchdog: client {} - {what}", i + 1));
             }
             crate::status::set_incident(*h, kind.map(Kind::label));
-        }
-        // captcha: hold everything until it's typed
-        let captcha = self.watch.first(Kind::Captcha);
-        let ours = self.watch.captcha_paused.load(Ordering::Relaxed);
-        match (captcha, ours) {
-            (Some(c), false) if self.settings.recovery.captcha_pause => {
-                self.watch.captcha_paused.store(true, Ordering::Relaxed);
-                self.control.set_paused(true);
-                let why = format!(
-                    "Captcha on client {} - type it in Roblox, the macro is paused until it's gone",
-                    c.client
-                );
-                self.log(format!("WARN {why}"));
-                let _ = self.tx.send(Event::Captcha(why));
-            }
-            (None, true) => {
-                self.watch.captcha_paused.store(false, Ordering::Relaxed);
-                self.control.set_paused(false);
-                self.log("captcha gone - carrying on");
-                let _ = self.tx.send(Event::CaptchaGone);
-            }
-            _ => {}
         }
     }
 

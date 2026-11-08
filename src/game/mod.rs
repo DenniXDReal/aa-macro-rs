@@ -7,6 +7,7 @@ pub mod cards;
 pub mod drops;
 pub mod dump;
 pub mod hotbar;
+pub mod icons;
 pub mod loot;
 pub mod machine;
 pub mod minimap;
@@ -220,6 +221,57 @@ fn parse_level_raw(text: &str) -> Option<Result<u32, ()>> {
         return digits[1..].parse().ok().map(Ok);
     }
     Some(Ok(n))
+}
+
+/// The VICTORY / DEFEAT screen by its look, no OCR: the green Next button
+/// (built-in picture) with the big title above it - red = DEFEAT, gold =
+/// VICTORY. None = not that screen (or a title colour it can't tell).
+pub fn end_by_look(f: &crate::capture::Frame) -> Option<bool> {
+    let next = icons::get("button_next")?;
+    // the panel's Next sits in the middle band of the screen
+    let band = Rect::new(
+        f.width as i32 / 5,
+        f.height as i32 * 2 / 5,
+        f.width as i32 * 3 / 5,
+        f.height as i32 * 2 / 5,
+    );
+    // quick look first: the button's bright green must be there at all
+    // (keeps this nearly free on every other screen)
+    let mut green = 0;
+    for y in (band.y..band.bottom()).step_by(4) {
+        for x in (band.x..band.right()).step_by(4) {
+            if f.rgb(x, y)
+                .is_some_and(|(r, g, b)| g > 170 && r < 140 && b < 80 && g as i32 - r as i32 > 60)
+            {
+                green += 1;
+            }
+        }
+    }
+    if green < 40 {
+        return None;
+    }
+    let at = next.find_all(f, band, 40, 0.75).first()?.0;
+    // the title: ~170-240 px above Next, +-150 px across
+    let (mut red, mut gold) = (0u32, 0u32);
+    for y in (at.y - 245).max(0)..(at.y - 165).max(0) {
+        for x in (at.x - 150).max(0)..(at.x + 150).min(f.width as i32) {
+            let Some((r, g, b)) = f.rgb(x, y) else {
+                continue;
+            };
+            if r > 180 && g < 60 && b < 60 {
+                red += 1;
+            } else if r > 200 && g > 150 && b < 90 {
+                gold += 1;
+            }
+        }
+    }
+    const ENOUGH: u32 = 800;
+    match (red >= ENOUGH, gold >= ENOUGH) {
+        (true, false) => Some(false),
+        (false, true) => Some(true),
+        (true, true) => Some(gold > red),
+        _ => None,
+    }
 }
 
 /// VICTORY (true) / DEFEAT (false) in OCR text, tolerant of OCR slips.
@@ -719,7 +771,10 @@ impl LiveScreen {
         let frame: &crate::capture::Frame = &fresh;
         // the upper 60% of the screen (the title sits in different places on
         // the VICTORY and DEFEAT screens)
-        let area = Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5);
+        let area = crate::ocrareas::get(
+            "end_title",
+            Rect::new(0, 0, frame.width as i32, frame.height as i32 * 3 / 5),
+        );
         let t = self.platform.ocr(frame, area)?;
         end_text(&t)
     }
@@ -1004,5 +1059,38 @@ mod weather_vote_tests {
         );
         // cards still coming in: no button yet
         assert!(weather_vote_button(&load("weather_no_vote_button.png")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod end_look_tests {
+    use super::*;
+
+    fn defeat() -> crate::capture::Frame {
+        crate::capture::Frame::load_png(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/end_defeat_pearls.png"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn defeat_and_victory_by_look() {
+        let f = defeat();
+        assert_eq!(end_by_look(&f), Some(false));
+        // the same screen with a gold title = VICTORY
+        let mut v = f.clone();
+        for p in v.bgra.chunks_exact_mut(4) {
+            let (b, g, r) = (p[0], p[1], p[2]);
+            if r > 180 && g < 60 && b < 60 {
+                p[0] = 20;
+                p[1] = 200;
+                p[2] = 250;
+            }
+        }
+        assert_eq!(end_by_look(&v), Some(true));
+        // no Next button: not the end screen
+        let blank = crate::capture::Frame::solid(800, 599, 40, 40, 40);
+        assert_eq!(end_by_look(&blank), None);
     }
 }
